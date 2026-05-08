@@ -79,6 +79,7 @@ function safeNextPath(value: string | null): string {
     !value?.startsWith("/") ||
     value.startsWith("//") ||
     value.includes("\\") ||
+    value.includes(":") ||
     hasControlCharacter(value)
   ) {
     return "/";
