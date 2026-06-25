@@ -53,16 +53,23 @@ describe("terminal font settings", () => {
     });
   });
 
-  it("rejects custom input with control characters or excessive length", () => {
+  it("accepts literal backslash-n in custom font input", () => {
     expect(resolveCustomTerminalFontFamilyCommit('"Bad"\\nmonospace')).toEqual({
+      ok: true,
+      fontFamily: '"Bad"\\nmonospace',
+    });
+  });
+
+  it("rejects custom input with actual control characters or excessive length", () => {
+    expect(resolveCustomTerminalFontFamilyCommit('"Bad"\nmonospace')).toEqual({
       ok: false,
-      message: "Terminal font cannot contain line breaks or control characters.",
+      message: expect.any(String),
     });
     expect(
       resolveCustomTerminalFontFamilyCommit("a".repeat(MAX_TERMINAL_FONT_FAMILY_LENGTH + 1)),
     ).toEqual({
       ok: false,
-      message: `Terminal font must be ${MAX_TERMINAL_FONT_FAMILY_LENGTH} characters or fewer.`,
+      message: expect.any(String),
     });
   });
 });

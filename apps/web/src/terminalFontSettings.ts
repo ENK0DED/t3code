@@ -1,7 +1,6 @@
-import {
-  DEFAULT_TERMINAL_FONT_FAMILY,
-  MAX_TERMINAL_FONT_FAMILY_LENGTH,
-} from "@t3tools/contracts/settings";
+import * as Schema from "effect/Schema";
+import * as SchemaIssue from "effect/SchemaIssue";
+import { DEFAULT_TERMINAL_FONT_FAMILY, TerminalFontFamily } from "@t3tools/contracts/settings";
 
 export const TERMINAL_FONT_CUSTOM_PRESET_ID = "custom" as const;
 
@@ -26,19 +25,16 @@ export type TerminalFontFamilyCommitResult =
   | { readonly ok: true; readonly fontFamily: string }
   | { readonly ok: false; readonly message: string };
 
-function containsForbiddenFontCharacters(fontFamily: string): boolean {
-  for (let index = 0; index < fontFamily.length; index++) {
-    const character = fontFamily[index];
-    if (character === "\\" && fontFamily[index + 1] === "n") {
-      return true;
-    }
+const decodeTerminalFontFamily = Schema.decodeUnknownSync(TerminalFontFamily);
 
-    const code = fontFamily.charCodeAt(index);
-    if (code < 32 || code === 127) {
-      return true;
+function formatTerminalFontFamilyError(error: unknown): string {
+  if (error instanceof Error && SchemaIssue.isIssue(error.cause)) {
+    const issue = SchemaIssue.makeFormatterStandardSchemaV1()(error.cause).issues[0];
+    if (issue !== undefined) {
+      return issue.message;
     }
   }
-  return false;
+  return "Terminal font must be a valid terminal font family.";
 }
 
 export const TERMINAL_FONT_PRESETS = [
@@ -111,17 +107,13 @@ export function resolveCustomTerminalFontFamilyCommit(
   if (fontFamily.length === 0) {
     return { ok: true, fontFamily: DEFAULT_TERMINAL_FONT_FAMILY };
   }
-  if (fontFamily.length > MAX_TERMINAL_FONT_FAMILY_LENGTH) {
+
+  try {
+    return { ok: true, fontFamily: decodeTerminalFontFamily(fontFamily) };
+  } catch (error) {
     return {
       ok: false,
-      message: `Terminal font must be ${MAX_TERMINAL_FONT_FAMILY_LENGTH} characters or fewer.`,
+      message: formatTerminalFontFamilyError(error),
     };
   }
-  if (containsForbiddenFontCharacters(fontFamily)) {
-    return {
-      ok: false,
-      message: "Terminal font cannot contain line breaks or control characters.",
-    };
-  }
-  return { ok: true, fontFamily };
 }
