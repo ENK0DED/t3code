@@ -52,7 +52,7 @@ Read tools require `orchestration.read`. Write tools require `orchestration.writ
 Add a server setting:
 
 ```ts
-mcpDisabledModelsByProvider: Record<ProviderInstanceId, string[]>
+mcpDisabledModelsByProvider: Record<ProviderInstanceId, string[]>;
 ```
 
 A model is MCP-enabled unless its slug appears in the disabled list for that provider instance. This is stored in server settings, not SQLite, because it is server-wide provider policy rather than per-project/thread state. The setting covers built-in and custom models. Newly discovered models are enabled by default because only disabled overrides are stored.
