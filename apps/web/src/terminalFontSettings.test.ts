@@ -63,13 +63,13 @@ describe("terminal font settings", () => {
   it("rejects custom input with actual control characters or excessive length", () => {
     expect(resolveCustomTerminalFontFamilyCommit('"Bad"\nmonospace')).toEqual({
       ok: false,
-      message: expect.any(String),
+      message: "Terminal font cannot contain line breaks or control characters.",
     });
     expect(
       resolveCustomTerminalFontFamilyCommit("a".repeat(MAX_TERMINAL_FONT_FAMILY_LENGTH + 1)),
     ).toEqual({
       ok: false,
-      message: expect.any(String),
+      message: `Terminal font must be ${MAX_TERMINAL_FONT_FAMILY_LENGTH} characters or fewer.`,
     });
   });
 });
