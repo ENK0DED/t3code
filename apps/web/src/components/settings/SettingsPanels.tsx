@@ -1,6 +1,6 @@
 import { ArchiveIcon, ArchiveX, LoaderIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   defaultInstanceIdForDriver,
@@ -49,6 +49,14 @@ import {
   deriveProviderInstanceEntries,
   sortProviderInstanceEntries,
 } from "../../providerInstances";
+import {
+  TERMINAL_FONT_CUSTOM_PRESET_ID,
+  TERMINAL_FONT_PRESETS,
+  resolveCustomTerminalFontFamilyCommit,
+  resolveTerminalFontFamilyForPreset,
+  resolveTerminalFontPresetId,
+  type TerminalFontPresetId,
+} from "../../terminalFontSettings";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
 import {
   primaryServerObservabilityAtom,
@@ -388,6 +396,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
+      ...(settings.terminalFontFamily !== DEFAULT_UNIFIED_SETTINGS.terminalFontFamily
+        ? ["Terminal font"]
+        : []),
       ...(settings.sidebarThreadPreviewCount !== DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount
         ? ["Visible threads"]
         : []),
@@ -435,6 +446,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
       settings.sidebarThreadPreviewCount,
+      settings.terminalFontFamily,
       settings.timestampFormat,
       settings.wordWrap,
       theme,
@@ -455,6 +467,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     updateSettings({
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
+      terminalFontFamily: DEFAULT_UNIFIED_SETTINGS.terminalFontFamily,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
@@ -512,6 +525,20 @@ export function GeneralSettingsPanel() {
     settings.textGenerationModelSelection ?? null,
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
   );
+  const terminalFontPresetIdFromSettings = resolveTerminalFontPresetId(settings.terminalFontFamily);
+  const [terminalFontPresetOverride, setTerminalFontPresetOverride] =
+    useState<TerminalFontPresetId | null>(null);
+  const previousTerminalFontFamilyRef = useRef(settings.terminalFontFamily);
+
+  useEffect(() => {
+    if (previousTerminalFontFamilyRef.current === settings.terminalFontFamily) {
+      return;
+    }
+    previousTerminalFontFamilyRef.current = settings.terminalFontFamily;
+    setTerminalFontPresetOverride(null);
+  }, [settings.terminalFontFamily]);
+
+  const terminalFontPresetId = terminalFontPresetOverride ?? terminalFontPresetIdFromSettings;
 
   return (
     <SettingsPageContainer>
@@ -548,6 +575,89 @@ export function GeneralSettingsPanel() {
             </Select>
           }
         />
+
+        <SettingsRow
+          title="Terminal font"
+          description="Choose the font used by terminal panes."
+          resetAction={
+            settings.terminalFontFamily !== DEFAULT_UNIFIED_SETTINGS.terminalFontFamily ? (
+              <SettingResetButton
+                label="terminal font"
+                onClick={() => {
+                  setTerminalFontPresetOverride(null);
+                  updateSettings({
+                    terminalFontFamily: DEFAULT_UNIFIED_SETTINGS.terminalFontFamily,
+                  });
+                }}
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={terminalFontPresetId}
+              onValueChange={(value) => {
+                const presetId = value as TerminalFontPresetId;
+                if (presetId === TERMINAL_FONT_CUSTOM_PRESET_ID) {
+                  setTerminalFontPresetOverride(TERMINAL_FONT_CUSTOM_PRESET_ID);
+                  return;
+                }
+                setTerminalFontPresetOverride(null);
+                updateSettings({
+                  terminalFontFamily: resolveTerminalFontFamilyForPreset(
+                    presetId,
+                    settings.terminalFontFamily,
+                  ),
+                });
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-44" aria-label="Terminal font preference">
+                <SelectValue>
+                  {terminalFontPresetId === TERMINAL_FONT_CUSTOM_PRESET_ID
+                    ? "Custom"
+                    : (TERMINAL_FONT_PRESETS.find((preset) => preset.id === terminalFontPresetId)
+                        ?.label ?? "Default")}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {TERMINAL_FONT_PRESETS.map((preset) => (
+                  <SelectItem hideIndicator key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </SelectItem>
+                ))}
+                <SelectItem hideIndicator value={TERMINAL_FONT_CUSTOM_PRESET_ID}>
+                  Custom
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        >
+          {terminalFontPresetId === TERMINAL_FONT_CUSTOM_PRESET_ID ? (
+            <div className="mt-3 pb-3">
+              <DraftInput
+                className="w-full font-mono text-xs"
+                value={settings.terminalFontFamily}
+                onCommit={(next) => {
+                  const result = resolveCustomTerminalFontFamilyCommit(next);
+                  if (!result.ok) {
+                    toastManager.add(
+                      stackedThreadToast({
+                        type: "error",
+                        title: "Could not update terminal font",
+                        description: result.message,
+                      }),
+                    );
+                    return;
+                  }
+                  setTerminalFontPresetOverride(null);
+                  updateSettings({ terminalFontFamily: result.fontFamily });
+                }}
+                placeholder={DEFAULT_UNIFIED_SETTINGS.terminalFontFamily}
+                spellCheck={false}
+                aria-label="Custom terminal font"
+              />
+            </div>
+          ) : null}
+        </SettingsRow>
 
         <SettingsRow
           title="Time format"
