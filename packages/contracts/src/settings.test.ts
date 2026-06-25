@@ -94,6 +94,39 @@ describe("ServerSettingsPatch.providerInstances", () => {
   });
 });
 
+describe("ServerSettings.mcpDisabledModelsByProvider", () => {
+  it("defaults to an empty disabled-model map", () => {
+    const decoded = decodeServerSettings({});
+    expect(decoded.mcpDisabledModelsByProvider).toEqual({});
+  });
+
+  it("decodes disabled model slugs by provider instance id", () => {
+    const decoded = decodeServerSettings({
+      mcpDisabledModelsByProvider: {
+        codex: ["gpt-5.5"],
+        codex_work: ["company/private-model"],
+      },
+    });
+    const codexId = ProviderInstanceId.make("codex");
+    const codexWorkId = ProviderInstanceId.make("codex_work");
+
+    expect(decoded.mcpDisabledModelsByProvider[codexId]).toEqual(["gpt-5.5"]);
+    expect(decoded.mcpDisabledModelsByProvider[codexWorkId]).toEqual(["company/private-model"]);
+  });
+
+  it("accepts whole-map replacement in server settings patches", () => {
+    const patch = decodeServerSettingsPatch({
+      mcpDisabledModelsByProvider: {
+        claudeAgent: ["claude-opus-4-6"],
+      },
+    });
+
+    expect(patch.mcpDisabledModelsByProvider).toEqual({
+      claudeAgent: ["claude-opus-4-6"],
+    });
+  });
+});
+
 describe("ServerSettingsPatch string normalization", () => {
   it("trims string settings while decoding patches", () => {
     const patch = decodeServerSettingsPatch({
