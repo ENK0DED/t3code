@@ -30,25 +30,16 @@ export type TerminalFontFamilyCommitResult =
 
 const decodeTerminalFontFamily = Schema.decodeUnknownSync(TerminalFontFamily);
 
-function getTerminalFontFamilyErrorMessage(error: unknown): string | undefined {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === "string") {
-      return message;
-    }
-  }
-  return undefined;
+function hasControlCharacter(value: string): boolean {
+  return value.split("").some((char) => char.charCodeAt(0) <= 0x1f || char.charCodeAt(0) === 0x7f);
 }
 
-function formatTerminalFontFamilyError(error: unknown): string {
-  const message = getTerminalFontFamilyErrorMessage(error);
-  if (message !== undefined) {
-    if (message.includes("control characters")) {
-      return "Terminal font cannot contain line breaks or control characters.";
-    }
-    if (message.includes(`length of at most ${MAX_TERMINAL_FONT_FAMILY_LENGTH}`)) {
-      return `Terminal font must be ${MAX_TERMINAL_FONT_FAMILY_LENGTH} characters or fewer.`;
-    }
+function formatTerminalFontFamilyError(fontFamily: string): string {
+  if (hasControlCharacter(fontFamily)) {
+    return "Terminal font cannot contain line breaks or control characters.";
+  }
+  if (fontFamily.length > MAX_TERMINAL_FONT_FAMILY_LENGTH) {
+    return `Terminal font must be ${MAX_TERMINAL_FONT_FAMILY_LENGTH} characters or fewer.`;
   }
   return "Terminal font must be a valid terminal font family.";
 }
@@ -126,10 +117,10 @@ export function resolveCustomTerminalFontFamilyCommit(
 
   try {
     return { ok: true, fontFamily: decodeTerminalFontFamily(fontFamily) };
-  } catch (error) {
+  } catch {
     return {
       ok: false,
-      message: formatTerminalFontFamilyError(error),
+      message: formatTerminalFontFamilyError(fontFamily),
     };
   }
 }
