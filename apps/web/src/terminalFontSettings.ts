@@ -1,6 +1,9 @@
 import * as Schema from "effect/Schema";
-import * as SchemaIssue from "effect/SchemaIssue";
-import { DEFAULT_TERMINAL_FONT_FAMILY, TerminalFontFamily } from "@t3tools/contracts/settings";
+import {
+  DEFAULT_TERMINAL_FONT_FAMILY,
+  MAX_TERMINAL_FONT_FAMILY_LENGTH,
+  TerminalFontFamily,
+} from "@t3tools/contracts/settings";
 
 export const TERMINAL_FONT_CUSTOM_PRESET_ID = "custom" as const;
 
@@ -27,11 +30,24 @@ export type TerminalFontFamilyCommitResult =
 
 const decodeTerminalFontFamily = Schema.decodeUnknownSync(TerminalFontFamily);
 
+function getTerminalFontFamilyErrorMessage(error: unknown): string | undefined {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") {
+      return message;
+    }
+  }
+  return undefined;
+}
+
 function formatTerminalFontFamilyError(error: unknown): string {
-  if (error instanceof Error && SchemaIssue.isIssue(error.cause)) {
-    const issue = SchemaIssue.makeFormatterStandardSchemaV1()(error.cause).issues[0];
-    if (issue !== undefined) {
-      return issue.message;
+  const message = getTerminalFontFamilyErrorMessage(error);
+  if (message !== undefined) {
+    if (message.includes("control characters")) {
+      return "Terminal font cannot contain line breaks or control characters.";
+    }
+    if (message.includes(`length of at most ${MAX_TERMINAL_FONT_FAMILY_LENGTH}`)) {
+      return `Terminal font must be ${MAX_TERMINAL_FONT_FAMILY_LENGTH} characters or fewer.`;
     }
   }
   return "Terminal font must be a valid terminal font family.";
