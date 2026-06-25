@@ -26,7 +26,20 @@ export type TerminalFontFamilyCommitResult =
   | { readonly ok: true; readonly fontFamily: string }
   | { readonly ok: false; readonly message: string };
 
-const TERMINAL_FONT_CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F]|\\n/;
+function containsForbiddenFontCharacters(fontFamily: string): boolean {
+  for (let index = 0; index < fontFamily.length; index++) {
+    const character = fontFamily[index];
+    if (character === "\\" && fontFamily[index + 1] === "n") {
+      return true;
+    }
+
+    const code = fontFamily.charCodeAt(index);
+    if (code < 32 || code === 127) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export const TERMINAL_FONT_PRESETS = [
   {
@@ -104,7 +117,7 @@ export function resolveCustomTerminalFontFamilyCommit(
       message: `Terminal font must be ${MAX_TERMINAL_FONT_FAMILY_LENGTH} characters or fewer.`,
     };
   }
-  if (TERMINAL_FONT_CONTROL_CHARACTER_PATTERN.test(fontFamily)) {
+  if (containsForbiddenFontCharacters(fontFamily)) {
     return {
       ok: false,
       message: "Terminal font cannot contain line breaks or control characters.",
