@@ -82,7 +82,7 @@ The row uses the existing settings reset button pattern when
 On terminal mount, xterm receives:
 
 ```ts
-fontFamily: terminalFontFamily
+fontFamily: terminalFontFamily;
 ```
 
 Font changes must not be added to the main terminal mount effect dependency list.

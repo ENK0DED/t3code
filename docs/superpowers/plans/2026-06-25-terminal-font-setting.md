@@ -35,10 +35,12 @@
 ### Task 1: Client Settings Schema
 
 **Files:**
+
 - Modify: `packages/contracts/src/settings.ts`
 - Test: `packages/contracts/src/settings.test.ts`
 
 **Interfaces:**
+
 - Produces: `DEFAULT_TERMINAL_FONT_FAMILY: string`
 - Produces: `MAX_TERMINAL_FONT_FAMILY_LENGTH: number`
 - Produces: `TerminalFontFamily` schema and type
@@ -92,9 +94,7 @@ describe("ClientSettings terminalFontFamily", () => {
 
   it("rejects blank, control-character, and overlong terminal font values", () => {
     expect(() => decodeClientSettings({ terminalFontFamily: "   " })).toThrow();
-    expect(() =>
-      decodeClientSettings({ terminalFontFamily: '"Bad Font"\\nmonospace' }),
-    ).toThrow();
+    expect(() => decodeClientSettings({ terminalFontFamily: '"Bad Font"\\nmonospace' })).toThrow();
     expect(() =>
       decodeClientSettings({
         terminalFontFamily: "a".repeat(MAX_TERMINAL_FONT_FAMILY_LENGTH + 1),
@@ -164,10 +164,12 @@ git commit -m "feat: add terminal font client setting"
 ### Task 2: Terminal Font Preset Helpers
 
 **Files:**
+
 - Create: `apps/web/src/terminalFontSettings.ts`
 - Test: `apps/web/src/terminalFontSettings.test.ts`
 
 **Interfaces:**
+
 - Consumes: `DEFAULT_TERMINAL_FONT_FAMILY`, `MAX_TERMINAL_FONT_FAMILY_LENGTH`
 - Produces: `TERMINAL_FONT_CUSTOM_PRESET_ID`
 - Produces: `TERMINAL_FONT_PRESETS`
@@ -240,11 +242,12 @@ describe("terminal font settings", () => {
       ok: false,
       message: "Terminal font cannot contain line breaks or control characters.",
     });
-    expect(resolveCustomTerminalFontFamilyCommit("a".repeat(MAX_TERMINAL_FONT_FAMILY_LENGTH + 1)))
-      .toEqual({
-        ok: false,
-        message: `Terminal font must be ${MAX_TERMINAL_FONT_FAMILY_LENGTH} characters or fewer.`,
-      });
+    expect(
+      resolveCustomTerminalFontFamilyCommit("a".repeat(MAX_TERMINAL_FONT_FAMILY_LENGTH + 1)),
+    ).toEqual({
+      ok: false,
+      message: `Terminal font must be ${MAX_TERMINAL_FONT_FAMILY_LENGTH} characters or fewer.`,
+    });
   });
 });
 ```
@@ -394,10 +397,12 @@ git commit -m "feat: add terminal font preset helpers"
 ### Task 3: General Settings UI
 
 **Files:**
+
 - Modify: `apps/web/src/components/settings/SettingsPanels.tsx`
 - Modify: `apps/web/src/components/settings/SettingsPanels.browser.tsx`
 
 **Interfaces:**
+
 - Consumes: helpers from `apps/web/src/terminalFontSettings.ts`
 - Consumes: `settings.terminalFontFamily`
 - Produces: `Terminal font` row directly after `Theme`
@@ -535,8 +540,8 @@ Then insert this row immediately after the existing `Theme` row:
         <SelectValue>
           {terminalFontPresetId === TERMINAL_FONT_CUSTOM_PRESET_ID
             ? "Custom"
-            : TERMINAL_FONT_PRESETS.find((preset) => preset.id === terminalFontPresetId)?.label ??
-              "Default"}
+            : (TERMINAL_FONT_PRESETS.find((preset) => preset.id === terminalFontPresetId)?.label ??
+              "Default")}
         </SelectValue>
       </SelectTrigger>
       <SelectPopup align="end" alignItemWithTrigger={false}>
@@ -604,10 +609,12 @@ git commit -m "feat: add terminal font setting UI"
 ### Task 4: Terminal Runtime Application
 
 **Files:**
+
 - Modify: `apps/web/src/components/ThreadTerminalDrawer.tsx`
 - Modify: `apps/web/src/components/ThreadTerminalDrawer.browser.tsx`
 
 **Interfaces:**
+
 - Consumes: `settings.terminalFontFamily`
 - Produces: live xterm font updates without terminal disposal or reattach
 
@@ -803,10 +810,12 @@ git commit -m "feat: apply terminal font setting to xterm"
 ### Task 5: Final Verification
 
 **Files:**
+
 - No new implementation files.
 - Verify all files changed by Tasks 1-4.
 
 **Interfaces:**
+
 - Consumes: all task outputs.
 - Produces: verified branch state.
 
