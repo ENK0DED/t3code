@@ -44,9 +44,7 @@ export const DEFAULT_TERMINAL_FONT_FAMILY =
 export const MAX_TERMINAL_FONT_FAMILY_LENGTH = 240;
 
 const hasTerminalFontControlCharacter = (value: string): boolean => {
-  return value
-    .split("")
-    .some((char) => char.charCodeAt(0) <= 0x1f || char.charCodeAt(0) === 0x7f);
+  return value.split("").some((char) => char.charCodeAt(0) <= 0x1f || char.charCodeAt(0) === 0x7f);
 };
 
 export const TerminalFontFamily = TrimmedNonEmptyString.pipe(
