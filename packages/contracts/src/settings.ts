@@ -43,12 +43,16 @@ export const DEFAULT_TERMINAL_FONT_FAMILY =
   '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace';
 export const MAX_TERMINAL_FONT_FAMILY_LENGTH = 240;
 
-const TERMINAL_FONT_CONTROL_CHARACTER_PATTERN = /[\u0000-\u001F\u007F]/;
+const hasTerminalFontControlCharacter = (value: string): boolean => {
+  return value
+    .split("")
+    .some((char) => char.charCodeAt(0) <= 0x1f || char.charCodeAt(0) === 0x7f);
+};
 
 export const TerminalFontFamily = TrimmedNonEmptyString.pipe(
   Schema.check(Schema.isMaxLength(MAX_TERMINAL_FONT_FAMILY_LENGTH)),
   Schema.check(
-    Schema.makeFilter((value) => !TERMINAL_FONT_CONTROL_CHARACTER_PATTERN.test(value), {
+    Schema.makeFilter((value) => !hasTerminalFontControlCharacter(value), {
       expected: "font family without control characters",
     }),
   ),
