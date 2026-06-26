@@ -18,6 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -41,6 +42,8 @@ const defaultModelSelection = (overrides?: Partial<ModelSelection>): ModelSelect
   model: "gpt-5.5",
   ...overrides,
 });
+
+const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 const makeProjectShell = (
   input: Partial<OrchestrationProjectShell> & Pick<OrchestrationProjectShell, "id">,
@@ -492,6 +495,51 @@ it.effect("addProject returns already_exists for an existing normalized path", (
   })(),
 );
 
+it.effect("addProject sanitizes duplicate project responses and hides action commands", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.addProject({ path: "/work/current" });
+
+      expect(result).toEqual({
+        status: "already_exists",
+        project: {
+          id: "project-current",
+          title: "Current Project",
+          workspaceRoot: "/work/current",
+        },
+      });
+      const encoded = encodeUnknownJsonString(result);
+      expect(encoded).not.toContain("command");
+      expect(encoded).not.toContain("bun test");
+      expect(dispatchedCommands).toHaveLength(0);
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          projects: [
+            makeProjectShell({
+              id: ProjectId.make("project-current"),
+              title: "Current Project",
+              workspaceRoot: "/work/current",
+              scripts: [
+                {
+                  id: "test",
+                  name: "Test",
+                  command: "bun test",
+                  icon: "test",
+                  runOnWorktreeCreate: false,
+                },
+              ],
+            }),
+          ],
+          dispatchedCommands,
+        }),
+      ),
+    );
+  })(),
+);
+
 it.effect("updateProjectSettings dispatches project metadata updates", () =>
   (() => {
     const dispatchedCommands: Array<OrchestrationCommand> = [];
@@ -627,6 +675,50 @@ it.effect("createProjectAction appends a sanitized action and hides command", ()
   })(),
 );
 
+it.effect("createProjectAction trims stored name and command", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.createProjectAction({
+        projectId: ProjectId.make("project-current"),
+        name: "  Test  ",
+        command: "  bun test  ",
+        icon: "test",
+      });
+
+      expect(result.createdAction).toEqual({
+        id: "test",
+        name: "Test",
+        icon: "test",
+        runOnWorktreeCreate: false,
+      });
+      expect(dispatchedCommands).toContainEqual(
+        expect.objectContaining({
+          type: "project.meta.update",
+          projectId: ProjectId.make("project-current"),
+          scripts: [
+            {
+              id: "test",
+              name: "Test",
+              command: "bun test",
+              icon: "test",
+              runOnWorktreeCreate: false,
+            },
+          ],
+        }),
+      );
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          projects: [makeProjectShell({ id: ProjectId.make("project-current"), scripts: [] })],
+        }),
+      ),
+    );
+  })(),
+);
+
 it.effect("updateProjectAction preserves hidden command when command is omitted", () =>
   (() => {
     const dispatchedCommands: Array<OrchestrationCommand> = [];
@@ -661,6 +753,63 @@ it.effect("updateProjectAction preserves hidden command when command is omitted"
       for (const action of result.actionsAfterChange) {
         expect(action).not.toHaveProperty("command");
       }
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          projects: [
+            makeProjectShell({
+              id: ProjectId.make("project-current"),
+              scripts: [
+                {
+                  id: "test",
+                  name: "Test",
+                  command: "bun test",
+                  icon: "test",
+                  runOnWorktreeCreate: false,
+                },
+              ],
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("updateProjectAction trims provided name and command", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.updateProjectAction({
+        projectId: ProjectId.make("project-current"),
+        actionId: "test",
+        name: "  Unit tests  ",
+        command: "  bun test --run  ",
+      });
+
+      expect(result.updatedAction).toEqual({
+        id: "test",
+        name: "Unit tests",
+        icon: "test",
+        runOnWorktreeCreate: false,
+      });
+      expect(dispatchedCommands).toContainEqual(
+        expect.objectContaining({
+          type: "project.meta.update",
+          projectId: ProjectId.make("project-current"),
+          scripts: [
+            {
+              id: "test",
+              name: "Unit tests",
+              command: "bun test --run",
+              icon: "test",
+              runOnWorktreeCreate: false,
+            },
+          ],
+        }),
+      );
     }).pipe(
       Effect.provide(
         makeWriteHarnessLayer({
@@ -900,6 +1049,132 @@ it.effect("createProjectAction rejects auto-open preview without preview URL", (
     Effect.provide(
       makeWriteHarnessLayer({
         projects: [makeProjectShell({ id: ProjectId.make("project-current"), scripts: [] })],
+      }),
+    ),
+  ),
+);
+
+it.effect("createProjectAction rejects whitespace-only names", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.createProjectAction({
+        projectId: ProjectId.make("project-current"),
+        name: "   ",
+        command: "bun test",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("project_action_invalid_name");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        projects: [makeProjectShell({ id: ProjectId.make("project-current"), scripts: [] })],
+      }),
+    ),
+  ),
+);
+
+it.effect("createProjectAction rejects whitespace-only commands", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.createProjectAction({
+        projectId: ProjectId.make("project-current"),
+        name: "Test",
+        command: "   ",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("project_action_invalid_command");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        projects: [makeProjectShell({ id: ProjectId.make("project-current"), scripts: [] })],
+      }),
+    ),
+  ),
+);
+
+it.effect("updateProjectAction rejects whitespace-only names", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.updateProjectAction({
+        projectId: ProjectId.make("project-current"),
+        actionId: "test",
+        name: "   ",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("project_action_invalid_name");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        projects: [
+          makeProjectShell({
+            id: ProjectId.make("project-current"),
+            scripts: [
+              {
+                id: "test",
+                name: "Test",
+                command: "bun test",
+                icon: "test",
+                runOnWorktreeCreate: false,
+              },
+            ],
+          }),
+        ],
+      }),
+    ),
+  ),
+);
+
+it.effect("updateProjectAction rejects whitespace-only commands", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.updateProjectAction({
+        projectId: ProjectId.make("project-current"),
+        actionId: "test",
+        command: "   ",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("project_action_invalid_command");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        projects: [
+          makeProjectShell({
+            id: ProjectId.make("project-current"),
+            scripts: [
+              {
+                id: "test",
+                name: "Test",
+                command: "bun test",
+                icon: "test",
+                runOnWorktreeCreate: false,
+              },
+            ],
+          }),
+        ],
       }),
     ),
   ),
@@ -1370,22 +1645,34 @@ it.effect("createThread rejects baseBranch when no first message prepares a work
   }).pipe(Effect.provide(makeWriteHarnessLayer({}))),
 );
 
-it.effect("createThread rejects branch when no first message prepares a worktree", () =>
-  Effect.gen(function* () {
-    const service = yield* McpOrchestrationService;
-    const exit = yield* Effect.exit(
-      service.createThread({
+it.effect("createThread stores branch metadata on empty new_worktree threads", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.createThread({
+        title: "Metadata-only thread",
         checkoutMode: "new_worktree",
         branch: "feature/mcp",
-      }),
-    );
+      });
 
-    expect(Exit.isFailure(exit)).toBe(true);
-    if (Exit.isFailure(exit)) {
-      const error = Cause.squash(exit.cause) as { readonly code: string };
-      expect(error.code).toBe("branch_without_first_turn_worktree");
-    }
-  }).pipe(Effect.provide(makeWriteHarnessLayer({}))),
+      expect(result).toMatchObject({
+        status: "created",
+        thread: {
+          branch: "feature/mcp",
+          worktreePath: null,
+        },
+      });
+      expect(dispatchedCommands).toContainEqual(
+        expect.objectContaining({
+          type: "thread.create",
+          title: "Metadata-only thread",
+          branch: "feature/mcp",
+          worktreePath: null,
+        }),
+      );
+    }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
+  })(),
 );
 
 it.effect("createThread rejects branch without explicit new_worktree checkout mode", () =>
@@ -1548,6 +1835,39 @@ it.effect("sendThreadMessage rejects checkout bootstrap fields on non-empty thre
 );
 
 it.effect(
+  "sendThreadMessage rejects checkout bootstrap fields once a thread already has a worktree path",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const exit = yield* Effect.exit(
+        service.sendThreadMessage({
+          threadId: ThreadId.make("thread-current"),
+          message: "hello",
+          checkoutMode: "new_worktree",
+          baseBranch: "main",
+        } as never),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause) as { readonly code: string };
+        expect(error.code).toBe("checkout_bootstrap_not_allowed");
+      }
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              worktreePath: "/work/current/.worktrees/existing",
+            }),
+          ],
+        }),
+      ),
+    ),
+);
+
+it.effect(
   "sendThreadMessage dispatches thread.turn.start and returns messageId plus sequence",
   () =>
     (() => {
@@ -1674,6 +1994,43 @@ it.effect("updateThreadSettings rejects current checkout with non-null worktreeP
   ),
 );
 
+it.effect(
+  "updateThreadSettings allows empty threads to switch to new_worktree without a worktree path",
+  () =>
+    (() => {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      return Effect.gen(function* () {
+        const service = yield* McpOrchestrationService;
+        const result = yield* service.updateThreadSettings({
+          threadId: ThreadId.make("thread-current"),
+          checkoutMode: "new_worktree",
+          branch: "feature/mcp",
+        });
+
+        expect(result).toEqual({
+          status: "updated",
+          threadId: ThreadId.make("thread-current"),
+          sequence: 1,
+        });
+        expect(dispatchedCommands).toContainEqual(
+          expect.objectContaining({
+            type: "thread.meta.update",
+            threadId: ThreadId.make("thread-current"),
+            branch: "feature/mcp",
+            worktreePath: null,
+          }),
+        );
+      }).pipe(
+        Effect.provide(
+          makeWriteHarnessLayer({
+            dispatchedCommands,
+            threadDetails: [threadDetail({ id: ThreadId.make("thread-current"), messages: [] })],
+          }),
+        ),
+      );
+    })(),
+);
+
 it.effect("updateThreadSettings rejects non-empty new_worktree mode without a worktree path", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
@@ -1681,6 +2038,7 @@ it.effect("updateThreadSettings rejects non-empty new_worktree mode without a wo
       service.updateThreadSettings({
         threadId: ThreadId.make("thread-current"),
         checkoutMode: "new_worktree",
+        branch: "feature/mcp",
       }),
     );
 
@@ -1692,7 +2050,23 @@ it.effect("updateThreadSettings rejects non-empty new_worktree mode without a wo
   }).pipe(
     Effect.provide(
       makeWriteHarnessLayer({
-        threadDetails: [threadDetail({ id: ThreadId.make("thread-current") })],
+        threadDetails: [
+          threadDetail({
+            id: ThreadId.make("thread-current"),
+            messages: [
+              {
+                id: "message-1" as never,
+                role: "user",
+                text: "existing",
+                attachments: [],
+                turnId: null,
+                streaming: false,
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              },
+            ],
+          }),
+        ],
       }),
     ),
   ),

@@ -304,6 +304,34 @@ function validateProjectActionPreview(input: {
   return Effect.void;
 }
 
+function trimProjectActionName(name: string): Effect.Effect<string, McpOrchestrationError> {
+  const trimmed = name.trim();
+  if (trimmed.length > 0) {
+    return Effect.succeed(trimmed);
+  }
+
+  return Effect.fail(
+    new McpOrchestrationError({
+      code: "project_action_invalid_name",
+      message: "Project Action name must be non-empty after trimming.",
+    }),
+  );
+}
+
+function trimProjectActionCommand(command: string): Effect.Effect<string, McpOrchestrationError> {
+  const trimmed = command.trim();
+  if (trimmed.length > 0) {
+    return Effect.succeed(trimmed);
+  }
+
+  return Effect.fail(
+    new McpOrchestrationError({
+      code: "project_action_invalid_command",
+      message: "Project Action command must be non-empty after trimming.",
+    }),
+  );
+}
+
 function searchTerms(query: string | undefined): ReadonlyArray<string> {
   const normalized = normalizeSearchQuery(query ?? "");
   if (!normalized) {
@@ -530,12 +558,6 @@ export const McpOrchestrationServiceLive = Layer.effect(
             message: "baseBranch is only valid when a first message prepares a new worktree.",
           });
         }
-        if (!hasMessage && input.branch !== undefined) {
-          return yield* new McpOrchestrationError({
-            code: "branch_without_first_turn_worktree",
-            message: "branch is only valid when a first message prepares a new worktree.",
-          });
-        }
         if (hasMessage && input.checkoutMode === "new_worktree" && !input.baseBranch) {
           return yield* new McpOrchestrationError({
             code: "missing_base_branch",
@@ -574,7 +596,10 @@ export const McpOrchestrationServiceLive = Layer.effect(
           input.branch !== undefined ||
           input.baseBranch !== undefined ||
           input.worktreePath !== undefined;
-        if (input.thread.messages.length > 0 && hasBootstrapFields) {
+        if (
+          hasBootstrapFields &&
+          (input.thread.messages.length > 0 || input.thread.worktreePath !== null)
+        ) {
           return yield* new McpOrchestrationError({
             code: "checkout_bootstrap_not_allowed",
             message:
@@ -1055,11 +1080,13 @@ export const McpOrchestrationServiceLive = Layer.effect(
         Effect.gen(function* () {
           yield* requireWrite();
           const project = yield* requireProject(input.projectId);
+          const name = yield* trimProjectActionName(input.name);
+          const command = yield* trimProjectActionCommand(input.command);
           yield* validateProjectActionPreview(input);
 
           const nextScript = createProjectScript({
-            name: input.name,
-            command: input.command,
+            name,
+            command,
             existingIds: project.scripts.map((script) => script.id),
             icon: input.icon,
             runOnWorktreeCreate: input.runOnWorktreeCreate,
@@ -1134,10 +1161,16 @@ export const McpOrchestrationServiceLive = Layer.effect(
             autoOpenPreview: _currentAutoOpenPreview,
             ...currentScriptBase
           } = currentScript;
+          const nextName =
+            input.name === undefined ? undefined : yield* trimProjectActionName(input.name);
+          const nextCommand =
+            input.command === undefined
+              ? undefined
+              : yield* trimProjectActionCommand(input.command);
           const nextScript: ProjectScript = {
             ...currentScriptBase,
-            ...(input.name !== undefined ? { name: input.name } : {}),
-            command: input.command ?? currentScript.command,
+            ...(nextName !== undefined ? { name: nextName } : {}),
+            command: nextCommand ?? currentScript.command,
             icon: input.icon ?? currentScript.icon,
             runOnWorktreeCreate: input.runOnWorktreeCreate ?? currentScript.runOnWorktreeCreate,
             ...(nextPreviewUrl ? { previewUrl: nextPreviewUrl } : {}),
@@ -1417,7 +1450,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           if (existing !== null) {
             return {
               status: "already_exists" as const,
-              project: existing,
+              project: sanitizeProjectSelector(existing),
             };
           }
 
@@ -1439,16 +1472,11 @@ export const McpOrchestrationServiceLive = Layer.effect(
 
           return {
             status: "created" as const,
-            project: {
+            project: sanitizeProjectSelector({
               id: projectId,
               title: createCommand.title,
               workspaceRoot: createCommand.workspaceRoot,
-              repositoryIdentity: null,
-              defaultModelSelection: createCommand.defaultModelSelection,
-              scripts: [],
-              createdAt,
-              updatedAt: createdAt,
-            },
+            }),
             sequence: accepted.sequence,
           };
         }),
@@ -1801,7 +1829,11 @@ export const McpOrchestrationServiceLive = Layer.effect(
                 "current_checkout rejects non-null branch and worktreePath values because it clears checkout metadata.",
             });
           }
-          if (desiredCheckoutMode === "new_worktree" && desiredWorktreePath === null) {
+          if (
+            desiredCheckoutMode === "new_worktree" &&
+            desiredWorktreePath === null &&
+            thread.messages.length > 0
+          ) {
             return yield* new McpOrchestrationError({
               code: "missing_worktree_path",
               message: "new_worktree thread settings require a resulting worktreePath.",
