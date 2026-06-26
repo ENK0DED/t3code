@@ -1002,6 +1002,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
 
           const desiredRuntimeMode = input.runtimeMode ?? currentThread.runtimeMode;
           const desiredInteractionMode = input.interactionMode ?? currentThread.interactionMode;
+          const isSameProjectTarget = targetProjectId === currentThread.projectId;
           const hasExplicitCheckoutMetadata =
             (input.branch ?? undefined) !== undefined ||
             (input.worktreePath ?? undefined) !== undefined;
@@ -1009,7 +1010,8 @@ export const McpOrchestrationServiceLive = Layer.effect(
             input.checkoutMode ??
             (hasExplicitCheckoutMetadata
               ? "new_worktree"
-              : currentThread.branch !== null || currentThread.worktreePath !== null
+              : isSameProjectTarget &&
+                  (currentThread.branch !== null || currentThread.worktreePath !== null)
                 ? "new_worktree"
                 : "current_checkout");
           const shouldPrepareWorktree =
@@ -1017,11 +1019,13 @@ export const McpOrchestrationServiceLive = Layer.effect(
           const desiredBranch =
             desiredCheckoutMode === "current_checkout"
               ? null
-              : (input.branch ?? currentThread.branch ?? null);
+              : (input.branch ?? (isSameProjectTarget ? currentThread.branch : null) ?? null);
           const desiredWorktreePath =
             desiredCheckoutMode === "current_checkout"
               ? null
-              : (input.worktreePath ?? currentThread.worktreePath ?? null);
+              : (input.worktreePath ??
+                (isSameProjectTarget ? currentThread.worktreePath : null) ??
+                null);
           const title = sanitizeThreadTitle(input.title ?? input.message ?? "New thread");
           const createdAt = yield* currentIsoTimestamp();
           const threadId = makeThreadId();

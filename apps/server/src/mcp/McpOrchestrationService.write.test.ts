@@ -612,6 +612,81 @@ it.effect(
 );
 
 it.effect(
+  "createThread in another project does not inherit the source thread checkout metadata",
+  () =>
+    (() => {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      const createWorktreeCalls: Array<{
+        readonly cwd: string;
+        readonly refName: string;
+        readonly newRefName?: string | undefined;
+        readonly path: string | null;
+      }> = [];
+      const setupRunCalls: Array<{
+        readonly threadId: string;
+        readonly projectId?: string;
+        readonly projectCwd?: string;
+        readonly worktreePath: string;
+      }> = [];
+      return Effect.gen(function* () {
+        const service = yield* McpOrchestrationService;
+        const result = (yield* service.createThread({
+          projectId: ProjectId.make("project-other"),
+          title: "Cross-project follow-up",
+          message: "Start this in the other project",
+        })) as { readonly threadId: ThreadId };
+
+        expect(result).toMatchObject({
+          status: "accepted",
+          threadId: expect.any(String),
+          messageId: expect.any(String),
+          sequence: 2,
+        });
+        expect(dispatchedCommands.map((command) => command.type)).toEqual([
+          "thread.create",
+          "thread.turn.start",
+        ]);
+        expect(dispatchedCommands[0]).toMatchObject({
+          type: "thread.create",
+          parentThreadId: null,
+          projectId: "project-other",
+          title: "Cross-project follow-up",
+          branch: null,
+          worktreePath: null,
+        });
+        expect(dispatchedCommands[1]).toMatchObject({
+          type: "thread.turn.start",
+          threadId: result.threadId,
+          message: {
+            role: "user",
+            text: "Start this in the other project",
+            attachments: [],
+          },
+        });
+        expect(createWorktreeCalls).toEqual([]);
+        expect(setupRunCalls).toEqual([]);
+      }).pipe(
+        Effect.provide(
+          makeWriteHarnessLayer({
+            dispatchedCommands,
+            createWorktreeCalls,
+            setupRunCalls,
+            threadDetails: [
+              threadDetail({
+                id: ThreadId.make("thread-current"),
+                projectId: ProjectId.make("project-current"),
+                title: "Current Thread",
+                branch: "feature/current",
+                worktreePath: "/work/current/.worktrees/current",
+              }),
+            ],
+          }),
+        ),
+      );
+    })(),
+);
+
+it.effect(
   "createThread with a new worktree prepares checkout and setup before starting the turn",
   () =>
     (() => {
