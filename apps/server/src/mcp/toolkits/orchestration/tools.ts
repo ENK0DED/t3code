@@ -1,4 +1,9 @@
-import { ModelSelection, ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
+import {
+  ModelSelection,
+  ProjectScriptIcon,
+  ProviderInteractionMode,
+  RuntimeMode,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
 
@@ -27,6 +32,10 @@ const OptionalProjectIdInput = Schema.optional(ProjectIdInput).annotate({
 
 const OptionalCurrentProjectIdInput = Schema.optional(ProjectIdInput).annotate({
   description: "Project id. Omit to use the current MCP credential thread's project.",
+});
+
+const ProjectActionIconInput = ProjectScriptIcon.annotate({
+  description: "Action icon. Use one of: play, test, lint, configure, build, or debug.",
 });
 
 const ThreadIdInput = Schema.String.annotate({
@@ -261,6 +270,99 @@ export const UpdateProjectSettingsTool = Tool.make("update_project_settings", {
   dependencies,
 });
 
+export const ListProjectActionsTool = Tool.make("list_project_actions", {
+  description:
+    "Return project Actions for a project. Commands are intentionally omitted from the response. Omit projectId to inspect the current MCP thread's project.",
+  success: Schema.Unknown,
+  failure: McpOrchestrationError,
+  parameters: Schema.Struct({
+    projectId: OptionalCurrentProjectIdInput,
+  }),
+  dependencies,
+});
+
+export const CreateProjectActionTool = Tool.make("create_project_action", {
+  description:
+    "Create a project Action. Requires explicit projectId. The stored command is accepted as input but intentionally not returned by MCP responses.",
+  success: Schema.Unknown,
+  failure: McpOrchestrationError,
+  parameters: Schema.Struct({
+    projectId: ProjectIdInput,
+    name: Schema.String.annotate({
+      description: "Human-readable Action name shown in the UI.",
+    }),
+    command: Schema.String.annotate({
+      description: "Shell command to store for this Action.",
+    }),
+    icon: Schema.optional(ProjectActionIconInput).annotate({
+      description: "Optional Action icon shown in the UI.",
+    }),
+    runOnWorktreeCreate: Schema.optional(Schema.Boolean).annotate({
+      description: "Whether this Action should run automatically when a worktree is created.",
+    }),
+    previewUrl: Schema.optional(Schema.String).annotate({
+      description: "Optional preview URL associated with this Action.",
+    }),
+    autoOpenPreview: Schema.optional(Schema.Boolean).annotate({
+      description:
+        "Whether the preview should auto-open when the Action runs. Requires previewUrl.",
+    }),
+  }),
+  dependencies,
+});
+
+export const UpdateProjectActionTool = Tool.make("update_project_action", {
+  description:
+    "Update a project Action. Requires explicit projectId and actionId. Commands remain hidden from MCP responses.",
+  success: Schema.Unknown,
+  failure: McpOrchestrationError,
+  parameters: Schema.Struct({
+    projectId: ProjectIdInput,
+    actionId: Schema.String.annotate({
+      description: "Action id returned by list_project_actions.",
+    }),
+    name: Schema.optional(Schema.String).annotate({
+      description: "Updated human-readable Action name.",
+    }),
+    command: Schema.optional(Schema.String).annotate({
+      description: "Updated shell command to store for this Action.",
+    }),
+    icon: Schema.optional(ProjectActionIconInput).annotate({
+      description: "Updated Action icon shown in the UI.",
+    }),
+    runOnWorktreeCreate: Schema.optional(Schema.Boolean).annotate({
+      description: "Updated worktree-create auto-run flag.",
+    }),
+    previewUrl: Schema.optional(
+      Schema.NullOr(
+        Schema.String.annotate({
+          description: "Updated preview URL. Use null to clear it.",
+        }),
+      ),
+    ).annotate({
+      description: "Updated preview URL. Use null to clear it.",
+    }),
+    autoOpenPreview: Schema.optional(Schema.Boolean).annotate({
+      description: "Updated preview auto-open flag. Requires a resulting previewUrl.",
+    }),
+  }),
+  dependencies,
+});
+
+export const DeleteProjectActionTool = Tool.make("delete_project_action", {
+  description:
+    "Delete a project Action. Requires explicit projectId and actionId. Returns sanitized Action metadata without commands.",
+  success: Schema.Unknown,
+  failure: McpOrchestrationError,
+  parameters: Schema.Struct({
+    projectId: ProjectIdInput,
+    actionId: Schema.String.annotate({
+      description: "Action id returned by list_project_actions.",
+    }),
+  }),
+  dependencies,
+});
+
 export const AddProjectTool = Tool.make("add_project", {
   description:
     "Add a project by source directory path, returning an existing project for duplicate paths.",
@@ -363,6 +465,10 @@ export const OrchestrationToolkit = Toolkit.make(
   GetProjectDetailsTool,
   GetProjectSettingsTool,
   UpdateProjectSettingsTool,
+  ListProjectActionsTool,
+  CreateProjectActionTool,
+  UpdateProjectActionTool,
+  DeleteProjectActionTool,
   ListThreadsTool,
   GetThreadHistoryTool,
   GetCurrentThreadSettingsTool,

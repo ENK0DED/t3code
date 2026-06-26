@@ -1,6 +1,7 @@
 import type {
   ModelSelection,
   ProjectId,
+  ProjectScriptIcon,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderInteractionMode,
@@ -108,6 +109,64 @@ export interface UpdateProjectSettingsResult {
   readonly sequence: number;
 }
 
+export interface ProjectActionSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly icon: ProjectScriptIcon;
+  readonly runOnWorktreeCreate: boolean;
+  readonly previewUrl?: string | undefined;
+  readonly autoOpenPreview?: boolean | undefined;
+}
+
+export interface ListProjectActionsResult {
+  readonly projectId: ProjectId;
+  readonly actions: ReadonlyArray<ProjectActionSummary>;
+}
+
+export interface CreateProjectActionInput {
+  readonly projectId: ProjectId;
+  readonly name: string;
+  readonly command: string;
+  readonly icon?: ProjectScriptIcon | undefined;
+  readonly runOnWorktreeCreate?: boolean | undefined;
+  readonly previewUrl?: string | undefined;
+  readonly autoOpenPreview?: boolean | undefined;
+}
+
+export interface UpdateProjectActionInput {
+  readonly projectId: ProjectId;
+  readonly actionId: string;
+  readonly name?: string | undefined;
+  readonly command?: string | undefined;
+  readonly icon?: ProjectScriptIcon | undefined;
+  readonly runOnWorktreeCreate?: boolean | undefined;
+  readonly previewUrl?: string | null | undefined;
+  readonly autoOpenPreview?: boolean | undefined;
+}
+
+export interface DeleteProjectActionInput {
+  readonly projectId: ProjectId;
+  readonly actionId: string;
+}
+
+export interface CreateProjectActionResult {
+  readonly createdAction: ProjectActionSummary;
+  readonly actionsAfterChange: ReadonlyArray<ProjectActionSummary>;
+  readonly sequence: number;
+}
+
+export interface UpdateProjectActionResult {
+  readonly updatedAction: ProjectActionSummary;
+  readonly actionsAfterChange: ReadonlyArray<ProjectActionSummary>;
+  readonly sequence: number;
+}
+
+export interface DeleteProjectActionResult {
+  readonly deletedAction: ProjectActionSummary;
+  readonly actionsAfterChange: ReadonlyArray<ProjectActionSummary>;
+  readonly sequence: number;
+}
+
 export interface ListThreadsInput {
   readonly projectId: ProjectId;
   readonly search?: string | undefined;
@@ -202,6 +261,34 @@ export interface McpOrchestrationServiceShape {
     input: UpdateProjectSettingsInput,
   ) => Effect.Effect<
     UpdateProjectSettingsResult,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext
+  >;
+  readonly listProjectActions: (input: {
+    readonly projectId?: ProjectId | undefined;
+  }) => Effect.Effect<
+    ListProjectActionsResult,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext
+  >;
+  readonly createProjectAction: (
+    input: CreateProjectActionInput,
+  ) => Effect.Effect<
+    CreateProjectActionResult,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext
+  >;
+  readonly updateProjectAction: (
+    input: UpdateProjectActionInput,
+  ) => Effect.Effect<
+    UpdateProjectActionResult,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext
+  >;
+  readonly deleteProjectAction: (
+    input: DeleteProjectActionInput,
+  ) => Effect.Effect<
+    DeleteProjectActionResult,
     McpOrchestrationError,
     McpInvocationContext.McpInvocationContext
   >;

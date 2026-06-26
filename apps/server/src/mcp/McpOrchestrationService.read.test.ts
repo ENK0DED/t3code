@@ -480,6 +480,66 @@ it.effect("getProjectSettings returns raw and resolved default model", () =>
   ),
 );
 
+it.effect("listProjectActions returns sanitized action metadata without commands", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.listProjectActions({ projectId: ProjectId.make("project-api") });
+
+    expect(result).toEqual({
+      projectId: ProjectId.make("project-api"),
+      actions: [
+        {
+          id: "test",
+          name: "Test",
+          icon: "test",
+          runOnWorktreeCreate: false,
+        },
+        {
+          id: "dev",
+          name: "Dev",
+          icon: "play",
+          runOnWorktreeCreate: true,
+          previewUrl: "http://localhost:5173",
+          autoOpenPreview: true,
+        },
+      ],
+    });
+    expect(result.actions.flatMap((action) => Object.values(action))).not.toContain("bun test");
+    expect(result.actions.flatMap((action) => Object.values(action))).not.toContain("bun dev");
+    for (const action of result.actions) {
+      expect(action).not.toHaveProperty("command");
+    }
+  }).pipe(
+    Effect.provide(
+      makeReadHarnessLayer({
+        projects: [
+          makeProjectShell({
+            id: ProjectId.make("project-api"),
+            scripts: [
+              {
+                id: "test",
+                name: "Test",
+                command: "bun test",
+                icon: "test",
+                runOnWorktreeCreate: false,
+              },
+              {
+                id: "dev",
+                name: "Dev",
+                command: "bun dev",
+                icon: "play",
+                runOnWorktreeCreate: true,
+                previewUrl: "http://localhost:5173",
+                autoOpenPreview: true,
+              },
+            ],
+          }),
+        ],
+      }),
+    ),
+  ),
+);
+
 it.effect("listThreads merges title matches with message-hit matches without duplicates", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;

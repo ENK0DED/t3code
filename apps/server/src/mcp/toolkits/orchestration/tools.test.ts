@@ -48,6 +48,13 @@ it("exposes project settings tools separately from project selectors", () => {
   expect(OrchestrationToolkit.tools.get_project_details).toBeDefined();
   expect(OrchestrationToolkit.tools.get_project_settings).toBeDefined();
   expect(OrchestrationToolkit.tools.update_project_settings).toBeDefined();
+  expect(OrchestrationToolkit.tools.list_project_actions).toBeDefined();
+  expect(OrchestrationToolkit.tools.create_project_action).toBeDefined();
+  expect(OrchestrationToolkit.tools.update_project_action).toBeDefined();
+  expect(OrchestrationToolkit.tools.delete_project_action).toBeDefined();
+  expect(
+    JSON.stringify(Tool.getJsonSchema(OrchestrationToolkit.tools.list_project_actions)),
+  ).not.toContain("command");
 });
 
 it("keeps send_thread_message scoped to message delivery", () => {

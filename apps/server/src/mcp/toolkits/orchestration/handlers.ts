@@ -62,10 +62,18 @@ export const OrchestrationToolkitHandlersLive = OrchestrationToolkit.toLayer({
     invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.getProjectDetails(input)))),
   get_project_settings: (input) =>
     invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.getProjectSettings(input)))),
+  list_project_actions: (input) =>
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.listProjectActions(input)))),
   update_project_settings: (input) =>
     invokeWrite(
       McpOrchestrationService.pipe(Effect.flatMap((s) => s.updateProjectSettings(input))),
     ),
+  create_project_action: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.createProjectAction(input)))),
+  update_project_action: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.updateProjectAction(input)))),
+  delete_project_action: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.deleteProjectAction(input)))),
   list_threads: (input) =>
     invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.listThreads(input)))),
   get_thread_history: (input) =>

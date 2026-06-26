@@ -4,6 +4,7 @@ import {
   type ModelSelection,
   type OrchestrationThread,
   ProjectId,
+  type ProjectScript,
   PROVIDER_DISPLAY_NAMES,
   type ProviderInstanceId,
   type ProviderOptionDescriptor,
@@ -18,6 +19,11 @@ import { buildProjectCreateCommand, resolveAddProjectPath } from "@t3tools/share
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { getProviderOptionCurrentLabel, getProviderOptionDescriptors } from "@t3tools/shared/model";
+import {
+  createProjectScript,
+  removeProjectScript,
+  upsertProjectScript,
+} from "@t3tools/shared/projectScripts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import {
@@ -50,6 +56,7 @@ import { sanitizeThreadTitle } from "../../textGeneration/TextGenerationUtils.ts
 import {
   McpOrchestrationError,
   McpOrchestrationService,
+  type ProjectActionSummary,
 } from "../Services/McpOrchestrationService.ts";
 
 const MCP_STRUCTURED_RESPONSE_MAX_BYTES = 1_000_000;
@@ -199,6 +206,17 @@ function sanitizeProjectSelector(project: {
   };
 }
 
+function sanitizeProjectAction(script: ProjectScript): ProjectActionSummary {
+  return {
+    id: script.id,
+    name: script.name,
+    icon: script.icon,
+    runOnWorktreeCreate: script.runOnWorktreeCreate,
+    ...(script.previewUrl ? { previewUrl: script.previewUrl } : {}),
+    ...(script.autoOpenPreview ? { autoOpenPreview: script.autoOpenPreview } : {}),
+  };
+}
+
 function repositorySummary(
   repositoryIdentity:
     | {
@@ -218,6 +236,24 @@ function repositorySummary(
     ...(repositoryIdentity.name ? { name: repositoryIdentity.name } : {}),
   };
   return Object.keys(summary).length === 0 ? null : summary;
+}
+
+function validateProjectActionPreview(input: {
+  readonly previewUrl?: string | null | undefined;
+  readonly autoOpenPreview?: boolean | undefined;
+  readonly resultingPreviewUrl?: string | undefined;
+}): Effect.Effect<void, McpOrchestrationError> {
+  const providedPreviewUrl =
+    typeof input.previewUrl === "string" ? input.previewUrl.trim() : input.previewUrl;
+  if (input.autoOpenPreview === true && !providedPreviewUrl && !input.resultingPreviewUrl) {
+    return Effect.fail(
+      new McpOrchestrationError({
+        code: "project_action_invalid_preview",
+        message: "autoOpenPreview requires a previewUrl.",
+      }),
+    );
+  }
+  return Effect.void;
 }
 
 function searchTerms(query: string | undefined): ReadonlyArray<string> {
@@ -278,6 +314,17 @@ export const McpOrchestrationServiceLive = Layer.effect(
     const currentIsoTimestamp = () =>
       Clock.currentTimeMillis.pipe(
         Effect.map((now) => DateTime.formatIso(DateTime.makeUnsafe(now))),
+      );
+
+    const requireWrite = () =>
+      McpInvocationContext.requireMcpOrchestrationWrite().pipe(
+        Effect.mapError(
+          (error) =>
+            new McpOrchestrationError({
+              code: "forbidden",
+              message: error.message,
+            }),
+        ),
       );
 
     const requireProject = Effect.fn("McpOrchestrationService.requireProject")(function* (
@@ -799,17 +846,17 @@ export const McpOrchestrationServiceLive = Layer.effect(
                 ),
           ),
         ),
+      listProjectActions: (input) =>
+        requireRead().pipe(
+          Effect.flatMap(() => requireProjectForInput(input)),
+          Effect.map((project) => ({
+            projectId: project.id,
+            actions: project.scripts.map(sanitizeProjectAction),
+          })),
+        ),
       updateProjectSettings: (input) =>
         Effect.gen(function* () {
-          yield* McpInvocationContext.requireMcpOrchestrationWrite().pipe(
-            Effect.mapError(
-              (error) =>
-                new McpOrchestrationError({
-                  code: "forbidden",
-                  message: error.message,
-                }),
-            ),
-          );
+          yield* requireWrite();
 
           if (input.title === undefined && input.defaultModelSelection === undefined) {
             return yield* new McpOrchestrationError({
@@ -842,6 +889,144 @@ export const McpOrchestrationServiceLive = Layer.effect(
           return {
             status: "updated" as const,
             projectId: project.id,
+            sequence: accepted.sequence,
+          };
+        }),
+      createProjectAction: (input) =>
+        Effect.gen(function* () {
+          yield* requireWrite();
+          const project = yield* requireProject(input.projectId);
+          yield* validateProjectActionPreview(input);
+
+          const nextScript = createProjectScript({
+            name: input.name,
+            command: input.command,
+            existingIds: project.scripts.map((script) => script.id),
+            icon: input.icon,
+            runOnWorktreeCreate: input.runOnWorktreeCreate,
+            previewUrl: input.previewUrl,
+            autoOpenPreview: input.autoOpenPreview,
+          });
+          const nextScripts = upsertProjectScript(project.scripts, nextScript).scripts;
+          const accepted = yield* orchestrationEngine
+            .dispatch({
+              type: "project.meta.update",
+              commandId: makeCommandId("project-action-create"),
+              projectId: project.id,
+              scripts: nextScripts,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
+
+          return {
+            createdAction: sanitizeProjectAction(nextScript),
+            actionsAfterChange: nextScripts.map(sanitizeProjectAction),
+            sequence: accepted.sequence,
+          };
+        }),
+      updateProjectAction: (input) =>
+        Effect.gen(function* () {
+          yield* requireWrite();
+          if (
+            input.name === undefined &&
+            input.command === undefined &&
+            input.icon === undefined &&
+            input.runOnWorktreeCreate === undefined &&
+            input.previewUrl === undefined &&
+            input.autoOpenPreview === undefined
+          ) {
+            return yield* new McpOrchestrationError({
+              code: "project_action_empty_update",
+              message: "Provide at least one action field to update.",
+            });
+          }
+
+          const project = yield* requireProject(input.projectId);
+          const currentScript = project.scripts.find((script) => script.id === input.actionId);
+          if (!currentScript) {
+            return yield* new McpOrchestrationError({
+              code: "project_action_not_found",
+              message: `Action '${input.actionId}' does not exist in project '${project.id}'.`,
+            });
+          }
+
+          const nextPreviewUrl =
+            input.previewUrl === undefined
+              ? currentScript.previewUrl
+              : input.previewUrl === null
+                ? undefined
+                : input.previewUrl.trim() || undefined;
+          const nextAutoOpenPreview =
+            nextPreviewUrl === undefined
+              ? false
+              : (input.autoOpenPreview ?? currentScript.autoOpenPreview ?? false);
+
+          yield* validateProjectActionPreview({
+            previewUrl: input.previewUrl,
+            autoOpenPreview: input.autoOpenPreview,
+            resultingPreviewUrl: nextPreviewUrl,
+          });
+
+          const nextScript: ProjectScript = {
+            ...currentScript,
+            ...(input.name !== undefined ? { name: input.name } : {}),
+            command: input.command ?? currentScript.command,
+            icon: input.icon ?? currentScript.icon,
+            runOnWorktreeCreate: input.runOnWorktreeCreate ?? currentScript.runOnWorktreeCreate,
+            ...(nextPreviewUrl ? { previewUrl: nextPreviewUrl } : {}),
+            ...(nextAutoOpenPreview ? { autoOpenPreview: true } : {}),
+          };
+          const nextScripts = upsertProjectScript(project.scripts, nextScript).scripts;
+          const accepted = yield* orchestrationEngine
+            .dispatch({
+              type: "project.meta.update",
+              commandId: makeCommandId("project-action-update"),
+              projectId: project.id,
+              scripts: nextScripts,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
+
+          return {
+            updatedAction: sanitizeProjectAction(nextScript),
+            actionsAfterChange: nextScripts.map(sanitizeProjectAction),
+            sequence: accepted.sequence,
+          };
+        }),
+      deleteProjectAction: (input) =>
+        Effect.gen(function* () {
+          yield* requireWrite();
+          const project = yield* requireProject(input.projectId);
+          const removed = removeProjectScript(project.scripts, input.actionId);
+          if (!removed.removed) {
+            return yield* new McpOrchestrationError({
+              code: "project_action_not_found",
+              message: `Action '${input.actionId}' does not exist in project '${project.id}'.`,
+            });
+          }
+
+          const accepted = yield* orchestrationEngine
+            .dispatch({
+              type: "project.meta.update",
+              commandId: makeCommandId("project-action-delete"),
+              projectId: project.id,
+              scripts: removed.scripts,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
+
+          return {
+            deletedAction: sanitizeProjectAction(removed.script),
+            actionsAfterChange: removed.scripts.map(sanitizeProjectAction),
             sequence: accepted.sequence,
           };
         }),

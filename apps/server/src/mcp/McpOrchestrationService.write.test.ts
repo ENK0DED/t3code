@@ -579,6 +579,252 @@ it.effect("updateProjectSettings treats null default model as an explicit clear"
   })(),
 );
 
+it.effect("createProjectAction appends a sanitized action and hides command", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.createProjectAction({
+        projectId: ProjectId.make("project-current"),
+        name: "Test",
+        command: "bun test",
+        icon: "test",
+      });
+
+      expect(result.createdAction).toEqual({
+        id: "test",
+        name: "Test",
+        icon: "test",
+        runOnWorktreeCreate: false,
+      });
+      expect(result.createdAction).not.toHaveProperty("command");
+      for (const action of result.actionsAfterChange) {
+        expect(action).not.toHaveProperty("command");
+      }
+      expect(dispatchedCommands).toContainEqual(
+        expect.objectContaining({
+          type: "project.meta.update",
+          projectId: ProjectId.make("project-current"),
+          scripts: [
+            {
+              id: "test",
+              name: "Test",
+              command: "bun test",
+              icon: "test",
+              runOnWorktreeCreate: false,
+            },
+          ],
+        }),
+      );
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          projects: [makeProjectShell({ id: ProjectId.make("project-current"), scripts: [] })],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("updateProjectAction preserves hidden command when command is omitted", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.updateProjectAction({
+        projectId: ProjectId.make("project-current"),
+        actionId: "test",
+        name: "Unit tests",
+        runOnWorktreeCreate: true,
+      });
+
+      expect(result.updatedAction).toEqual({
+        id: "test",
+        name: "Unit tests",
+        icon: "test",
+        runOnWorktreeCreate: true,
+      });
+      const update = dispatchedCommands.find((command) => command.type === "project.meta.update");
+      expect(update).toMatchObject({
+        scripts: [
+          {
+            id: "test",
+            name: "Unit tests",
+            command: "bun test",
+            icon: "test",
+            runOnWorktreeCreate: true,
+          },
+        ],
+      });
+      expect(result.updatedAction).not.toHaveProperty("command");
+      for (const action of result.actionsAfterChange) {
+        expect(action).not.toHaveProperty("command");
+      }
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          projects: [
+            makeProjectShell({
+              id: ProjectId.make("project-current"),
+              scripts: [
+                {
+                  id: "test",
+                  name: "Test",
+                  command: "bun test",
+                  icon: "test",
+                  runOnWorktreeCreate: false,
+                },
+              ],
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("deleteProjectAction returns sanitized deleted action and actionsAfterChange", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.deleteProjectAction({
+        projectId: ProjectId.make("project-current"),
+        actionId: "test",
+      });
+
+      expect(result).toEqual({
+        deletedAction: {
+          id: "test",
+          name: "Test",
+          icon: "test",
+          runOnWorktreeCreate: false,
+        },
+        actionsAfterChange: [],
+        sequence: 1,
+      });
+      expect(result.deletedAction).not.toHaveProperty("command");
+      expect(dispatchedCommands).toContainEqual(
+        expect.objectContaining({
+          type: "project.meta.update",
+          projectId: ProjectId.make("project-current"),
+          scripts: [],
+        }),
+      );
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          projects: [
+            makeProjectShell({
+              id: ProjectId.make("project-current"),
+              scripts: [
+                {
+                  id: "test",
+                  name: "Test",
+                  command: "bun test",
+                  icon: "test",
+                  runOnWorktreeCreate: false,
+                },
+              ],
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("updateProjectAction rejects missing action ids", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.updateProjectAction({
+        projectId: ProjectId.make("project-current"),
+        actionId: "missing",
+        name: "Missing",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("project_action_not_found");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        projects: [makeProjectShell({ id: ProjectId.make("project-current"), scripts: [] })],
+      }),
+    ),
+  ),
+);
+
+it.effect("updateProjectAction rejects empty updates", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.updateProjectAction({
+        projectId: ProjectId.make("project-current"),
+        actionId: "test",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("project_action_empty_update");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        projects: [
+          makeProjectShell({
+            id: ProjectId.make("project-current"),
+            scripts: [
+              {
+                id: "test",
+                name: "Test",
+                command: "bun test",
+                icon: "test",
+                runOnWorktreeCreate: false,
+              },
+            ],
+          }),
+        ],
+      }),
+    ),
+  ),
+);
+
+it.effect("createProjectAction rejects auto-open preview without preview URL", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.createProjectAction({
+        projectId: ProjectId.make("project-current"),
+        name: "Dev",
+        command: "bun dev",
+        autoOpenPreview: true,
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("project_action_invalid_preview");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        projects: [makeProjectShell({ id: ProjectId.make("project-current"), scripts: [] })],
+      }),
+    ),
+  ),
+);
+
 it.effect("createThread defaults placement to child_of_current for the current project", () =>
   (() => {
     const dispatchedCommands: Array<OrchestrationCommand> = [];
