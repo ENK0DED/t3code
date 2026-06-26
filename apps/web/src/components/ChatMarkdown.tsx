@@ -24,7 +24,7 @@ import React, {
   useState,
   type ReactNode,
 } from "react";
-import type { Components } from "react-markdown";
+import type { Components, ExtraProps } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import { defaultUrlTransform } from "react-markdown";
 import rehypeRaw from "rehype-raw";
@@ -100,6 +100,33 @@ interface ChatMarkdownProps {
 }
 
 const EMPTY_MARKDOWN_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
+
+interface ChatMarkdownRenderContextValue {
+  readonly text: string;
+  readonly skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  readonly onTaskListChange?:
+    | ((input: { markerOffset: number; checked: boolean }) => void)
+    | undefined;
+  readonly markdownFileLinkMetaByHref: ReadonlyMap<
+    string,
+    NonNullable<ReturnType<typeof resolveMarkdownFileLinkMeta>>
+  >;
+  readonly fileLinkParentSuffixByPath: ReadonlyMap<string, string>;
+  readonly resolvedTheme: "dark" | "light";
+  readonly diffThemeName: DiffThemeName;
+  readonly threadRef?: ScopedThreadRef | undefined;
+  readonly isStreaming: boolean;
+}
+
+const ChatMarkdownRenderContext = React.createContext<ChatMarkdownRenderContextValue | null>(null);
+
+function useChatMarkdownRenderContext(): ChatMarkdownRenderContextValue {
+  const value = React.useContext(ChatMarkdownRenderContext);
+  if (!value) {
+    throw new Error("ChatMarkdown render context is missing");
+  }
+  return value;
+}
 
 const CODE_FENCE_LANGUAGE_REGEX = /(?:^|\s)language-([^\s]+)/;
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
@@ -240,6 +267,197 @@ function createHighlightCacheKey(code: string, language: string, themeName: Diff
 function estimateHighlightedSize(html: string, code: string): number {
   return Math.max(html.length * 2, code.length * 3);
 }
+
+type MarkdownParagraphProps = React.ComponentProps<"p"> & ExtraProps;
+type MarkdownListItemProps = React.ComponentProps<"li"> & ExtraProps;
+type MarkdownInputProps = React.ComponentProps<"input"> & ExtraProps;
+type MarkdownAnchorProps = React.ComponentProps<"a"> & ExtraProps;
+type MarkdownTableProps = React.ComponentProps<"table"> & ExtraProps;
+type MarkdownDetailsProps = React.ComponentProps<"details"> & ExtraProps;
+type MarkdownPreProps = React.ComponentProps<"pre"> & ExtraProps;
+
+function MarkdownParagraphComponent({ node: _node, children, ...props }: MarkdownParagraphProps) {
+  const { skills } = useChatMarkdownRenderContext();
+  return <p {...props}>{renderSkillInlineMarkdownChildren(children, skills)}</p>;
+}
+
+function MarkdownListItemComponent({ node, children, ...props }: MarkdownListItemProps) {
+  const { skills, text } = useChatMarkdownRenderContext();
+  const listItemStart = node?.position?.start.offset;
+  const markerOffset =
+    typeof listItemStart === "number" ? findTaskListMarkerOffset(text, listItemStart) : null;
+
+  return (
+    <li {...props} data-task-marker-offset={markerOffset ?? undefined}>
+      {renderSkillInlineMarkdownChildren(children, skills)}
+    </li>
+  );
+}
+
+function MarkdownInputComponent({
+  node: _node,
+  type,
+  checked,
+  disabled: inputDisabled,
+  ...props
+}: MarkdownInputProps) {
+  const { onTaskListChange } = useChatMarkdownRenderContext();
+  if (type !== "checkbox" || !onTaskListChange) {
+    return (
+      <input
+        {...props}
+        type={type}
+        checked={checked}
+        disabled={inputDisabled}
+        readOnly={type === "checkbox"}
+      />
+    );
+  }
+
+  return (
+    <input
+      {...props}
+      type="checkbox"
+      name="markdown-task"
+      aria-label="Toggle task"
+      checked={checked}
+      onChange={(event) => {
+        const markerOffset = Number(event.currentTarget.closest("li")?.dataset.taskMarkerOffset);
+        if (!Number.isSafeInteger(markerOffset)) return;
+        onTaskListChange({ markerOffset, checked: event.currentTarget.checked });
+      }}
+    />
+  );
+}
+
+function MarkdownAnchorComponent({ node, href, children, ...props }: MarkdownAnchorProps) {
+  const { markdownFileLinkMetaByHref, fileLinkParentSuffixByPath, resolvedTheme, threadRef } =
+    useChatMarkdownRenderContext();
+  const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
+  const fileLinkMeta = normalizedHref ? markdownFileLinkMetaByHref.get(normalizedHref) : null;
+
+  if (!fileLinkMeta) {
+    const faviconHost = resolveExternalLinkHost(href);
+    const isSameDocumentLink = href?.startsWith("#") ?? false;
+    const onClick = props.onClick;
+    const link = (
+      <MarkdownExternalLink
+        {...props}
+        href={href ?? ""}
+        threadRef={faviconHost && isPreviewSupportedInRuntime() ? threadRef : undefined}
+        target={isSameDocumentLink ? undefined : "_blank"}
+        rel={isSameDocumentLink ? undefined : "noopener noreferrer"}
+        onClick={(event) => {
+          onClick?.(event);
+          if (isSameDocumentLink && href) {
+            handleMarkdownFragmentClick(event, href);
+          }
+        }}
+      >
+        {faviconHost ? (
+          <MarkdownExternalLinkContent host={faviconHost} plainText={plainHastText(node)}>
+            {children}
+          </MarkdownExternalLinkContent>
+        ) : (
+          children
+        )}
+      </MarkdownExternalLink>
+    );
+    if (!faviconHost || !href) {
+      return link;
+    }
+    return (
+      <Tooltip>
+        <TooltipTrigger render={link} />
+        <TooltipPopup
+          side="top"
+          className="max-w-[min(36rem,calc(100vw-2rem))] whitespace-normal leading-tight wrap-anywhere"
+        >
+          {href}
+        </TooltipPopup>
+      </Tooltip>
+    );
+  }
+
+  const parentSuffix = fileLinkParentSuffixByPath.get(fileLinkMeta.filePath);
+  const labelParts = [fileLinkMeta.basename];
+  if (typeof parentSuffix === "string" && parentSuffix.length > 0) {
+    labelParts.push(parentSuffix);
+  }
+  if (fileLinkMeta.line) {
+    labelParts.push(
+      `L${fileLinkMeta.line}${fileLinkMeta.column ? `:C${fileLinkMeta.column}` : ""}`,
+    );
+  }
+
+  return (
+    <MarkdownFileLink
+      href={fileLinkMeta.targetPath}
+      targetPath={fileLinkMeta.targetPath}
+      iconPath={fileLinkMeta.filePath}
+      displayPath={fileLinkMeta.displayPath}
+      workspaceRelativePath={fileLinkMeta.workspaceRelativePath}
+      line={fileLinkMeta.line}
+      label={labelParts.join(" · ")}
+      copyMarkdown={`[${fileLinkMeta.basename}](${normalizedHref})`}
+      theme={resolvedTheme}
+      threadRef={threadRef}
+      className={props.className}
+    />
+  );
+}
+
+function MarkdownTableComponent({ node: _node, ...props }: MarkdownTableProps) {
+  return <MarkdownTable {...props} />;
+}
+
+function MarkdownDetailsComponent({
+  node: _node,
+  children,
+  open: detailsOpen,
+}: MarkdownDetailsProps) {
+  return <MarkdownDetails open={detailsOpen}>{children}</MarkdownDetails>;
+}
+
+function MarkdownPreComponent({ node, children, ...props }: MarkdownPreProps) {
+  const { diffThemeName, isStreaming, resolvedTheme } = useChatMarkdownRenderContext();
+  const codeBlock = extractCodeBlock(children);
+  if (!codeBlock) {
+    return <pre {...props}>{children}</pre>;
+  }
+
+  const language = extractFenceLanguage(codeBlock.className);
+  const fenceTitle = extractFenceTitle(extractPreCodeMeta(node));
+  return (
+    <MarkdownCodeBlock
+      code={codeBlock.code}
+      language={language}
+      fenceTitle={fenceTitle}
+      theme={resolvedTheme}
+    >
+      <CodeHighlightErrorBoundary fallback={<pre {...props}>{children}</pre>}>
+        <Suspense fallback={<pre {...props}>{children}</pre>}>
+          <SuspenseShikiCodeBlock
+            className={codeBlock.className}
+            code={codeBlock.code}
+            themeName={diffThemeName}
+            isStreaming={isStreaming}
+          />
+        </Suspense>
+      </CodeHighlightErrorBoundary>
+    </MarkdownCodeBlock>
+  );
+}
+
+const CHAT_MARKDOWN_COMPONENTS = {
+  p: MarkdownParagraphComponent,
+  li: MarkdownListItemComponent,
+  input: MarkdownInputComponent,
+  a: MarkdownAnchorComponent,
+  table: MarkdownTableComponent,
+  details: MarkdownDetailsComponent,
+  pre: MarkdownPreComponent,
+} satisfies Components;
 
 function getHighlighterPromise(language: string): Promise<DiffsHighlighter> {
   const cached = highlighterPromiseCache.get(language);
@@ -1226,157 +1444,17 @@ function ChatMarkdown({
     event.clipboardData.setData("text/plain", payload.text);
     event.clipboardData.setData("text/html", payload.html);
   }, []);
-  const markdownComponents = useMemo<Components>(
+  const renderContextValue = useMemo<ChatMarkdownRenderContextValue>(
     () => ({
-      p({ node: _node, children, ...props }) {
-        return <p {...props}>{renderSkillInlineMarkdownChildren(children, skills)}</p>;
-      },
-      li({ node, children, ...props }) {
-        const listItemStart = node?.position?.start.offset;
-        const markerOffset =
-          typeof listItemStart === "number" ? findTaskListMarkerOffset(text, listItemStart) : null;
-        return (
-          <li {...props} data-task-marker-offset={markerOffset ?? undefined}>
-            {renderSkillInlineMarkdownChildren(children, skills)}
-          </li>
-        );
-      },
-      input({ node: _node, type, checked, disabled: _disabled, ...props }) {
-        if (type !== "checkbox" || !onTaskListChange) {
-          return (
-            <input
-              {...props}
-              type={type}
-              checked={checked}
-              disabled={_disabled}
-              readOnly={type === "checkbox"}
-            />
-          );
-        }
-        return (
-          <input
-            {...props}
-            type="checkbox"
-            name="markdown-task"
-            aria-label="Toggle task"
-            checked={checked}
-            onChange={(event) => {
-              const markerOffset = Number(
-                event.currentTarget.closest("li")?.dataset.taskMarkerOffset,
-              );
-              if (!Number.isSafeInteger(markerOffset)) return;
-              onTaskListChange({ markerOffset, checked: event.currentTarget.checked });
-            }}
-          />
-        );
-      },
-      a({ node, href, children, ...props }) {
-        const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
-        const fileLinkMeta = normalizedHref ? markdownFileLinkMetaByHref.get(normalizedHref) : null;
-        if (!fileLinkMeta) {
-          const faviconHost = resolveExternalLinkHost(href);
-          const isSameDocumentLink = href?.startsWith("#") ?? false;
-          const onClick = props.onClick;
-          const link = (
-            <MarkdownExternalLink
-              {...props}
-              href={href ?? ""}
-              threadRef={faviconHost && isPreviewSupportedInRuntime() ? threadRef : undefined}
-              target={isSameDocumentLink ? undefined : "_blank"}
-              rel={isSameDocumentLink ? undefined : "noopener noreferrer"}
-              onClick={(event) => {
-                onClick?.(event);
-                if (isSameDocumentLink && href) {
-                  handleMarkdownFragmentClick(event, href);
-                }
-              }}
-            >
-              {faviconHost ? (
-                <MarkdownExternalLinkContent host={faviconHost} plainText={plainHastText(node)}>
-                  {children}
-                </MarkdownExternalLinkContent>
-              ) : (
-                children
-              )}
-            </MarkdownExternalLink>
-          );
-          if (!faviconHost || !href) {
-            return link;
-          }
-          return (
-            <Tooltip>
-              <TooltipTrigger render={link} />
-              <TooltipPopup
-                side="top"
-                className="max-w-[min(36rem,calc(100vw-2rem))] whitespace-normal leading-tight wrap-anywhere"
-              >
-                {href}
-              </TooltipPopup>
-            </Tooltip>
-          );
-        }
-
-        const parentSuffix = fileLinkParentSuffixByPath.get(fileLinkMeta.filePath);
-        const labelParts = [fileLinkMeta.basename];
-        if (typeof parentSuffix === "string" && parentSuffix.length > 0) {
-          labelParts.push(parentSuffix);
-        }
-        if (fileLinkMeta.line) {
-          labelParts.push(
-            `L${fileLinkMeta.line}${fileLinkMeta.column ? `:C${fileLinkMeta.column}` : ""}`,
-          );
-        }
-
-        return (
-          <MarkdownFileLink
-            href={fileLinkMeta.targetPath}
-            targetPath={fileLinkMeta.targetPath}
-            iconPath={fileLinkMeta.filePath}
-            displayPath={fileLinkMeta.displayPath}
-            workspaceRelativePath={fileLinkMeta.workspaceRelativePath}
-            line={fileLinkMeta.line}
-            label={labelParts.join(" · ")}
-            copyMarkdown={`[${fileLinkMeta.basename}](${normalizedHref})`}
-            theme={resolvedTheme}
-            threadRef={threadRef}
-            className={props.className}
-          />
-        );
-      },
-      table({ node: _node, ...props }) {
-        return <MarkdownTable {...props} />;
-      },
-      details({ node: _node, children, open: detailsOpen }) {
-        return <MarkdownDetails open={detailsOpen}>{children}</MarkdownDetails>;
-      },
-      pre({ node, children, ...props }) {
-        const codeBlock = extractCodeBlock(children);
-        if (!codeBlock) {
-          return <pre {...props}>{children}</pre>;
-        }
-
-        const language = extractFenceLanguage(codeBlock.className);
-        const fenceTitle = extractFenceTitle(extractPreCodeMeta(node));
-        return (
-          <MarkdownCodeBlock
-            code={codeBlock.code}
-            language={language}
-            fenceTitle={fenceTitle}
-            theme={resolvedTheme}
-          >
-            <CodeHighlightErrorBoundary fallback={<pre {...props}>{children}</pre>}>
-              <Suspense fallback={<pre {...props}>{children}</pre>}>
-                <SuspenseShikiCodeBlock
-                  className={codeBlock.className}
-                  code={codeBlock.code}
-                  themeName={diffThemeName}
-                  isStreaming={isStreaming}
-                />
-              </Suspense>
-            </CodeHighlightErrorBoundary>
-          </MarkdownCodeBlock>
-        );
-      },
+      text,
+      skills,
+      onTaskListChange,
+      markdownFileLinkMetaByHref,
+      fileLinkParentSuffixByPath,
+      resolvedTheme,
+      diffThemeName,
+      threadRef,
+      isStreaming: isStreaming ?? false,
     }),
     [
       diffThemeName,
@@ -1384,10 +1462,10 @@ function ChatMarkdown({
       isStreaming,
       markdownFileLinkMetaByHref,
       onTaskListChange,
-      threadRef,
       resolvedTheme,
       skills,
       text,
+      threadRef,
     ],
   );
 
@@ -1399,18 +1477,20 @@ function ChatMarkdown({
       )}
       onCopy={handleCopy}
     >
-      <ReactMarkdown
-        remarkPlugins={
-          lineBreaks
-            ? [remarkGfm, remarkBreaks, remarkPreserveCodeMeta]
-            : [remarkGfm, remarkPreserveCodeMeta]
-        }
-        rehypePlugins={[rehypeRaw, [rehypeSanitize, CHAT_MARKDOWN_SANITIZE_SCHEMA]]}
-        components={markdownComponents}
-        urlTransform={markdownUrlTransform}
-      >
-        {text}
-      </ReactMarkdown>
+      <ChatMarkdownRenderContext.Provider value={renderContextValue}>
+        <ReactMarkdown
+          remarkPlugins={
+            lineBreaks
+              ? [remarkGfm, remarkBreaks, remarkPreserveCodeMeta]
+              : [remarkGfm, remarkPreserveCodeMeta]
+          }
+          rehypePlugins={[rehypeRaw, [rehypeSanitize, CHAT_MARKDOWN_SANITIZE_SCHEMA]]}
+          components={CHAT_MARKDOWN_COMPONENTS}
+          urlTransform={markdownUrlTransform}
+        >
+          {text}
+        </ReactMarkdown>
+      </ChatMarkdownRenderContext.Provider>
     </div>
   );
 }

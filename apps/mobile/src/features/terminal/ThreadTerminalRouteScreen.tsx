@@ -156,6 +156,47 @@ function pickRunningTerminalSessionForBootstrap(
   );
 }
 
+function ThreadTerminalHeaderTitle(props: {
+  readonly foreground: string;
+  readonly mutedForeground: string;
+  readonly topLine: string;
+  readonly bottomLine: string;
+}) {
+  return (
+    <View
+      style={{
+        alignItems: "center",
+        gap: 1,
+        maxWidth: 240,
+      }}
+    >
+      <RNText
+        numberOfLines={1}
+        style={{
+          color: props.foreground,
+          fontFamily: "DMSans_700Bold",
+          fontSize: 13,
+          lineHeight: 16,
+        }}
+      >
+        {props.topLine}
+      </RNText>
+      <RNText
+        ellipsizeMode="middle"
+        numberOfLines={1}
+        style={{
+          color: props.mutedForeground,
+          fontFamily: "Menlo",
+          fontSize: 11,
+          lineHeight: 14,
+        }}
+      >
+        {props.bottomLine}
+      </RNText>
+    </View>
+  );
+}
+
 export function ThreadTerminalRouteScreen() {
   const router = useRouter();
   const appearanceScheme = useColorScheme() === "light" ? "light" : "dark";
@@ -330,6 +371,22 @@ export function ThreadTerminalRouteScreen() {
     selectedThreadProject?.title,
     selectedThreadProject?.workspaceRoot,
   ]);
+  const renderHeaderTitle = useCallback(
+    () => (
+      <ThreadTerminalHeaderTitle
+        foreground={terminalTheme.foreground}
+        mutedForeground={terminalTheme.mutedForeground}
+        topLine={headerTitle.topLine}
+        bottomLine={headerTitle.bottomLine}
+      />
+    ),
+    [
+      headerTitle.bottomLine,
+      headerTitle.topLine,
+      terminalTheme.foreground,
+      terminalTheme.mutedForeground,
+    ],
+  );
   const terminalToolbarActions = useMemo<ReadonlyArray<TerminalToolbarAction>>(() => {
     const modifierActions: ReadonlyArray<TerminalToolbarAction> =
       hostPlatform === "mac"
@@ -944,39 +1001,7 @@ export function ThreadTerminalRouteScreen() {
           headerTintColor: terminalTheme.foreground,
           headerTitleAlign: "center",
           title: "",
-          headerTitle: () => (
-            <View
-              style={{
-                alignItems: "center",
-                gap: 1,
-                maxWidth: 240,
-              }}
-            >
-              <RNText
-                numberOfLines={1}
-                style={{
-                  color: terminalTheme.foreground,
-                  fontFamily: "DMSans_700Bold",
-                  fontSize: 13,
-                  lineHeight: 16,
-                }}
-              >
-                {headerTitle.topLine}
-              </RNText>
-              <RNText
-                ellipsizeMode="middle"
-                numberOfLines={1}
-                style={{
-                  color: terminalTheme.mutedForeground,
-                  fontFamily: "Menlo",
-                  fontSize: 11,
-                  lineHeight: 14,
-                }}
-              >
-                {headerTitle.bottomLine}
-              </RNText>
-            </View>
-          ),
+          headerTitle: renderHeaderTitle,
         }}
       />
 

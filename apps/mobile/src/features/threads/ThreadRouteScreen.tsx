@@ -57,6 +57,47 @@ function OpeningThreadLoadingScreen() {
   return <LoadingScreen message="Opening thread…" messagePlacement="above-spinner" />;
 }
 
+function ThreadRouteHeaderTitle(props: {
+  readonly title: string;
+  readonly subtitle: string;
+  readonly foregroundColor: string;
+  readonly secondaryColor: string;
+}) {
+  return (
+    <Pressable
+      style={{ alignItems: "center", maxWidth: 200 }}
+      onLongPress={() => {
+        // TODO: trigger rename modal
+      }}
+    >
+      <RNText
+        numberOfLines={1}
+        style={{
+          fontFamily: "DMSans_700Bold",
+          fontSize: 18,
+          fontWeight: "900",
+          color: props.foregroundColor,
+          letterSpacing: -0.4,
+        }}
+      >
+        {props.title}
+      </RNText>
+      <RNText
+        numberOfLines={1}
+        style={{
+          fontFamily: "DMSans_700Bold",
+          fontSize: 12,
+          fontWeight: "700",
+          color: props.secondaryColor,
+          letterSpacing: 0.3,
+        }}
+      >
+        {props.subtitle}
+      </RNText>
+    </Pressable>
+  );
+}
+
 export function ThreadRouteScreen() {
   const { isLoadingSavedConnection, environmentStateById, pendingConnectionError } =
     useRemoteEnvironmentState();
@@ -285,6 +326,17 @@ export function ThreadRouteScreen() {
   ]
     .filter(Boolean)
     .join(" · ");
+  const renderHeaderTitle = useCallback(
+    () => (
+      <ThreadRouteHeaderTitle
+        title={selectedThreadDetail.title}
+        subtitle={headerSubtitle}
+        foregroundColor={foregroundColor}
+        secondaryColor={secondaryFg}
+      />
+    ),
+    [foregroundColor, headerSubtitle, secondaryFg, selectedThreadDetail.title],
+  );
 
   return (
     <>
@@ -296,39 +348,7 @@ export function ThreadRouteScreen() {
           headerShadowVisible: false,
           headerTintColor: iconColor,
           headerBackTitle: "",
-          headerTitle: () => (
-            <Pressable
-              style={{ alignItems: "center", maxWidth: 200 }}
-              onLongPress={() => {
-                // TODO: trigger rename modal
-              }}
-            >
-              <RNText
-                numberOfLines={1}
-                style={{
-                  fontFamily: "DMSans_700Bold",
-                  fontSize: 18,
-                  fontWeight: "900",
-                  color: foregroundColor,
-                  letterSpacing: -0.4,
-                }}
-              >
-                {selectedThreadDetail.title}
-              </RNText>
-              <RNText
-                numberOfLines={1}
-                style={{
-                  fontFamily: "DMSans_700Bold",
-                  fontSize: 12,
-                  fontWeight: "700",
-                  color: secondaryFg,
-                  letterSpacing: 0.3,
-                }}
-              >
-                {headerSubtitle}
-              </RNText>
-            </Pressable>
-          ),
+          headerTitle: renderHeaderTitle,
         }}
       />
 

@@ -118,9 +118,20 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ComposerHandleContext, useComposerHandleContext } from "../composerHandleContext";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
+import type { Project } from "../types";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const BROWSE_STALE_TIME_MS = 30_000;
+
+function renderProjectPaletteIcon(project: Project): ReactNode {
+  return (
+    <ProjectFavicon
+      environmentId={project.environmentId}
+      cwd={project.cwd}
+      className={ITEM_ICON_CLASS}
+    />
+  );
+}
 
 function getLocalFileManagerName(platform: string): string {
   if (isMacPlatform(platform)) {
@@ -630,13 +641,7 @@ function OpenCommandPaletteDialog() {
       buildProjectActionItems({
         projects,
         valuePrefix: "project",
-        icon: (project) => (
-          <ProjectFavicon
-            environmentId={project.environmentId}
-            cwd={project.cwd}
-            className={ITEM_ICON_CLASS}
-          />
-        ),
+        icon: renderProjectPaletteIcon,
         runProject: openProjectFromSearch,
       }),
     [openProjectFromSearch, projects],
@@ -648,13 +653,7 @@ function OpenCommandPaletteDialog() {
         projects,
         valuePrefix: "new-thread-in",
         shortcutCommand: "chat.new",
-        icon: (project) => (
-          <ProjectFavicon
-            environmentId={project.environmentId}
-            cwd={project.cwd}
-            className={ITEM_ICON_CLASS}
-          />
-        ),
+        icon: renderProjectPaletteIcon,
         runProject: async (project) => {
           await startNewThreadInProjectFromContext(
             {

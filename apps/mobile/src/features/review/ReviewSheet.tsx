@@ -46,6 +46,104 @@ const ReviewNotice = memo(function ReviewNotice(props: { readonly notice: string
   );
 });
 
+function ReviewHeaderTitle(props: {
+  readonly foreground: string;
+  readonly muted: string;
+  readonly additions: string | null;
+  readonly deletions: string | null;
+  readonly pendingReviewCommentCount: number;
+  readonly selectedSectionTitle: string | null;
+}) {
+  return (
+    <View style={{ alignItems: "center" }}>
+      <NativeText
+        numberOfLines={1}
+        style={{
+          fontFamily: "DMSans_700Bold",
+          fontSize: 18,
+          fontWeight: "900",
+          color: props.foreground,
+          letterSpacing: -0.4,
+        }}
+      >
+        Files Changed
+      </NativeText>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 6,
+          flexWrap: "wrap",
+        }}
+      >
+        {props.additions && props.deletions ? (
+          <>
+            <NativeText
+              style={{
+                fontFamily: "DMSans_700Bold",
+                fontSize: 12,
+                fontWeight: "700",
+                color: "#16a34a",
+              }}
+            >
+              {props.additions}
+            </NativeText>
+            <NativeText
+              style={{
+                fontFamily: "DMSans_700Bold",
+                fontSize: 12,
+                fontWeight: "700",
+                color: "#e11d48",
+              }}
+            >
+              {props.deletions}
+            </NativeText>
+            {props.pendingReviewCommentCount > 0 ? (
+              <NativeText
+                style={{
+                  fontFamily: "DMSans_700Bold",
+                  fontSize: 12,
+                  fontWeight: "700",
+                  color: "#b45309",
+                }}
+              >
+                {props.pendingReviewCommentCount} pending
+              </NativeText>
+            ) : null}
+          </>
+        ) : (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <NativeText
+              numberOfLines={1}
+              style={{
+                fontFamily: "DMSans_700Bold",
+                fontSize: 12,
+                fontWeight: "700",
+                color: props.muted,
+              }}
+            >
+              {props.selectedSectionTitle ?? "Review changes"}
+            </NativeText>
+            {props.pendingReviewCommentCount > 0 ? (
+              <NativeText
+                style={{
+                  fontFamily: "DMSans_700Bold",
+                  fontSize: 12,
+                  fontWeight: "700",
+                  color: "#b45309",
+                }}
+              >
+                {props.pendingReviewCommentCount} pending
+              </NativeText>
+            ) : null}
+          </View>
+        )}
+      </View>
+    </View>
+  );
+}
+
 function ReviewSelectionActionBar(props: {
   readonly bottomInset: number;
   readonly title: string | null;
@@ -210,6 +308,26 @@ export function ReviewSheet() {
 
     return <>{children}</>;
   }, [error, parsedDiffNotice]);
+  const renderHeaderTitle = useCallback(
+    () => (
+      <ReviewHeaderTitle
+        foreground={headerForeground}
+        muted={headerMuted}
+        additions={headerDiffSummary.additions}
+        deletions={headerDiffSummary.deletions}
+        pendingReviewCommentCount={pendingReviewCommentCount}
+        selectedSectionTitle={selectedSection?.title ?? null}
+      />
+    ),
+    [
+      headerDiffSummary.additions,
+      headerDiffSummary.deletions,
+      headerForeground,
+      headerMuted,
+      pendingReviewCommentCount,
+      selectedSection?.title,
+    ],
+  );
 
   return (
     <>
@@ -221,94 +339,7 @@ export function ReviewSheet() {
           headerStyle: {
             backgroundColor: "transparent",
           },
-          headerTitle: () => (
-            <View style={{ alignItems: "center" }}>
-              <NativeText
-                numberOfLines={1}
-                style={{
-                  fontFamily: "DMSans_700Bold",
-                  fontSize: 18,
-                  fontWeight: "900",
-                  color: headerForeground,
-                  letterSpacing: -0.4,
-                }}
-              >
-                Files Changed
-              </NativeText>
-              <View
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                  flexWrap: "wrap",
-                }}
-              >
-                {headerDiffSummary.additions && headerDiffSummary.deletions ? (
-                  <>
-                    <NativeText
-                      style={{
-                        fontFamily: "DMSans_700Bold",
-                        fontSize: 12,
-                        fontWeight: "700",
-                        color: "#16a34a",
-                      }}
-                    >
-                      {headerDiffSummary.additions}
-                    </NativeText>
-                    <NativeText
-                      style={{
-                        fontFamily: "DMSans_700Bold",
-                        fontSize: 12,
-                        fontWeight: "700",
-                        color: "#e11d48",
-                      }}
-                    >
-                      {headerDiffSummary.deletions}
-                    </NativeText>
-                    {pendingReviewCommentCount > 0 ? (
-                      <NativeText
-                        style={{
-                          fontFamily: "DMSans_700Bold",
-                          fontSize: 12,
-                          fontWeight: "700",
-                          color: "#b45309",
-                        }}
-                      >
-                        {pendingReviewCommentCount} pending
-                      </NativeText>
-                    ) : null}
-                  </>
-                ) : (
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                    <NativeText
-                      numberOfLines={1}
-                      style={{
-                        fontFamily: "DMSans_700Bold",
-                        fontSize: 12,
-                        fontWeight: "700",
-                        color: headerMuted,
-                      }}
-                    >
-                      {selectedSection?.title ?? "Review changes"}
-                    </NativeText>
-                    {pendingReviewCommentCount > 0 ? (
-                      <NativeText
-                        style={{
-                          fontFamily: "DMSans_700Bold",
-                          fontSize: 12,
-                          fontWeight: "700",
-                          color: "#b45309",
-                        }}
-                      >
-                        {pendingReviewCommentCount} pending
-                      </NativeText>
-                    ) : null}
-                  </View>
-                )}
-              </View>
-            </View>
-          ),
+          headerTitle: renderHeaderTitle,
         }}
       />
 
