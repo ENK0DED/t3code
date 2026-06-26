@@ -13,6 +13,9 @@ import packageJson from "../../package.json" with { type: "json" };
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts";
+import { OrchestrationToolkitHandlersLive } from "./toolkits/orchestration/handlers.ts";
+import { OrchestrationToolkit } from "./toolkits/orchestration/tools.ts";
 import {
   PreviewSnapshotToolkitHandlersLive,
   PreviewStandardToolkitHandlersLive,
@@ -174,9 +177,18 @@ const PreviewSnapshotRegistrationLive = Layer.effectDiscard(registerPreviewSnaps
   Layer.provide(PreviewSnapshotToolkitHandlersLive),
 );
 
+const OrchestrationToolkitRegistrationLive = McpServer.toolkit(OrchestrationToolkit).pipe(
+  Layer.provide(OrchestrationToolkitHandlersLive),
+);
+
 export const PreviewToolkitRegistrationLive = Layer.mergeAll(
   PreviewStandardToolkitRegistrationLive,
   PreviewSnapshotRegistrationLive,
+);
+
+export const McpToolkitRegistrationLive = Layer.mergeAll(
+  PreviewToolkitRegistrationLive,
+  OrchestrationToolkitRegistrationLive,
 );
 
 const McpTransportLive = McpServer.layerHttp({
@@ -185,7 +197,8 @@ const McpTransportLive = McpServer.layerHttp({
   path: "/mcp",
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
-export const layer = PreviewToolkitRegistrationLive.pipe(
+export const layer = McpToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpTransportLive),
+  Layer.provide(McpOrchestrationServiceLive),
   Layer.provide(PreviewAutomationBroker.layer),
 );

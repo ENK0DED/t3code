@@ -3,7 +3,7 @@ import { PreviewAutomationUnavailableError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
-export type McpCapability = "preview";
+export type McpCapability = "preview" | "orchestration.read" | "orchestration.write";
 
 export interface McpInvocationScope {
   readonly environmentId: EnvironmentId;
@@ -31,3 +31,13 @@ export const requireMcpCapability = Effect.fn("mcp.requireCapability")(function*
   }
   return invocation;
 });
+
+export const requireMcpOrchestrationRead = Effect.fn("mcp.requireOrchestrationRead")(function* () {
+  return yield* requireMcpCapability("orchestration.read");
+});
+
+export const requireMcpOrchestrationWrite = Effect.fn("mcp.requireOrchestrationWrite")(
+  function* () {
+    return yield* requireMcpCapability("orchestration.write");
+  },
+);

@@ -1,14 +1,24 @@
 import { expect, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { NodeHttpServer } from "@effect/platform-node";
 import { EnvironmentId, PreviewTabId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/unstable/ai";
-import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import {
+  HttpBody,
+  HttpClient,
+  HttpRouter,
+  HttpServer,
+  HttpServerResponse,
+} from "effect/unstable/http";
 
+import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts";
+import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-test");
@@ -19,7 +29,7 @@ const invocation = {
   threadId,
   providerSessionId: "provider-session-mcp-test",
   providerInstanceId: ProviderInstanceId.make("codex"),
-  capabilities: new Set(["preview"] as const),
+  capabilities: new Set(["preview", "orchestration.read", "orchestration.write"] as const),
   issuedAt: 1,
   expiresAt: Number.MAX_SAFE_INTEGER,
 };
@@ -32,9 +42,28 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
-const TestLayer = McpHttpServer.PreviewToolkitRegistrationLive.pipe(
+const fakeHttpServer = HttpServer.HttpServer.of({
+  address: { _tag: "TcpAddress", hostname: "127.0.0.1", port: 43123 },
+  serve: (() => Effect.void) as HttpServer.HttpServer["Service"]["serve"],
+});
+const fakeEnvironment = ServerEnvironment.of({
+  getEnvironmentId: Effect.succeed(environmentId),
+  getDescriptor: Effect.die("unused"),
+});
+const TestLayer = McpHttpServer.McpToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(PreviewAutomationBroker.layer),
+  Layer.provide(McpOrchestrationServiceLive),
+);
+const RegistryTestLayer = Layer.effect(
+  McpSessionRegistry.McpSessionRegistry,
+  McpSessionRegistry.__testing
+    .make()
+    .pipe(
+      Effect.provideService(HttpServer.HttpServer, fakeHttpServer),
+      Effect.provideService(ServerEnvironment, fakeEnvironment),
+      Effect.provide(NodeServices.layer),
+    ),
 );
 
 it("normalizes empty successful notification responses to accepted", () => {
@@ -173,6 +202,11 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(navigateTool?.tool.annotations?.destructiveHint).toBe(false);
       expect(navigateTool?.tool.annotations?.openWorldHint).toBe(true);
 
+      const listModelsTool = server.tools.find(({ tool }) => tool.name === "list_mcp_models");
+      expect(listModelsTool?.tool.description).toBe(
+        "Return provider instances and MCP-enabled models available to MCP tools.",
+      );
+
       const status = yield* server
         .callTool({ name: "preview_status", arguments: {} })
         .pipe(
@@ -214,6 +248,35 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(press.isError).toBe(false);
       expect(press.structuredContent).toBeNull();
       expect(press.content).toEqual([{ type: "text", text: "null" }]);
+
+      const orchestration = yield* server
+        .callTool({ name: "list_mcp_models", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(orchestration.isError).toBe(true);
+      expect(orchestration.content[0]?.type).toBe("text");
+      expect(
+        orchestration.content[0]?.type === "text" ? orchestration.content[0].text : "",
+      ).toContain("registered but not implemented yet");
     }),
   ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("issues provider MCP credentials with orchestration capabilities", () =>
+  Effect.gen(function* () {
+    const registry = yield* McpSessionRegistry.McpSessionRegistry;
+    const issued = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+
+    const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const resolved = yield* registry.resolve(token);
+
+    expect(resolved?.capabilities.has("preview")).toBe(true);
+    expect(resolved?.capabilities.has("orchestration.read")).toBe(true);
+    expect(resolved?.capabilities.has("orchestration.write")).toBe(true);
+  }).pipe(Effect.provide(RegistryTestLayer)),
 );
