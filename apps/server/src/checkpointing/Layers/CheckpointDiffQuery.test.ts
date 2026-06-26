@@ -108,6 +108,7 @@ describe("CheckpointDiffQueryLive", () => {
             }),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          searchThreadMessagesByProject: () => Effect.succeed([]),
         }),
       ),
     );
@@ -200,6 +201,7 @@ describe("CheckpointDiffQueryLive", () => {
           getFullThreadDiffContext: () => Effect.die("unused"),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          searchThreadMessagesByProject: () => Effect.succeed([]),
         }),
       ),
     );
@@ -282,6 +284,7 @@ describe("CheckpointDiffQueryLive", () => {
           getFullThreadDiffContext: () => Effect.die("unused"),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          searchThreadMessagesByProject: () => Effect.succeed([]),
         }),
       ),
     );
@@ -349,6 +352,7 @@ describe("CheckpointDiffQueryLive", () => {
           getFullThreadDiffContext: () => Effect.die("unused"),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          searchThreadMessagesByProject: () => Effect.succeed([]),
         }),
       ),
     );
@@ -401,6 +405,7 @@ describe("CheckpointDiffQueryLive", () => {
           getFullThreadDiffContext: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          searchThreadMessagesByProject: () => Effect.succeed([]),
         }),
       ),
     );

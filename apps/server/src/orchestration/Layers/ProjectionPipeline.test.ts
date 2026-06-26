@@ -187,6 +187,99 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
   );
 });
 
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-fts-")))(
+  "OrchestrationProjectionPipeline",
+  (it) => {
+    it.effect("mirrors projected thread messages into FTS rows on bootstrap", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const now = "2026-01-01T00:00:00.000Z";
+
+        yield* eventStore.append({
+          type: "project.created",
+          eventId: EventId.make("evt-fts-project"),
+          aggregateKind: "project",
+          aggregateId: ProjectId.make("project-fts"),
+          occurredAt: now,
+          commandId: CommandId.make("cmd-fts-project"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-fts-project"),
+          metadata: {},
+          payload: {
+            projectId: ProjectId.make("project-fts"),
+            title: "Project FTS",
+            workspaceRoot: "/tmp/project-fts",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        yield* eventStore.append({
+          type: "thread.created",
+          eventId: EventId.make("evt-fts-thread"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-fts"),
+          occurredAt: now,
+          commandId: CommandId.make("cmd-fts-thread"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-fts-thread"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-fts"),
+            projectId: ProjectId.make("project-fts"),
+            parentThreadId: null,
+            title: "Thread FTS",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        yield* eventStore.append({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-fts-message"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-fts"),
+          occurredAt: now,
+          commandId: CommandId.make("cmd-fts-message"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-fts-message"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-fts"),
+            messageId: MessageId.make("message-fts"),
+            role: "user",
+            text: "Investigate reconnect failures",
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        yield* projectionPipeline.bootstrap;
+
+        const rows = yield* sql<{ readonly messageId: string }>`
+          SELECT message_id AS "messageId"
+          FROM projection_thread_messages_fts
+          WHERE projection_thread_messages_fts MATCH 'reconnect'
+        `;
+        assert.deepEqual(rows, [{ messageId: "message-fts" }]);
+      }),
+    );
+  },
+);
+
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(
   "OrchestrationProjectionPipeline",
   (it) => {

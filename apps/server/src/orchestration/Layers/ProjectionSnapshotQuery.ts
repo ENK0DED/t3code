@@ -48,6 +48,7 @@ import { ProjectionThreadMessage } from "../../persistence/Services/ProjectionTh
 import { ProjectionThreadProposedPlan } from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
 import { ProjectionThreadSession } from "../../persistence/Services/ProjectionThreadSessions.ts";
 import { ProjectionThread } from "../../persistence/Services/ProjectionThreads.ts";
+import { makeProjectionThreadMessageSearchRepository } from "../../persistence/Layers/ProjectionThreadMessageSearch.ts";
 import { RepositoryIdentityResolver } from "../../project/Services/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import {
@@ -263,6 +264,8 @@ function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: st
 const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repositoryIdentityResolver = yield* RepositoryIdentityResolver;
+  const projectionThreadMessageSearchRepository =
+    yield* makeProjectionThreadMessageSearchRepository;
   const repositoryIdentityResolutionConcurrency = 4;
   const resolveRepositoryIdentitiesForProjects = Effect.fn(
     "ProjectionSnapshotQuery.resolveRepositoryIdentitiesForProjects",
@@ -2043,6 +2046,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       );
     });
 
+  const searchThreadMessagesByProject: ProjectionSnapshotQueryShape["searchThreadMessagesByProject"] =
+    (input) => projectionThreadMessageSearchRepository.searchByProject(input);
+
   return {
     getCommandReadModel,
     getSnapshot,
@@ -2057,6 +2063,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getFullThreadDiffContext,
     getThreadShellById,
     getThreadDetailById,
+    searchThreadMessagesByProject,
   } satisfies ProjectionSnapshotQueryShape;
 });
 

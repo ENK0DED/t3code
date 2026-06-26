@@ -23,6 +23,10 @@ import type * as Option from "effect/Option";
 import type * as Effect from "effect/Effect";
 
 import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
+import type {
+  ProjectionThreadMessageSearchHit,
+  SearchProjectionThreadMessagesInput,
+} from "../../persistence/Services/ProjectionThreadMessageSearch.ts";
 
 export interface ProjectionSnapshotCounts {
   readonly projectCount: number;
@@ -157,6 +161,13 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadDetailById: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
+
+  /**
+   * Search projected thread messages for a project.
+   */
+  readonly searchThreadMessagesByProject: (
+    input: SearchProjectionThreadMessagesInput,
+  ) => Effect.Effect<ReadonlyArray<ProjectionThreadMessageSearchHit>, ProjectionRepositoryError>;
 }
 
 /**

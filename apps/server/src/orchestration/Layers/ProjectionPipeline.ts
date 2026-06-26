@@ -485,6 +485,49 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
 
+    const upsertMessageFts = (message: ProjectionThreadMessage) =>
+      sql`
+        INSERT INTO projection_thread_messages_fts (
+          message_id,
+          thread_id,
+          role,
+          text,
+          created_at
+        )
+        VALUES (
+          ${message.messageId},
+          ${message.threadId},
+          ${message.role},
+          ${message.text},
+          ${message.createdAt}
+        )
+      `.pipe(
+        Effect.asVoid,
+        Effect.mapError(toPersistenceSqlError("ProjectionPipeline.threadMessages.upsertFts:query")),
+      );
+
+    const deleteMessageFtsByMessageId = (messageId: ProjectionThreadMessage["messageId"]) =>
+      sql`
+        DELETE FROM projection_thread_messages_fts
+        WHERE message_id = ${messageId}
+      `.pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionPipeline.threadMessages.deleteFtsByMessageId:query"),
+        ),
+      );
+
+    const deleteMessageFtsByThread = (threadId: ThreadId) =>
+      sql`
+        DELETE FROM projection_thread_messages_fts
+        WHERE thread_id = ${threadId}
+      `.pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionPipeline.threadMessages.deleteFtsByThread:query"),
+        ),
+      );
+
     const applyProjectsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyProjectsProjection",
     )(function* (event, _attachmentSideEffects) {
@@ -835,7 +878,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   attachments: event.payload.attachments,
                 })
               : previousMessage?.attachments;
-          yield* projectionThreadMessageRepository.upsert({
+          const nextMessage = {
             messageId: event.payload.messageId,
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
@@ -845,7 +888,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
-          });
+          } satisfies ProjectionThreadMessage;
+          yield* projectionThreadMessageRepository.upsert(nextMessage);
+          yield* deleteMessageFtsByMessageId(event.payload.messageId);
+          yield* upsertMessageFts(nextMessage);
           return;
         }
 
@@ -872,7 +918,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadMessageRepository.deleteByThreadId({
             threadId: event.payload.threadId,
           });
+          yield* deleteMessageFtsByThread(event.payload.threadId);
           yield* Effect.forEach(keptRows, projectionThreadMessageRepository.upsert, {
+            concurrency: 1,
+          }).pipe(Effect.asVoid);
+          yield* Effect.forEach(keptRows, upsertMessageFts, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
           attachmentSideEffects.prunedThreadRelativePaths.set(
