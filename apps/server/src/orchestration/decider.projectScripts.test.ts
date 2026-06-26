@@ -133,6 +133,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
         payload: {
           threadId: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
+          parentThreadId: null,
           title: "Thread",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -230,6 +231,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
         payload: {
           threadId: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
+          parentThreadId: null,
           title: "Thread",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -308,6 +310,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
         payload: {
           threadId: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
+          parentThreadId: null,
           title: "Thread",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
