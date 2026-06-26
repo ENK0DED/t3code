@@ -715,6 +715,52 @@ it.effect("getThreadSettings resolves provider and option labels for the MCP thr
   ),
 );
 
+it.effect("getThreadSettings reads an explicit non-current thread when threadId is provided", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.getThreadSettings({
+      threadId: ThreadId.make("thread-explicit"),
+    });
+
+    expect(result.threadId).toBe(ThreadId.make("thread-explicit"));
+    expect(result.projectId).toBe(ProjectId.make("project-explicit"));
+    expect(result.title).toBe("Explicit MCP Thread");
+    expect(result.parentThreadId).toBe(ThreadId.make("thread-parent"));
+    expect(result.threadDepth).toBe(1);
+    expect(result.canCreateChildThread).toBe(false);
+    expect(result.modelSelection).toEqual(defaultModelSelection());
+    expect(result.resolvedModel?.provider.name).toBe("Codex");
+    expect(result.resolvedModel?.model.slug).toBe("gpt-5.5");
+  }).pipe(
+    Effect.provide(
+      makeReadHarnessLayer({
+        providers: [
+          makeProvider({
+            instanceId: "codex",
+            driver: ProviderDriverKind.make("codex"),
+            models: [
+              {
+                slug: "gpt-5.5",
+                name: "GPT-5.5",
+                isCustom: false,
+                capabilities: createModelCapabilities({ optionDescriptors: [] }),
+              },
+            ],
+            displayName: "Codex",
+          }),
+        ],
+        threadDetail: makeThreadDetail({
+          id: ThreadId.make("thread-explicit"),
+          projectId: ProjectId.make("project-explicit"),
+          parentThreadId: ThreadId.make("thread-parent"),
+          title: "Explicit MCP Thread",
+          modelSelection: defaultModelSelection(),
+        }),
+      }),
+    ),
+  ),
+);
+
 it.effect("getThreadSettings returns raw stale model selection with a warning", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
