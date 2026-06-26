@@ -26,11 +26,6 @@ import {
   scoreQueryMatch,
   type RankedSearchResult,
 } from "@t3tools/shared/searchRanking";
-import {
-  canThreadCreateChild,
-  getThreadTreeDepth,
-  MAX_THREAD_TREE_DEPTH,
-} from "@t3tools/shared/threadTree";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/projectPaths";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -556,16 +551,22 @@ export const McpOrchestrationServiceLive = Layer.effect(
     );
 
     const resolveParentThreadId = (input: {
-      readonly placement?: "top_level" | "child_of_thread" | undefined;
+      readonly placement?: "child_of_current" | "top_level" | "child_of_thread" | undefined;
       readonly explicitParentThreadId?: ThreadId | undefined;
       readonly targetProjectId: ProjectId;
       readonly currentThread: OrchestrationThread;
     }): Effect.Effect<ThreadId | null, McpOrchestrationError> =>
       Effect.gen(function* () {
-        const placement = input.placement ?? "top_level";
+        const placement =
+          input.placement ??
+          (input.targetProjectId === input.currentThread.projectId
+            ? "child_of_current"
+            : "top_level");
         switch (placement) {
           case "top_level":
             return null;
+          case "child_of_current":
+            return input.currentThread.id;
           case "child_of_thread":
             if (!input.explicitParentThreadId) {
               return yield* new McpOrchestrationError({
@@ -591,12 +592,6 @@ export const McpOrchestrationServiceLive = Layer.effect(
         return yield* new McpOrchestrationError({
           code: "cross_project_parent",
           message: `cross_project_parent: Thread '${input.parentThreadId}' belongs to project '${parentThread.projectId}' and cannot parent a thread in project '${input.targetProjectId}'.`,
-        });
-      }
-      if (!canThreadCreateChild(parentThread)) {
-        return yield* new McpOrchestrationError({
-          code: "thread_depth_exceeded",
-          message: `thread_depth_exceeded: Thread '${input.parentThreadId}' is already at the maximum thread depth of ${MAX_THREAD_TREE_DEPTH}.`,
         });
       }
       return parentThread.id;
@@ -1057,7 +1052,6 @@ export const McpOrchestrationServiceLive = Layer.effect(
                 return Effect.succeed({
                   threadId: thread.id,
                   projectId: thread.projectId,
-                  parentThreadId: thread.parentThreadId,
                   provider: {
                     instanceId: provider.instanceId,
                     driver: provider.driver,
@@ -1090,9 +1084,6 @@ export const McpOrchestrationServiceLive = Layer.effect(
                       : "current_checkout",
                   branch: thread.branch,
                   worktreePath: thread.worktreePath,
-                  threadDepth: getThreadTreeDepth(thread),
-                  maxThreadDepth: MAX_THREAD_TREE_DEPTH,
-                  canCreateChildThread: canThreadCreateChild(thread),
                   session: thread.session,
                 });
               }),
@@ -1161,7 +1152,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
         Effect.gen(function* () {
           const input = rawInput as {
             readonly projectId?: ProjectId;
-            readonly placement?: "top_level" | "child_of_thread";
+            readonly placement?: "child_of_current" | "top_level" | "child_of_thread";
             readonly parentThreadId?: ThreadId;
             readonly title?: string;
             readonly message?: string;
@@ -1336,9 +1327,6 @@ export const McpOrchestrationServiceLive = Layer.effect(
             readonly threadId: ThreadId;
             readonly message: string;
             readonly modelSelection?: ModelSelection;
-            readonly checkoutMode?: "current_checkout" | "new_worktree";
-            readonly branch?: string | null;
-            readonly baseBranch?: string;
           };
           const thread = yield* requireIdleThread(input.threadId);
           const desiredModelSelection = input.modelSelection ?? thread.modelSelection;
@@ -1349,64 +1337,30 @@ export const McpOrchestrationServiceLive = Layer.effect(
             requestedModelSelection: input.modelSelection,
           });
 
-          const shouldPrepareWorktree =
-            thread.messages.length === 0 &&
-            thread.worktreePath === null &&
-            (input.checkoutMode === "new_worktree" || input.baseBranch !== undefined);
           const messageId = makeMessageId();
           const createdAt = yield* currentIsoTimestamp();
-          const turnStartCommand = {
-            type: "thread.turn.start" as const,
-            commandId: makeCommandId("thread-turn-start"),
-            threadId: input.threadId,
-            message: {
-              messageId,
-              role: "user" as const,
-              text: input.message,
-              attachments: [],
-            },
-            modelSelection: desiredModelSelection,
-            titleSeed: thread.title,
-            runtimeMode: thread.runtimeMode,
-            interactionMode: thread.interactionMode,
-            createdAt,
-          };
-          let accepted: { readonly sequence: number };
-          if (shouldPrepareWorktree) {
-            const bootstrapBaseBranch = input.baseBranch;
-            if (!bootstrapBaseBranch) {
-              return yield* new McpOrchestrationError({
-                code: "missing_base_branch",
-                message: `missing_base_branch: Thread '${input.threadId}' requires a baseBranch when checkoutMode is 'new_worktree' and the first message should prepare a worktree.`,
-              });
-            }
-            const project = yield* requireProject(thread.projectId);
-            accepted = yield* bootstrapDispatcher
-              .dispatch({
-                ...turnStartCommand,
-                bootstrap: {
-                  prepareWorktree: {
-                    projectCwd: project.workspaceRoot,
-                    baseBranch: bootstrapBaseBranch,
-                    branch: input.branch ?? buildTemporaryWorktreeBranchName(randomHex),
-                  },
-                  runSetupScript: true,
-                },
-              })
-              .pipe(
-                Effect.mapError((error) =>
-                  toInternalError("Failed to dispatch orchestration command.", error),
-                ),
-              );
-          } else {
-            accepted = yield* orchestrationEngine
-              .dispatch(turnStartCommand)
-              .pipe(
-                Effect.mapError((error) =>
-                  toInternalError("Failed to dispatch orchestration command.", error),
-                ),
-              );
-          }
+          const accepted = yield* orchestrationEngine
+            .dispatch({
+              type: "thread.turn.start",
+              commandId: makeCommandId("thread-turn-start"),
+              threadId: input.threadId,
+              message: {
+                messageId,
+                role: "user",
+                text: input.message,
+                attachments: [],
+              },
+              modelSelection: desiredModelSelection,
+              titleSeed: thread.title,
+              runtimeMode: thread.runtimeMode,
+              interactionMode: thread.interactionMode,
+              createdAt,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
 
           return {
             status: "accepted" as const,

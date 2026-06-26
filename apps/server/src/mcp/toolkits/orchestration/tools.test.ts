@@ -50,26 +50,24 @@ it("exposes project settings tools separately from project selectors", () => {
   expect(OrchestrationToolkit.tools.update_project_settings).toBeDefined();
 });
 
-it("exposes worktree bootstrap inputs on turn-start tools only", () => {
-  const sendSchema = Tool.getJsonSchema(OrchestrationToolkit.tools.send_thread_message) as {
-    readonly properties?: Readonly<Record<string, unknown>>;
-  };
-  const updateSchema = Tool.getJsonSchema(OrchestrationToolkit.tools.update_thread_settings) as {
+it("keeps send_thread_message scoped to message delivery", () => {
+  const schema = Tool.getJsonSchema(OrchestrationToolkit.tools.send_thread_message) as {
     readonly properties?: Readonly<Record<string, unknown>>;
   };
 
-  expect(sendSchema.properties?.checkoutMode).toBeDefined();
-  expect(sendSchema.properties?.branch).toBeDefined();
-  expect(sendSchema.properties?.baseBranch).toBeDefined();
-  expect(sendSchema.properties?.worktreePath).toBeUndefined();
-  expect(updateSchema.properties?.baseBranch).toBeUndefined();
+  expect(schema.properties?.threadId).toBeDefined();
+  expect(schema.properties?.message).toBeDefined();
+  expect(schema.properties?.modelSelection).toBeDefined();
+  expect(schema.properties?.checkoutMode).toBeUndefined();
+  expect(schema.properties?.branch).toBeUndefined();
+  expect(schema.properties?.baseBranch).toBeUndefined();
 });
 
-it("does not suggest implicit current-thread child placement", () => {
+it("retains create_thread child_of_current placement support", () => {
   const createSchema = Tool.getJsonSchema(OrchestrationToolkit.tools.create_thread);
   const serialized = JSON.stringify(createSchema);
 
-  expect(serialized).not.toContain("child_of_current");
+  expect(serialized).toContain("child_of_current");
   expect(serialized).toContain("child_of_thread");
   expect(serialized).toContain("top_level");
 });

@@ -219,7 +219,7 @@ export const GetThreadHistoryTool = Tool.make("get_thread_history", {
 });
 
 export const GetCurrentThreadSettingsTool = Tool.make("get_current_thread_settings", {
-  description: "Return settings and thread-depth limits for the current MCP credential thread.",
+  description: "Return settings for the current MCP credential thread.",
   success: Schema.Unknown,
   failure: McpOrchestrationError,
   parameters: EmptyObjectInput,
@@ -274,7 +274,11 @@ export const AddProjectTool = Tool.make("add_project", {
   dependencies,
 });
 
-export const ThreadPlacement = Schema.Literals(["top_level", "child_of_thread"]);
+export const ThreadPlacement = Schema.Literals([
+  "child_of_current",
+  "top_level",
+  "child_of_thread",
+]);
 
 export const CreateThreadTool = Tool.make("create_thread", {
   description:
@@ -286,11 +290,11 @@ export const CreateThreadTool = Tool.make("create_thread", {
     placement: Schema.optional(
       ThreadPlacement.annotate({
         description:
-          "Where to place the new thread. Defaults to top_level. Use child_of_thread with parentThreadId to create one sub-thread level; max thread depth is 1.",
+          "Where to place the new thread. Defaults to child_of_current in the current project, otherwise top_level. Use child_of_thread with parentThreadId to pick a specific parent thread.",
       }),
     ).annotate({
       description:
-        "Where to place the new thread. Defaults to top_level. Use child_of_thread with parentThreadId to create one sub-thread level; max thread depth is 1.",
+        "Where to place the new thread. Defaults to child_of_current in the current project, otherwise top_level. Use child_of_thread with parentThreadId to pick a specific parent thread.",
     }),
     parentThreadId: OptionalParentThreadIdInput,
     title: Schema.optional(
@@ -332,9 +336,6 @@ export const SendThreadMessageTool = Tool.make("send_thread_message", {
       description: "User message to send to the idle thread.",
     }),
     modelSelection: OptionalModelSelectionInput,
-    checkoutMode: OptionalCheckoutModeInput,
-    branch: OptionalBranchInput,
-    baseBranch: OptionalBaseBranchInput,
   }),
   dependencies,
 });

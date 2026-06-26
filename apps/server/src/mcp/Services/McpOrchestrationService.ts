@@ -140,7 +140,6 @@ export interface ListThreadsResult {
 export interface CurrentThreadSettingsResult {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
-  readonly parentThreadId: ThreadId | null;
   readonly provider: {
     readonly instanceId: ProviderInstanceId;
     readonly driver: ProviderDriverKind;
@@ -161,9 +160,6 @@ export interface CurrentThreadSettingsResult {
   readonly checkoutMode: "current_checkout" | "new_worktree";
   readonly branch: string | null;
   readonly worktreePath: string | null;
-  readonly threadDepth: 0 | 1;
-  readonly maxThreadDepth: 1;
-  readonly canCreateChildThread: boolean;
   readonly session: unknown;
 }
 

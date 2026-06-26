@@ -569,13 +569,14 @@ it.effect("getCurrentThreadSettings resolves provider and option labels for the 
       checkoutMode: "new_worktree",
       branch: "feat/mcp-read",
       worktreePath: "/worktrees/thread-current",
-      threadDepth: 0,
-      maxThreadDepth: 1,
-      canCreateChildThread: true,
       session: {
         status: "running",
       },
     });
+    expect(result).not.toHaveProperty("parentThreadId");
+    expect(result).not.toHaveProperty("threadDepth");
+    expect(result).not.toHaveProperty("maxThreadDepth");
+    expect(result).not.toHaveProperty("canCreateChildThread");
   }).pipe(
     Effect.provide(
       makeReadHarnessLayer({
@@ -626,45 +627,6 @@ it.effect("getCurrentThreadSettings resolves provider and option labels for the 
             lastError: null,
             updatedAt: "2026-01-01T00:00:00.000Z",
           },
-        }),
-      }),
-    ),
-  ),
-);
-
-it.effect("getCurrentThreadSettings reports that sub-threads cannot create child threads", () =>
-  Effect.gen(function* () {
-    const service = yield* McpOrchestrationService;
-    const result = yield* service.getCurrentThreadSettings();
-
-    expect(result).toMatchObject({
-      threadId: ThreadId.make("thread-current"),
-      parentThreadId: ThreadId.make("thread-parent"),
-      threadDepth: 1,
-      maxThreadDepth: 1,
-      canCreateChildThread: false,
-    });
-  }).pipe(
-    Effect.provide(
-      makeReadHarnessLayer({
-        providers: [
-          makeProvider({
-            instanceId: "codex",
-            driver: ProviderDriverKind.make("codex"),
-            models: [
-              {
-                slug: "gpt-5.5",
-                name: "GPT-5.5",
-                isCustom: false,
-                capabilities: createModelCapabilities({ optionDescriptors: [] }),
-              },
-            ],
-          }),
-        ],
-        threadDetail: makeThreadDetail({
-          id: ThreadId.make("thread-current"),
-          projectId: ProjectId.make("project-current"),
-          parentThreadId: ThreadId.make("thread-parent"),
         }),
       }),
     ),
