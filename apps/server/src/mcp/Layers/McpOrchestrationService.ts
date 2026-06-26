@@ -1262,7 +1262,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           if (shouldPrepareWorktree && !bootstrapBaseBranch) {
             return yield* new McpOrchestrationError({
               code: "missing_base_branch",
-              message: `missing_base_branch: Thread '${threadId}' requires a baseBranch when checkoutMode is 'new_worktree' and a first message is supplied.`,
+              message: `Thread '${threadId}' requires a baseBranch when checkoutMode is 'new_worktree' and a first message is supplied.`,
             });
           }
 
