@@ -15,6 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
+import * as Cause from "effect/Cause";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts";
@@ -292,6 +293,76 @@ it.effect("summary history uses the configured text generation model", () =>
       }),
     ),
   ),
+);
+
+it.effect("complete history fails for a malformed cursor", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.getThreadHistory({
+        threadId: ThreadId.make("thread-1"),
+        mode: "complete",
+        cursor: "not-a-number",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as {
+        readonly _tag: string;
+        readonly code: string;
+      };
+      expect(error._tag).toBe("McpOrchestrationError");
+      expect(error.code).toBe("invalid_cursor");
+    }
+  }).pipe(Effect.provide(makeHistoryHarnessLayer())),
+);
+
+it.effect("complete history fails for a negative cursor", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.getThreadHistory({
+        threadId: ThreadId.make("thread-1"),
+        mode: "complete",
+        cursor: "-1",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as {
+        readonly _tag: string;
+        readonly code: string;
+      };
+      expect(error._tag).toBe("McpOrchestrationError");
+      expect(error.code).toBe("invalid_cursor");
+    }
+  }).pipe(Effect.provide(makeHistoryHarnessLayer())),
+);
+
+it.effect("complete history accepts a valid cursor", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.getThreadHistory({
+      threadId: ThreadId.make("thread-1"),
+      mode: "complete",
+      cursor: "0",
+    });
+
+    expect(result).toMatchObject({
+      mode: "complete",
+      thread: {
+        id: "thread-1",
+        messages: [
+          {
+            role: "user",
+            text: "Investigate reconnect failures",
+          },
+        ],
+      },
+    });
+  }).pipe(Effect.provide(makeHistoryHarnessLayer())),
 );
 
 it.effect("complete history fails instead of truncating when over budget", () =>

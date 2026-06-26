@@ -58,13 +58,24 @@ const requireRead = Effect.fn("McpOrchestrationService.requireRead")(function* (
   );
 });
 
-function parseHistoryCursor(cursor: string | undefined): number {
+function parseHistoryCursor(
+  cursor: string | undefined,
+): Effect.Effect<number, McpOrchestrationError> {
   if (!cursor) {
-    return 0;
+    return Effect.succeed(0);
   }
 
   const parsed = Number.parseInt(cursor, 10);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+  if (Number.isSafeInteger(parsed) && parsed >= 0 && parsed.toString() === cursor) {
+    return Effect.succeed(parsed);
+  }
+
+  return Effect.fail(
+    new McpOrchestrationError({
+      code: "invalid_cursor",
+      message: `Cursor '${cursor}' is invalid. Expected a non-negative integer.`,
+    }),
+  );
 }
 
 function applyHistoryWindow(
@@ -73,18 +84,20 @@ function applyHistoryWindow(
     readonly limit?: number | undefined;
     readonly cursor?: string | undefined;
   },
-): OrchestrationThread {
-  const start = parseHistoryCursor(input.cursor);
-  const end = input.limit !== undefined ? start + input.limit : undefined;
+): Effect.Effect<OrchestrationThread, McpOrchestrationError> {
+  return Effect.gen(function* () {
+    const start = yield* parseHistoryCursor(input.cursor);
+    const end = input.limit !== undefined ? start + input.limit : undefined;
 
-  if (start === 0 && end === undefined) {
-    return thread;
-  }
+    if (start === 0 && end === undefined) {
+      return thread;
+    }
 
-  return {
-    ...thread,
-    messages: thread.messages.slice(start, end),
-  };
+    return {
+      ...thread,
+      messages: thread.messages.slice(start, end),
+    };
+  });
 }
 
 function toInternalError(message: string, detail?: unknown): McpOrchestrationError {
@@ -392,9 +405,10 @@ export const McpOrchestrationServiceLive = Layer.effect(
                 (thread): Effect.Effect<unknown, McpOrchestrationError> =>
                   Effect.gen(function* () {
                     if (input.mode === "complete") {
+                      const history = yield* applyHistoryWindow(thread, input);
                       const payload = {
                         mode: "complete" as const,
-                        thread: applyHistoryWindow(thread, input),
+                        thread: history,
                       };
                       const encoded = yield* encodeJsonString(payload).pipe(
                         Effect.mapError((error) =>

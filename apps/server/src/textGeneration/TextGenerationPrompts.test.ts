@@ -169,6 +169,27 @@ describe("buildThreadSummaryPrompt", () => {
       "[2026-01-01T00:01:00.000Z] assistant: I traced it to session restore timing.",
     );
   });
+
+  it("preserves transcript content beyond 40k characters", () => {
+    const longTail = "x".repeat(40_050);
+    const result = buildThreadSummaryPrompt({
+      threadTitle: "Long transcript investigation",
+      maxOutputCharacters: 1200,
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.5-mini",
+      },
+      messages: [
+        {
+          role: "user",
+          text: `prefix-${longTail}-suffix`,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    expect(result).toContain(`prefix-${longTail}-suffix`);
+  });
 });
 
 describe("sanitizeThreadTitle", () => {

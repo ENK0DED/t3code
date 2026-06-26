@@ -238,6 +238,6 @@ export function buildThreadSummaryPrompt(input: ThreadSummaryGenerationInput): s
     "",
     `Thread title: ${input.threadTitle}`,
     "",
-    limitSection(transcript, 40_000),
+    transcript,
   ].join("\n");
 }
