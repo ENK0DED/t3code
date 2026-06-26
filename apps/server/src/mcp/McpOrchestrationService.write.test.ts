@@ -435,17 +435,39 @@ const makeWriteHarnessLayer = (input?: {
 };
 
 it.effect("addProject returns already_exists for an existing normalized path", () =>
-  Effect.gen(function* () {
-    const service = yield* McpOrchestrationService;
-    const result = yield* service.addProject({ path: "/work/current/" });
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.addProject({ path: "/work/current" });
 
-    expect(result).toMatchObject({
-      status: "already_exists",
-      project: {
-        id: "project-current",
-      },
-    });
-  }).pipe(Effect.provide(makeWriteHarnessLayer())),
+      expect(result).toMatchObject({
+        status: "already_exists",
+        project: {
+          id: "project-current",
+        },
+      });
+      expect(dispatchedCommands).toHaveLength(0);
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          projects: [
+            makeProjectShell({
+              id: ProjectId.make("project-current"),
+              title: "Current Project",
+              workspaceRoot: "/work/current/",
+            }),
+            makeProjectShell({
+              id: ProjectId.make("project-other"),
+              title: "Other Project",
+              workspaceRoot: "/work/other",
+            }),
+          ],
+          dispatchedCommands,
+        }),
+      ),
+    );
+  })(),
 );
 
 it.effect("createThread defaults placement to child_of_current", () =>

@@ -26,6 +26,7 @@ import {
   scoreQueryMatch,
   type RankedSearchResult,
 } from "@t3tools/shared/searchRanking";
+import { normalizeProjectPathForComparison } from "@t3tools/shared/projectPaths";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
@@ -315,6 +316,36 @@ export const McpOrchestrationServiceLive = Layer.effect(
           Effect.mapError((error) => toInternalError("Failed to load server settings.", error)),
         ),
       });
+
+    const findExistingProjectByWorkspaceRoot = Effect.fn(
+      "McpOrchestrationService.findExistingProjectByWorkspaceRoot",
+    )(function* (workspaceRoot: string) {
+      const existing = yield* projectionSnapshotQuery
+        .getActiveProjectByWorkspaceRoot(workspaceRoot)
+        .pipe(
+          Effect.mapError((error) =>
+            toInternalError("Failed to read orchestration projects.", error),
+          ),
+        );
+      if (Option.isSome(existing)) {
+        return existing.value;
+      }
+
+      const normalizedWorkspaceRoot = normalizeProjectPathForComparison(workspaceRoot);
+      const projects = yield* projectionSnapshotQuery
+        .listProjectShells()
+        .pipe(
+          Effect.mapError((error) =>
+            toInternalError("Failed to read orchestration projects.", error),
+          ),
+        );
+      return (
+        projects.find(
+          (project) =>
+            normalizeProjectPathForComparison(project.workspaceRoot) === normalizedWorkspaceRoot,
+        ) ?? null
+      );
+    });
 
     const validateOptionSelections = (input: {
       readonly model: ServerProviderModel;
@@ -899,17 +930,11 @@ export const McpOrchestrationServiceLive = Layer.effect(
             });
           }
 
-          const existing = yield* projectionSnapshotQuery
-            .getActiveProjectByWorkspaceRoot(resolved.path)
-            .pipe(
-              Effect.mapError((error) =>
-                toInternalError("Failed to read orchestration projects.", error),
-              ),
-            );
-          if (Option.isSome(existing)) {
+          const existing = yield* findExistingProjectByWorkspaceRoot(resolved.path);
+          if (existing !== null) {
             return {
               status: "already_exists" as const,
-              project: existing.value,
+              project: existing,
             };
           }
 
