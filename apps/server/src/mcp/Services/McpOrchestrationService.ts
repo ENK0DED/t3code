@@ -1,5 +1,6 @@
 import type {
   ModelSelection,
+  OrchestrationProjectShell,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -45,14 +46,7 @@ export interface ListProjectsInput {
 }
 
 export interface ListProjectsResult {
-  readonly projects: ReadonlyArray<{
-    readonly id: ProjectId;
-    readonly title: string;
-    readonly workspaceRoot: string;
-    readonly defaultModelSelection: ModelSelection | null;
-    readonly createdAt: string;
-    readonly updatedAt: string;
-  }>;
+  readonly projects: ReadonlyArray<OrchestrationProjectShell>;
 }
 
 export interface ListThreadsInput {

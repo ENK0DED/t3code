@@ -91,22 +91,42 @@ export const makeProjectionThreadMessageSearchRepository = Effect.gen(function* 
     execute: ({ projectId, query, archived, limit }) =>
       sql`
         SELECT
-          messages.thread_id AS "threadId",
-          messages.message_id AS "messageId",
-          messages.role AS "role",
-          messages.text AS "text",
-          bm25(projection_thread_messages_fts) AS "rank",
-          messages.created_at AS "createdAt"
-        FROM projection_thread_messages_fts
-        INNER JOIN projection_thread_messages AS messages
-          ON messages.rowid = projection_thread_messages_fts.rowid
-        INNER JOIN projection_threads AS threads
-          ON threads.thread_id = messages.thread_id
-        WHERE threads.project_id = ${projectId}
-          AND threads.deleted_at IS NULL
-          AND ${archivePredicate(archived)}
-          AND projection_thread_messages_fts MATCH ${query}
-        ORDER BY "rank" ASC, "createdAt" DESC, "messageId" ASC
+          ranked_matches."threadId" AS "threadId",
+          ranked_matches."messageId" AS "messageId",
+          ranked_matches."role" AS "role",
+          ranked_matches."text" AS "text",
+          ranked_matches."rank" AS "rank",
+          ranked_matches."createdAt" AS "createdAt"
+        FROM (
+          SELECT
+            messages.thread_id AS "threadId",
+            messages.message_id AS "messageId",
+            messages.role AS "role",
+            messages.text AS "text",
+            bm25(projection_thread_messages_fts) AS "rank",
+            messages.created_at AS "createdAt",
+            ROW_NUMBER() OVER (
+              PARTITION BY messages.thread_id
+              ORDER BY
+                bm25(projection_thread_messages_fts) ASC,
+                messages.created_at DESC,
+                messages.message_id ASC
+            ) AS "threadRowNumber"
+          FROM projection_thread_messages_fts
+          INNER JOIN projection_thread_messages AS messages
+            ON messages.rowid = projection_thread_messages_fts.rowid
+          INNER JOIN projection_threads AS threads
+            ON threads.thread_id = messages.thread_id
+          WHERE threads.project_id = ${projectId}
+            AND threads.deleted_at IS NULL
+            AND ${archivePredicate(archived)}
+            AND projection_thread_messages_fts MATCH ${query}
+        ) AS ranked_matches
+        WHERE ranked_matches."threadRowNumber" = 1
+        ORDER BY
+          ranked_matches."rank" ASC,
+          ranked_matches."createdAt" DESC,
+          ranked_matches."messageId" ASC
         LIMIT ${limit}
       `,
   });

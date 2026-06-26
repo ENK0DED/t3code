@@ -118,6 +118,7 @@ const projectionQueryMock = (input?: {
   projects?: ReadonlyArray<OrchestrationProjectShell> | undefined;
   threads?: ReadonlyArray<OrchestrationThreadShell> | undefined;
   threadDetail?: OrchestrationThread | null | undefined;
+  searchThreadIds?: ReadonlyArray<string> | undefined;
 }) =>
   ProjectionSnapshotQuery.of({
     getCommandReadModel: () => Effect.die("unused"),
@@ -154,7 +155,17 @@ const projectionQueryMock = (input?: {
           return true;
         }),
       ),
-    searchThreadMessagesByProject: () => Effect.die("unused"),
+    searchThreadMessagesByProject: () =>
+      Effect.succeed(
+        (input?.searchThreadIds ?? []).map((threadId, index) => ({
+          threadId: ThreadId.make(threadId),
+          messageId: `message-${index + 1}` as never,
+          role: "user",
+          snippet: `snippet ${index + 1}`,
+          rank: index + 1,
+          createdAt: `2026-01-0${index + 1}T00:00:00.000Z`,
+        })),
+      ),
   });
 
 const searchRepositoryMock = (threadIds: ReadonlyArray<string> = []) =>
@@ -216,6 +227,7 @@ const makeReadHarnessLayer = (input?: {
         projectionQueryMock({
           projects: input?.projects,
           threads: input?.threads,
+          searchThreadIds: input?.searchThreadIds,
           threadDetail:
             input?.threadDetail ??
             (input?.session
@@ -273,6 +285,27 @@ it.effect("listProjects fuzzy searches title and workspace path", () =>
     const result = yield* service.listProjects({ search: "backend api" });
 
     expect(result.projects.map((project) => project.id)).toEqual([ProjectId.make("project-api")]);
+    expect(result.projects[0]).toMatchObject({
+      repositoryIdentity: {
+        canonicalKey: "backend/api",
+        locator: {
+          source: "git-remote",
+          remoteName: "origin",
+          remoteUrl: "git@example.com:backend/api.git",
+        },
+        owner: "backend",
+        name: "api",
+      },
+      scripts: [
+        {
+          id: "bootstrap",
+          name: "Bootstrap",
+          command: "bun install",
+          icon: "build",
+          runOnWorktreeCreate: true,
+        },
+      ],
+    });
   }).pipe(
     Effect.provide(
       makeReadHarnessLayer({
@@ -281,6 +314,25 @@ it.effect("listProjects fuzzy searches title and workspace path", () =>
             id: ProjectId.make("project-api"),
             title: "API Server",
             workspaceRoot: "/work/backend",
+            repositoryIdentity: {
+              canonicalKey: "backend/api",
+              locator: {
+                source: "git-remote",
+                remoteName: "origin",
+                remoteUrl: "git@example.com:backend/api.git",
+              },
+              owner: "backend",
+              name: "api",
+            },
+            scripts: [
+              {
+                id: "bootstrap",
+                name: "Bootstrap",
+                command: "bun install",
+                icon: "build",
+                runOnWorktreeCreate: true,
+              },
+            ],
           }),
           makeProjectShell({
             id: ProjectId.make("project-web"),
@@ -288,6 +340,39 @@ it.effect("listProjects fuzzy searches title and workspace path", () =>
             workspaceRoot: "/work/frontend",
           }),
         ],
+      }),
+    ),
+  ),
+);
+
+it.effect("listThreads merges title matches with message-hit matches without duplicates", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.listThreads({
+      projectId: ProjectId.make("project-1"),
+      search: "deploy",
+    });
+
+    expect(result.threads.map((thread) => thread.id)).toEqual([
+      ThreadId.make("thread-title"),
+      ThreadId.make("thread-message"),
+    ]);
+  }).pipe(
+    Effect.provide(
+      makeReadHarnessLayer({
+        threads: [
+          makeThreadShell({
+            id: ThreadId.make("thread-title"),
+            projectId: ProjectId.make("project-1"),
+            title: "Deploy worktree",
+          }),
+          makeThreadShell({
+            id: ThreadId.make("thread-message"),
+            projectId: ProjectId.make("project-1"),
+            title: "Release prep",
+          }),
+        ],
+        searchThreadIds: ["thread-message", "thread-title", "thread-message"],
       }),
     ),
   ),

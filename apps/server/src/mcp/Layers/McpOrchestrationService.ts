@@ -205,14 +205,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
             const terms = searchTerms(input.search);
             if (terms.length === 0) {
               return {
-                projects: projects.map((project) => ({
-                  id: project.id,
-                  title: project.title,
-                  workspaceRoot: project.workspaceRoot,
-                  defaultModelSelection: project.defaultModelSelection,
-                  createdAt: project.createdAt,
-                  updatedAt: project.updatedAt,
-                })),
+                projects,
               };
             }
 
@@ -221,7 +214,9 @@ export const McpOrchestrationServiceLive = Layer.effect(
                 readonly id: (typeof projects)[number]["id"];
                 readonly title: string;
                 readonly workspaceRoot: string;
+                readonly repositoryIdentity: (typeof projects)[number]["repositoryIdentity"];
                 readonly defaultModelSelection: (typeof projects)[number]["defaultModelSelection"];
+                readonly scripts: (typeof projects)[number]["scripts"];
                 readonly createdAt: string;
                 readonly updatedAt: string;
               }>
@@ -237,7 +232,9 @@ export const McpOrchestrationServiceLive = Layer.effect(
                     id: project.id,
                     title: project.title,
                     workspaceRoot: project.workspaceRoot,
+                    repositoryIdentity: project.repositoryIdentity,
                     defaultModelSelection: project.defaultModelSelection,
+                    scripts: project.scripts,
                     createdAt: project.createdAt,
                     updatedAt: project.updatedAt,
                   },
@@ -272,12 +269,14 @@ export const McpOrchestrationServiceLive = Layer.effect(
                     return Effect.succeed({ threads });
                   }
 
+                  const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
+
                   return projectionSnapshotQuery
                     .searchThreadMessagesByProject({
                       projectId: input.projectId,
                       query: normalizeSearchQuery(input.search ?? ""),
                       archived,
-                      limit: Math.min(Math.max(threads.length, 20), 100),
+                      limit: Math.max(threads.length, 1),
                     })
                     .pipe(
                       Effect.mapError((error) =>
@@ -302,7 +301,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
                         for (let index = 0; index < messageHits.length; index += 1) {
                           const hit = messageHits[index];
                           if (!hit) continue;
-                          const thread = threads.find((candidate) => candidate.id === hit.threadId);
+                          const thread = threadById.get(hit.threadId);
                           if (!thread) continue;
 
                           const candidate: RankedSearchResult<(typeof threads)[number]> = {

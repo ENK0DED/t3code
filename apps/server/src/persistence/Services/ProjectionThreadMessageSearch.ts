@@ -12,7 +12,7 @@ export const SearchProjectionThreadMessagesInput = Schema.Struct({
   projectId: ProjectId,
   query: Schema.String,
   archived: ProjectionThreadArchiveFilter,
-  limit: Schema.Int.check(Schema.isGreaterThan(0)).check(Schema.isLessThanOrEqualTo(100)),
+  limit: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 export type SearchProjectionThreadMessagesInput = typeof SearchProjectionThreadMessagesInput.Type;
 
