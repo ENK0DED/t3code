@@ -1,4 +1,13 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+
+vi.mock("effect/Effect", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("effect/Effect")>();
+  return {
+    ...actual,
+    runSync: () => 12_345_678_901_234,
+  };
+});
+
 import {
   commandForProjectScript,
   createProjectScript,
@@ -24,6 +33,23 @@ describe("projectScripts helpers", () => {
     expect(nextProjectScriptId("Run Tests", [])).toBe("run-tests");
     expect(nextProjectScriptId("Run Tests", ["run-tests"])).toBe("run-tests-2");
     expect(nextProjectScriptId("!!!", [])).toBe("script");
+  });
+
+  it("falls back after the bounded collision search is exhausted", () => {
+    let hasCalls = 0;
+    vi.spyOn(Set.prototype, "has").mockImplementation(() => {
+      hasCalls += 1;
+      if (hasCalls > 20_000) {
+        throw new Error("bounded search exceeded");
+      }
+      return true;
+    });
+
+    try {
+      expect(nextProjectScriptId("Run Tests", [])).toBe("run-tests-12345678901234");
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("creates scripts with shared defaults", () => {

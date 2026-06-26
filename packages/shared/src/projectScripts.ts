@@ -5,6 +5,8 @@ import {
   type ProjectScript,
   type ProjectScriptIcon,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
@@ -79,7 +81,7 @@ export function nextProjectScriptId(name: string, existingIds: Iterable<string>)
   if (!taken.has(baseId)) return baseId;
 
   let suffix = 2;
-  while (true) {
+  while (suffix < 10_000) {
     const candidate = `${baseId}-${suffix}`;
     const safeCandidate =
       candidate.length <= MAX_SCRIPT_ID_LENGTH
@@ -88,6 +90,8 @@ export function nextProjectScriptId(name: string, existingIds: Iterable<string>)
     if (!taken.has(safeCandidate)) return safeCandidate;
     suffix += 1;
   }
+
+  return `${baseId}-${Effect.runSync(Clock.currentTimeMillis)}`.slice(0, MAX_SCRIPT_ID_LENGTH);
 }
 
 export function createProjectScript(input: CreateProjectScriptInput): ProjectScript {
