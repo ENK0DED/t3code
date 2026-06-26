@@ -1,6 +1,5 @@
 import type {
   ModelSelection,
-  OrchestrationProjectShell,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -45,8 +44,68 @@ export interface ListProjectsInput {
   readonly search?: string | undefined;
 }
 
+export interface ProjectSelector {
+  readonly id: ProjectId;
+  readonly title: string;
+  readonly workspaceRoot: string;
+}
+
 export interface ListProjectsResult {
-  readonly projects: ReadonlyArray<OrchestrationProjectShell>;
+  readonly projects: ReadonlyArray<ProjectSelector>;
+}
+
+export interface ProjectRepositorySummary {
+  readonly displayName?: string | undefined;
+  readonly provider?: string | undefined;
+  readonly owner?: string | undefined;
+  readonly name?: string | undefined;
+}
+
+export interface ProjectDetailsResult {
+  readonly projectId: ProjectId;
+  readonly title: string;
+  readonly workspaceRoot: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly repositorySummary: ProjectRepositorySummary | null;
+}
+
+export interface ResolvedMcpModel {
+  readonly provider: {
+    readonly instanceId: ProviderInstanceId;
+    readonly driver: ProviderDriverKind;
+    readonly name: string;
+  };
+  readonly model: {
+    readonly slug: string;
+    readonly name: string;
+  };
+  readonly options: ReadonlyArray<{
+    readonly id: string;
+    readonly value: string | boolean;
+    readonly label: string;
+    readonly valueLabel?: string | undefined;
+  }>;
+}
+
+export interface ProjectSettingsResult {
+  readonly projectId: ProjectId;
+  readonly title: string;
+  readonly defaultModelSelection: ModelSelection | null;
+  readonly resolvedDefaultModel: ResolvedMcpModel | null;
+  readonly defaultModelResolutionWarning?: string | undefined;
+}
+
+export interface UpdateProjectSettingsInput {
+  readonly projectId: ProjectId;
+  readonly title?: string | undefined;
+  readonly defaultModelSelection?: ModelSelection | null | undefined;
+}
+
+export interface UpdateProjectSettingsResult {
+  readonly status: "updated";
+  readonly projectId: ProjectId;
+  readonly sequence: number;
 }
 
 export interface ListThreadsInput {
@@ -81,6 +140,7 @@ export interface ListThreadsResult {
 export interface CurrentThreadSettingsResult {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
+  readonly parentThreadId: ThreadId | null;
   readonly provider: {
     readonly instanceId: ProviderInstanceId;
     readonly driver: ProviderDriverKind;
@@ -101,6 +161,9 @@ export interface CurrentThreadSettingsResult {
   readonly checkoutMode: "current_checkout" | "new_worktree";
   readonly branch: string | null;
   readonly worktreePath: string | null;
+  readonly threadDepth: 0 | 1;
+  readonly maxThreadDepth: 1;
+  readonly canCreateChildThread: boolean;
   readonly session: unknown;
 }
 
@@ -122,6 +185,27 @@ export interface McpOrchestrationServiceShape {
     input: ListProjectsInput,
   ) => Effect.Effect<
     ListProjectsResult,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext
+  >;
+  readonly getProjectDetails: (input: {
+    readonly projectId?: ProjectId | undefined;
+  }) => Effect.Effect<
+    ProjectDetailsResult,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext
+  >;
+  readonly getProjectSettings: (input: {
+    readonly projectId?: ProjectId | undefined;
+  }) => Effect.Effect<
+    ProjectSettingsResult,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext
+  >;
+  readonly updateProjectSettings: (
+    input: UpdateProjectSettingsInput,
+  ) => Effect.Effect<
+    UpdateProjectSettingsResult,
     McpOrchestrationError,
     McpInvocationContext.McpInvocationContext
   >;

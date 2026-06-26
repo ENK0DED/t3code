@@ -26,6 +26,11 @@ import {
   scoreQueryMatch,
   type RankedSearchResult,
 } from "@t3tools/shared/searchRanking";
+import {
+  canThreadCreateChild,
+  getThreadTreeDepth,
+  MAX_THREAD_TREE_DEPTH,
+} from "@t3tools/shared/threadTree";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/projectPaths";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -185,6 +190,41 @@ function providerDisplayName(provider: ServerProvider): string {
   return provider.displayName ?? PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver;
 }
 
+const explicitUndefined = <T>(value: T | undefined): T | undefined => value;
+
+function sanitizeProjectSelector(project: {
+  readonly id: ProjectId;
+  readonly title: string;
+  readonly workspaceRoot: string;
+}) {
+  return {
+    id: project.id,
+    title: project.title,
+    workspaceRoot: project.workspaceRoot,
+  };
+}
+
+function repositorySummary(
+  repositoryIdentity:
+    | {
+        readonly displayName?: string | undefined;
+        readonly provider?: string | undefined;
+        readonly owner?: string | undefined;
+        readonly name?: string | undefined;
+      }
+    | null
+    | undefined,
+) {
+  if (!repositoryIdentity) return null;
+  const summary = {
+    ...(repositoryIdentity.displayName ? { displayName: repositoryIdentity.displayName } : {}),
+    ...(repositoryIdentity.provider ? { provider: repositoryIdentity.provider } : {}),
+    ...(repositoryIdentity.owner ? { owner: repositoryIdentity.owner } : {}),
+    ...(repositoryIdentity.name ? { name: repositoryIdentity.name } : {}),
+  };
+  return Object.keys(summary).length === 0 ? null : summary;
+}
+
 function searchTerms(query: string | undefined): ReadonlyArray<string> {
   const normalized = normalizeSearchQuery(query ?? "");
   if (!normalized) {
@@ -309,6 +349,31 @@ export const McpOrchestrationServiceLive = Layer.effect(
       }
       return thread;
     });
+
+    const requireCurrentThread = Effect.fn("McpOrchestrationService.requireCurrentThread")(
+      function* () {
+        const invocation = yield* McpInvocationContext.McpInvocationContext;
+        return yield* projectionSnapshotQuery.getThreadDetailById(invocation.threadId).pipe(
+          Effect.mapError((error) => toInternalError("Failed to read the current thread.", error)),
+          Effect.flatMap((option) =>
+            Option.match(option, {
+              onNone: () => Effect.fail(toNotFoundError("Current MCP thread was not found.")),
+              onSome: Effect.succeed,
+            }),
+          ),
+        );
+      },
+    );
+
+    const requireProjectForInput = Effect.fn("McpOrchestrationService.requireProjectForInput")(
+      function* (input: { readonly projectId?: ProjectId | undefined }) {
+        if (input.projectId !== undefined) {
+          return yield* requireProject(input.projectId);
+        }
+        const thread = yield* requireCurrentThread();
+        return yield* requireProject(thread.projectId);
+      },
+    );
 
     const loadProvidersAndSettings = () =>
       Effect.all({
@@ -440,23 +505,67 @@ export const McpOrchestrationServiceLive = Layer.effect(
         ),
       );
 
+    const resolveMcpModelSelection = Effect.fn("McpOrchestrationService.resolveMcpModelSelection")(
+      function* (selection: ModelSelection) {
+        const { providers } = yield* loadProvidersAndSettings();
+        const provider = providers.find(
+          (candidate) => candidate.instanceId === selection.instanceId,
+        );
+        if (!provider) {
+          return {
+            resolved: null,
+            warning: `Provider instance '${selection.instanceId}' is not available.`,
+          };
+        }
+        const model = provider.models.find((candidate) => candidate.slug === selection.model);
+        if (!model) {
+          return {
+            resolved: null,
+            warning: `Model '${selection.model}' is not available on '${selection.instanceId}'.`,
+          };
+        }
+        const hydratedDescriptors = getProviderOptionDescriptors({
+          caps: model.capabilities ?? { optionDescriptors: [] },
+          selections: selection.options,
+        });
+        return {
+          resolved: {
+            provider: {
+              instanceId: provider.instanceId,
+              driver: provider.driver,
+              name: providerDisplayName(provider),
+            },
+            model: {
+              slug: model.slug,
+              name: model.name,
+            },
+            options: (selection.options ?? []).map((option) => {
+              const descriptor = hydratedDescriptors.find(
+                (candidate) => candidate.id === option.id,
+              );
+              return {
+                id: option.id,
+                value: option.value,
+                label: descriptor?.label ?? option.id,
+                ...(descriptor ? { valueLabel: getProviderOptionCurrentLabel(descriptor) } : {}),
+              };
+            }),
+          },
+        };
+      },
+    );
+
     const resolveParentThreadId = (input: {
-      readonly placement?: "child_of_current" | "top_level" | "child_of_thread" | undefined;
+      readonly placement?: "top_level" | "child_of_thread" | undefined;
       readonly explicitParentThreadId?: ThreadId | undefined;
       readonly targetProjectId: ProjectId;
       readonly currentThread: OrchestrationThread;
     }): Effect.Effect<ThreadId | null, McpOrchestrationError> =>
       Effect.gen(function* () {
-        const placement =
-          input.placement ??
-          (input.targetProjectId === input.currentThread.projectId
-            ? "child_of_current"
-            : "top_level");
+        const placement = input.placement ?? "top_level";
         switch (placement) {
           case "top_level":
             return null;
-          case "child_of_current":
-            return input.currentThread.id;
           case "child_of_thread":
             if (!input.explicitParentThreadId) {
               return yield* new McpOrchestrationError({
@@ -482,6 +591,12 @@ export const McpOrchestrationServiceLive = Layer.effect(
         return yield* new McpOrchestrationError({
           code: "cross_project_parent",
           message: `cross_project_parent: Thread '${input.parentThreadId}' belongs to project '${parentThread.projectId}' and cannot parent a thread in project '${input.targetProjectId}'.`,
+        });
+      }
+      if (!canThreadCreateChild(parentThread)) {
+        return yield* new McpOrchestrationError({
+          code: "thread_depth_exceeded",
+          message: `thread_depth_exceeded: Thread '${input.parentThreadId}' is already at the maximum thread depth of ${MAX_THREAD_TREE_DEPTH}.`,
         });
       }
       return parentThread.id;
@@ -628,22 +743,12 @@ export const McpOrchestrationServiceLive = Layer.effect(
             const terms = searchTerms(input.search);
             if (terms.length === 0) {
               return {
-                projects,
+                projects: projects.map(sanitizeProjectSelector),
               };
             }
 
-            const ranked: Array<
-              RankedSearchResult<{
-                readonly id: (typeof projects)[number]["id"];
-                readonly title: string;
-                readonly workspaceRoot: string;
-                readonly repositoryIdentity: (typeof projects)[number]["repositoryIdentity"];
-                readonly defaultModelSelection: (typeof projects)[number]["defaultModelSelection"];
-                readonly scripts: (typeof projects)[number]["scripts"];
-                readonly createdAt: string;
-                readonly updatedAt: string;
-              }>
-            > = [];
+            const ranked: Array<RankedSearchResult<ReturnType<typeof sanitizeProjectSelector>>> =
+              [];
 
             for (const project of projects) {
               const score = scoreTermsAgainstValues(terms, [project.title, project.workspaceRoot]);
@@ -651,16 +756,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
               insertRankedSearchResult(
                 ranked,
                 {
-                  item: {
-                    id: project.id,
-                    title: project.title,
-                    workspaceRoot: project.workspaceRoot,
-                    repositoryIdentity: project.repositoryIdentity,
-                    defaultModelSelection: project.defaultModelSelection,
-                    scripts: project.scripts,
-                    createdAt: project.createdAt,
-                    updatedAt: project.updatedAt,
-                  },
+                  item: sanitizeProjectSelector(project),
                   score,
                   tieBreaker: `${project.createdAt}:${project.id}`,
                 },
@@ -673,6 +769,87 @@ export const McpOrchestrationServiceLive = Layer.effect(
             };
           }),
         ),
+      getProjectDetails: (input) =>
+        requireRead().pipe(
+          Effect.flatMap(() => requireProjectForInput(input)),
+          Effect.map((project) => ({
+            projectId: project.id,
+            title: project.title,
+            workspaceRoot: project.workspaceRoot,
+            createdAt: project.createdAt,
+            updatedAt: project.updatedAt,
+            repositorySummary: repositorySummary(project.repositoryIdentity),
+          })),
+        ),
+      getProjectSettings: (input) =>
+        requireRead().pipe(
+          Effect.flatMap(() => requireProjectForInput(input)),
+          Effect.flatMap((project) =>
+            project.defaultModelSelection === null
+              ? Effect.succeed({
+                  projectId: project.id,
+                  title: project.title,
+                  defaultModelSelection: null,
+                  resolvedDefaultModel: null,
+                  defaultModelResolutionWarning: explicitUndefined(undefined),
+                })
+              : resolveMcpModelSelection(project.defaultModelSelection).pipe(
+                  Effect.map(({ resolved, warning }) => ({
+                    projectId: project.id,
+                    title: project.title,
+                    defaultModelSelection: project.defaultModelSelection,
+                    resolvedDefaultModel: resolved,
+                    defaultModelResolutionWarning: explicitUndefined(warning),
+                  })),
+                ),
+          ),
+        ),
+      updateProjectSettings: (input) =>
+        Effect.gen(function* () {
+          yield* McpInvocationContext.requireMcpOrchestrationWrite().pipe(
+            Effect.mapError(
+              (error) =>
+                new McpOrchestrationError({
+                  code: "forbidden",
+                  message: error.message,
+                }),
+            ),
+          );
+
+          if (input.title === undefined && input.defaultModelSelection === undefined) {
+            return yield* new McpOrchestrationError({
+              code: "project_settings_empty_update",
+              message: "Provide at least one project setting to update.",
+            });
+          }
+
+          const project = yield* requireProject(input.projectId);
+          if (input.defaultModelSelection !== undefined && input.defaultModelSelection !== null) {
+            yield* validateMcpModelSelection(input.defaultModelSelection);
+          }
+
+          const accepted = yield* orchestrationEngine
+            .dispatch({
+              type: "project.meta.update",
+              commandId: makeCommandId("project-meta-update"),
+              projectId: project.id,
+              ...(input.title !== undefined ? { title: input.title } : {}),
+              ...(input.defaultModelSelection !== undefined
+                ? { defaultModelSelection: input.defaultModelSelection }
+                : {}),
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
+
+          return {
+            status: "updated" as const,
+            projectId: project.id,
+            sequence: accepted.sequence,
+          };
+        }),
       listThreads: (input) =>
         requireRead().pipe(
           Effect.flatMap(() => {
@@ -839,17 +1016,8 @@ export const McpOrchestrationServiceLive = Layer.effect(
         ),
       getCurrentThreadSettings: () =>
         requireRead().pipe(
-          Effect.flatMap((invocation) =>
-            projectionSnapshotQuery.getThreadDetailById(invocation.threadId).pipe(
-              Effect.mapError((error) =>
-                toInternalError("Failed to read the current thread.", error),
-              ),
-              Effect.flatMap((option) =>
-                Option.match(option, {
-                  onNone: () => Effect.fail(toNotFoundError("Current MCP thread was not found.")),
-                  onSome: Effect.succeed,
-                }),
-              ),
+          Effect.flatMap(() =>
+            requireCurrentThread().pipe(
               Effect.bindTo("thread"),
               Effect.bind("providers", () =>
                 providerRegistry.getProviders.pipe(
@@ -889,6 +1057,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
                 return Effect.succeed({
                   threadId: thread.id,
                   projectId: thread.projectId,
+                  parentThreadId: thread.parentThreadId,
                   provider: {
                     instanceId: provider.instanceId,
                     driver: provider.driver,
@@ -921,6 +1090,9 @@ export const McpOrchestrationServiceLive = Layer.effect(
                       : "current_checkout",
                   branch: thread.branch,
                   worktreePath: thread.worktreePath,
+                  threadDepth: getThreadTreeDepth(thread),
+                  maxThreadDepth: MAX_THREAD_TREE_DEPTH,
+                  canCreateChildThread: canThreadCreateChild(thread),
                   session: thread.session,
                 });
               }),
@@ -989,7 +1161,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
         Effect.gen(function* () {
           const input = rawInput as {
             readonly projectId?: ProjectId;
-            readonly placement?: "child_of_current" | "top_level" | "child_of_thread";
+            readonly placement?: "top_level" | "child_of_thread";
             readonly parentThreadId?: ThreadId;
             readonly title?: string;
             readonly message?: string;
@@ -1099,7 +1271,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           if (shouldPrepareWorktree && !bootstrapBaseBranch) {
             return yield* new McpOrchestrationError({
               code: "missing_base_branch",
-              message: `Thread '${threadId}' requires a baseBranch when checkoutMode is 'new_worktree' and a first message is supplied.`,
+              message: `missing_base_branch: Thread '${threadId}' requires a baseBranch when checkoutMode is 'new_worktree' and a first message is supplied.`,
             });
           }
 
@@ -1164,6 +1336,9 @@ export const McpOrchestrationServiceLive = Layer.effect(
             readonly threadId: ThreadId;
             readonly message: string;
             readonly modelSelection?: ModelSelection;
+            readonly checkoutMode?: "current_checkout" | "new_worktree";
+            readonly branch?: string | null;
+            readonly baseBranch?: string;
           };
           const thread = yield* requireIdleThread(input.threadId);
           const desiredModelSelection = input.modelSelection ?? thread.modelSelection;
@@ -1174,30 +1349,64 @@ export const McpOrchestrationServiceLive = Layer.effect(
             requestedModelSelection: input.modelSelection,
           });
 
+          const shouldPrepareWorktree =
+            thread.messages.length === 0 &&
+            thread.worktreePath === null &&
+            (input.checkoutMode === "new_worktree" || input.baseBranch !== undefined);
           const messageId = makeMessageId();
           const createdAt = yield* currentIsoTimestamp();
-          const accepted = yield* orchestrationEngine
-            .dispatch({
-              type: "thread.turn.start",
-              commandId: makeCommandId("thread-turn-start"),
-              threadId: input.threadId,
-              message: {
-                messageId,
-                role: "user",
-                text: input.message,
-                attachments: [],
-              },
-              modelSelection: desiredModelSelection,
-              titleSeed: thread.title,
-              runtimeMode: thread.runtimeMode,
-              interactionMode: thread.interactionMode,
-              createdAt,
-            })
-            .pipe(
-              Effect.mapError((error) =>
-                toInternalError("Failed to dispatch orchestration command.", error),
-              ),
-            );
+          const turnStartCommand = {
+            type: "thread.turn.start" as const,
+            commandId: makeCommandId("thread-turn-start"),
+            threadId: input.threadId,
+            message: {
+              messageId,
+              role: "user" as const,
+              text: input.message,
+              attachments: [],
+            },
+            modelSelection: desiredModelSelection,
+            titleSeed: thread.title,
+            runtimeMode: thread.runtimeMode,
+            interactionMode: thread.interactionMode,
+            createdAt,
+          };
+          let accepted: { readonly sequence: number };
+          if (shouldPrepareWorktree) {
+            const bootstrapBaseBranch = input.baseBranch;
+            if (!bootstrapBaseBranch) {
+              return yield* new McpOrchestrationError({
+                code: "missing_base_branch",
+                message: `missing_base_branch: Thread '${input.threadId}' requires a baseBranch when checkoutMode is 'new_worktree' and the first message should prepare a worktree.`,
+              });
+            }
+            const project = yield* requireProject(thread.projectId);
+            accepted = yield* bootstrapDispatcher
+              .dispatch({
+                ...turnStartCommand,
+                bootstrap: {
+                  prepareWorktree: {
+                    projectCwd: project.workspaceRoot,
+                    baseBranch: bootstrapBaseBranch,
+                    branch: input.branch ?? buildTemporaryWorktreeBranchName(randomHex),
+                  },
+                  runSetupScript: true,
+                },
+              })
+              .pipe(
+                Effect.mapError((error) =>
+                  toInternalError("Failed to dispatch orchestration command.", error),
+                ),
+              );
+          } else {
+            accepted = yield* orchestrationEngine
+              .dispatch(turnStartCommand)
+              .pipe(
+                Effect.mapError((error) =>
+                  toInternalError("Failed to dispatch orchestration command.", error),
+                ),
+              );
+          }
 
           return {
             status: "accepted" as const,

@@ -492,13 +492,100 @@ it.effect("addProject returns already_exists for an existing normalized path", (
   })(),
 );
 
-it.effect("createThread defaults placement to child_of_current", () =>
+it.effect("updateProjectSettings dispatches project metadata updates", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.updateProjectSettings({
+        projectId: ProjectId.make("project-current"),
+        title: "Renamed Project",
+        defaultModelSelection: defaultModelSelection({ model: "gpt-5.5" }),
+      });
+
+      expect(result).toMatchObject({
+        status: "updated",
+        projectId: ProjectId.make("project-current"),
+      });
+      expect(dispatchedCommands).toContainEqual(
+        expect.objectContaining({
+          type: "project.meta.update",
+          projectId: ProjectId.make("project-current"),
+          title: "Renamed Project",
+          defaultModelSelection: defaultModelSelection({ model: "gpt-5.5" }),
+        }),
+      );
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          projects: [makeProjectShell({ id: ProjectId.make("project-current") })],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("updateProjectSettings rejects empty updates", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.updateProjectSettings({ projectId: ProjectId.make("project-current") }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as {
+        readonly _tag: string;
+        readonly code: string;
+      };
+      expect(error._tag).toBe("McpOrchestrationError");
+      expect(error.code).toBe("project_settings_empty_update");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        projects: [makeProjectShell({ id: ProjectId.make("project-current") })],
+      }),
+    ),
+  ),
+);
+
+it.effect("updateProjectSettings treats null default model as an explicit clear", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* service.updateProjectSettings({
+        projectId: ProjectId.make("project-current"),
+        defaultModelSelection: null,
+      });
+
+      expect(dispatchedCommands).toContainEqual(
+        expect.objectContaining({
+          type: "project.meta.update",
+          projectId: ProjectId.make("project-current"),
+          defaultModelSelection: null,
+        }),
+      );
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          projects: [makeProjectShell({ id: ProjectId.make("project-current") })],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("createThread defaults placement to top_level", () =>
   (() => {
     const dispatchedCommands: Array<OrchestrationCommand> = [];
     return Effect.gen(function* () {
       const service = yield* McpOrchestrationService;
       const result = yield* service.createThread({
-        title: "Child Thread",
+        title: "Top-level Thread",
       });
 
       expect(result).toMatchObject({
@@ -508,9 +595,9 @@ it.effect("createThread defaults placement to child_of_current", () =>
       });
       expect(dispatchedCommands[0]).toMatchObject({
         type: "thread.create",
-        parentThreadId: "thread-current",
+        parentThreadId: null,
         projectId: "project-current",
-        title: "Child Thread",
+        title: "Top-level Thread",
       });
     }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
   })(),
@@ -539,7 +626,7 @@ it.effect("createThread with a message creates the thread before starting the tu
       ]);
       expect(dispatchedCommands[0]).toMatchObject({
         type: "thread.create",
-        parentThreadId: "thread-current",
+        parentThreadId: null,
         projectId: "project-current",
         title: "Investigate reconnects",
       });
@@ -595,7 +682,7 @@ it.effect(
         ]);
         expect(dispatchedCommands[0]).toMatchObject({
           type: "thread.create",
-          parentThreadId: "thread-current",
+          parentThreadId: null,
           projectId: "project-current",
           title: "Follow-up thread",
           branch: "feature/current",
@@ -804,6 +891,40 @@ it.effect("createThread rejects cross-project child_of_thread", () =>
   }).pipe(Effect.provide(makeWriteHarnessLayer())),
 );
 
+it.effect("createThread rejects child_of_thread when the parent is already a sub-thread", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.createThread({
+        placement: "child_of_thread",
+        parentThreadId: ThreadId.make("thread-sub"),
+        title: "Too deep",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      expect(Cause.pretty(exit.cause)).toContain("thread_depth_exceeded");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        threadDetails: [
+          threadDetail({
+            id: ThreadId.make("thread-current"),
+            projectId: ProjectId.make("project-current"),
+          }),
+          threadDetail({
+            id: ThreadId.make("thread-sub"),
+            projectId: ProjectId.make("project-current"),
+            parentThreadId: ThreadId.make("thread-root"),
+          }),
+        ],
+      }),
+    ),
+  ),
+);
+
 it.effect("createThread rejects MCP-disabled model", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
@@ -918,6 +1039,114 @@ it.effect(
         });
       }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
     })(),
+);
+
+it.effect(
+  "sendThreadMessage with first-message new worktree prepares checkout before starting the turn",
+  () =>
+    (() => {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      const createWorktreeCalls: Array<{
+        readonly cwd: string;
+        readonly refName: string;
+        readonly newRefName?: string | undefined;
+        readonly path: string | null;
+      }> = [];
+      const setupRunCalls: Array<{
+        readonly threadId: string;
+        readonly projectId?: string;
+        readonly projectCwd?: string;
+        readonly worktreePath: string;
+      }> = [];
+      const refreshStatusCalls: Array<string> = [];
+      return Effect.gen(function* () {
+        const service = yield* McpOrchestrationService;
+        const result = yield* service.sendThreadMessage({
+          threadId: ThreadId.make("thread-current"),
+          message: "Continue in a fresh checkout",
+          checkoutMode: "new_worktree",
+          baseBranch: "main",
+          branch: "t3code/mcp-bootstrap",
+        });
+
+        expect(result).toMatchObject({
+          status: "accepted",
+          threadId: "thread-current",
+          messageId: expect.any(String),
+          sequence: 4,
+        });
+        expect(dispatchedCommands.map((command) => command.type)).toEqual([
+          "thread.meta.update",
+          "thread.activity.append",
+          "thread.activity.append",
+          "thread.turn.start",
+        ]);
+        expect(createWorktreeCalls).toEqual([
+          {
+            cwd: "/work/current",
+            refName: "main",
+            newRefName: "t3code/mcp-bootstrap",
+            path: null,
+          },
+        ]);
+        expect(setupRunCalls).toEqual([
+          {
+            threadId: "thread-current",
+            projectCwd: "/work/current",
+            worktreePath: "/work/current/.worktrees/mcp-bootstrap",
+          },
+        ]);
+        expect(dispatchedCommands[0]).toMatchObject({
+          type: "thread.meta.update",
+          threadId: "thread-current",
+          branch: "t3code/mcp-bootstrap",
+          worktreePath: "/work/current/.worktrees/mcp-bootstrap",
+        });
+        expect(dispatchedCommands[3]).toMatchObject({
+          type: "thread.turn.start",
+          threadId: "thread-current",
+          message: {
+            role: "user",
+            text: "Continue in a fresh checkout",
+            attachments: [],
+          },
+        });
+        if (dispatchedCommands[3]?.type === "thread.turn.start") {
+          expect(dispatchedCommands[3].bootstrap).toBeUndefined();
+        }
+        yield* Effect.yieldNow;
+        expect(refreshStatusCalls).toEqual(["/work/current/.worktrees/mcp-bootstrap"]);
+      }).pipe(
+        Effect.provide(
+          makeWriteHarnessLayer({
+            dispatchedCommands,
+            createWorktreeCalls,
+            setupRunCalls,
+            refreshStatusCalls,
+          }),
+        ),
+      );
+    })(),
+);
+
+it.effect(
+  "sendThreadMessage requires a base branch when first-message worktree mode is requested",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const exit = yield* Effect.exit(
+        service.sendThreadMessage({
+          threadId: ThreadId.make("thread-current"),
+          message: "Continue in a fresh checkout",
+          checkoutMode: "new_worktree",
+        }),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain("missing_base_branch");
+      }
+    }).pipe(Effect.provide(makeWriteHarnessLayer())),
 );
 
 it.effect("updateThreadSettings rejects invalid option values", () =>

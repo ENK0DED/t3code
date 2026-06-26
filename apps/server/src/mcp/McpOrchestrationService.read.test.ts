@@ -132,7 +132,13 @@ const projectionQueryMock = (input?: {
     getSnapshotSequence: () => Effect.die("unused"),
     getCounts: () => Effect.die("unused"),
     getActiveProjectByWorkspaceRoot: () => Effect.die("unused"),
-    getProjectShellById: () => Effect.die("unused"),
+    getProjectShellById: (projectId) =>
+      Effect.succeed(
+        (() => {
+          const project = input?.projects?.find((candidate) => candidate.id === projectId);
+          return project ? Option.some(project) : Option.none();
+        })(),
+      ),
     getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
     getThreadCheckpointContext: () => Effect.die("unused"),
     getFullThreadDiffContext: () => Effect.die("unused"),
@@ -334,65 +340,139 @@ it.effect("listMcpModels excludes models disabled in server settings", () =>
   ),
 );
 
-it.effect("listProjects fuzzy searches title and workspace path", () =>
+it.effect("listProjects returns lightweight project selectors without settings or actions", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
-    const result = yield* service.listProjects({ search: "backend api" });
+    const result = yield* service.listProjects({ search: "api" });
 
-    expect(result.projects.map((project) => project.id)).toEqual([ProjectId.make("project-api")]);
-    expect(result.projects[0]).toMatchObject({
-      repositoryIdentity: {
-        canonicalKey: "backend/api",
-        locator: {
-          source: "git-remote",
-          remoteName: "origin",
-          remoteUrl: "git@example.com:backend/api.git",
-        },
-        owner: "backend",
-        name: "api",
+    expect(result.projects).toEqual([
+      {
+        id: ProjectId.make("project-api"),
+        title: "API",
+        workspaceRoot: "/work/api",
       },
-      scripts: [
-        {
-          id: "bootstrap",
-          name: "Bootstrap",
-          command: "bun install",
-          icon: "build",
-          runOnWorktreeCreate: true,
-        },
-      ],
-    });
+    ]);
+    expect(result.projects[0]).not.toHaveProperty("scripts");
+    expect(result.projects[0]).not.toHaveProperty("defaultModelSelection");
+    expect(result.projects[0]).not.toHaveProperty("repositoryIdentity");
   }).pipe(
     Effect.provide(
       makeReadHarnessLayer({
         projects: [
           makeProjectShell({
             id: ProjectId.make("project-api"),
-            title: "API Server",
-            workspaceRoot: "/work/backend",
+            title: "API",
+            workspaceRoot: "/work/api",
             repositoryIdentity: {
-              canonicalKey: "backend/api",
+              canonicalKey: "github:secret",
               locator: {
                 source: "git-remote",
                 remoteName: "origin",
-                remoteUrl: "git@example.com:backend/api.git",
+                remoteUrl: "https://token@example.com/org/api.git",
               },
-              owner: "backend",
+              displayName: "org/api",
+              provider: "github",
+              owner: "org",
               name: "api",
             },
             scripts: [
               {
-                id: "bootstrap",
-                name: "Bootstrap",
-                command: "bun install",
-                icon: "build",
-                runOnWorktreeCreate: true,
+                id: "test",
+                name: "Test",
+                command: "bun test",
+                icon: "test",
+                runOnWorktreeCreate: false,
+              },
+            ],
+            defaultModelSelection: defaultModelSelection(),
+          }),
+        ],
+      }),
+    ),
+  ),
+);
+
+it.effect("getProjectDetails returns safe repository summary and timestamps", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.getProjectDetails({ projectId: ProjectId.make("project-api") });
+
+    expect(result).toEqual({
+      projectId: ProjectId.make("project-api"),
+      title: "API",
+      workspaceRoot: "/work/api",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+      repositorySummary: {
+        displayName: "org/api",
+        provider: "github",
+        owner: "org",
+        name: "api",
+      },
+    });
+    expect(result.repositorySummary).not.toHaveProperty("remoteUrl");
+    expect(result.repositorySummary).not.toHaveProperty("canonicalKey");
+  }).pipe(
+    Effect.provide(
+      makeReadHarnessLayer({
+        projects: [
+          makeProjectShell({
+            id: ProjectId.make("project-api"),
+            title: "API",
+            workspaceRoot: "/work/api",
+            updatedAt: "2026-01-02T00:00:00.000Z",
+            repositoryIdentity: {
+              canonicalKey: "github:secret",
+              locator: {
+                source: "git-remote",
+                remoteName: "origin",
+                remoteUrl: "https://token@example.com/org/api.git",
+              },
+              displayName: "org/api",
+              provider: "github",
+              owner: "org",
+              name: "api",
+            },
+          }),
+        ],
+      }),
+    ),
+  ),
+);
+
+it.effect("getProjectSettings returns raw and resolved default model", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.getProjectSettings({ projectId: ProjectId.make("project-api") });
+
+    expect(result.projectId).toBe(ProjectId.make("project-api"));
+    expect(result.title).toBe("API");
+    expect(result.defaultModelSelection?.model).toBe("gpt-5.5");
+    expect(result.resolvedDefaultModel?.provider.name).toBe("Codex");
+    expect(result.resolvedDefaultModel?.model.name).toBe("GPT-5.5");
+    expect(result.defaultModelResolutionWarning).toBeUndefined();
+  }).pipe(
+    Effect.provide(
+      makeReadHarnessLayer({
+        providers: [
+          makeProvider({
+            instanceId: "codex",
+            driver: ProviderDriverKind.make("codex"),
+            models: [
+              {
+                slug: "gpt-5.5",
+                name: "GPT-5.5",
+                isCustom: false,
+                capabilities: createModelCapabilities({ optionDescriptors: [] }),
               },
             ],
           }),
+        ],
+        projects: [
           makeProjectShell({
-            id: ProjectId.make("project-web"),
-            title: "Web App",
-            workspaceRoot: "/work/frontend",
+            id: ProjectId.make("project-api"),
+            title: "API",
+            defaultModelSelection: defaultModelSelection(),
           }),
         ],
       }),
@@ -489,6 +569,9 @@ it.effect("getCurrentThreadSettings resolves provider and option labels for the 
       checkoutMode: "new_worktree",
       branch: "feat/mcp-read",
       worktreePath: "/worktrees/thread-current",
+      threadDepth: 0,
+      maxThreadDepth: 1,
+      canCreateChildThread: true,
       session: {
         status: "running",
       },
@@ -543,6 +626,45 @@ it.effect("getCurrentThreadSettings resolves provider and option labels for the 
             lastError: null,
             updatedAt: "2026-01-01T00:00:00.000Z",
           },
+        }),
+      }),
+    ),
+  ),
+);
+
+it.effect("getCurrentThreadSettings reports that sub-threads cannot create child threads", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.getCurrentThreadSettings();
+
+    expect(result).toMatchObject({
+      threadId: ThreadId.make("thread-current"),
+      parentThreadId: ThreadId.make("thread-parent"),
+      threadDepth: 1,
+      maxThreadDepth: 1,
+      canCreateChildThread: false,
+    });
+  }).pipe(
+    Effect.provide(
+      makeReadHarnessLayer({
+        providers: [
+          makeProvider({
+            instanceId: "codex",
+            driver: ProviderDriverKind.make("codex"),
+            models: [
+              {
+                slug: "gpt-5.5",
+                name: "GPT-5.5",
+                isCustom: false,
+                capabilities: createModelCapabilities({ optionDescriptors: [] }),
+              },
+            ],
+          }),
+        ],
+        threadDetail: makeThreadDetail({
+          id: ThreadId.make("thread-current"),
+          projectId: ProjectId.make("project-current"),
+          parentThreadId: ThreadId.make("thread-parent"),
         }),
       }),
     ),
