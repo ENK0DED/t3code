@@ -20,6 +20,11 @@ import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { getProviderOptionCurrentLabel, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import {
+  canThreadCreateChild,
+  getThreadTreeDepth,
+  MAX_THREAD_TREE_DEPTH,
+} from "@t3tools/shared/threadTree";
+import {
   createProjectScript,
   removeProjectScript,
   upsertProjectScript,
@@ -214,6 +219,45 @@ function sanitizeProjectAction(script: ProjectScript): ProjectActionSummary {
     runOnWorktreeCreate: script.runOnWorktreeCreate,
     ...(script.previewUrl ? { previewUrl: script.previewUrl } : {}),
     ...(script.autoOpenPreview ? { autoOpenPreview: script.autoOpenPreview } : {}),
+  };
+}
+
+function sanitizeThreadSelector(thread: {
+  readonly id: ThreadId;
+  readonly projectId: ProjectId;
+  readonly parentThreadId: ThreadId | null;
+  readonly title: string;
+  readonly branch: string | null;
+  readonly worktreePath: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly archivedAt: string | null;
+  readonly latestUserMessageAt: string | null;
+  readonly latestTurn: unknown;
+  readonly session: unknown;
+  readonly hasPendingApprovals: boolean;
+  readonly hasPendingUserInput: boolean;
+  readonly hasActionableProposedPlan: boolean;
+}) {
+  return {
+    id: thread.id,
+    projectId: thread.projectId,
+    parentThreadId: thread.parentThreadId,
+    title: thread.title,
+    branch: thread.branch,
+    worktreePath: thread.worktreePath,
+    threadDepth: getThreadTreeDepth(thread),
+    maxThreadDepth: MAX_THREAD_TREE_DEPTH,
+    canCreateChildThread: canThreadCreateChild(thread),
+    createdAt: thread.createdAt,
+    updatedAt: thread.updatedAt,
+    archivedAt: thread.archivedAt,
+    latestUserMessageAt: thread.latestUserMessageAt,
+    latestTurn: thread.latestTurn,
+    session: thread.session,
+    hasPendingApprovals: thread.hasPendingApprovals,
+    hasPendingUserInput: thread.hasPendingUserInput,
+    hasActionableProposedPlan: thread.hasActionableProposedPlan,
   };
 }
 
@@ -1051,7 +1095,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
                 Effect.flatMap((threads) => {
                   const terms = searchTerms(input.search);
                   if (terms.length === 0) {
-                    return Effect.succeed({ threads });
+                    return Effect.succeed({ threads: threads.map(sanitizeThreadSelector) });
                   }
 
                   const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
@@ -1108,7 +1152,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
                         );
 
                         return {
-                          threads: ranked.map((entry) => entry.item),
+                          threads: ranked.map((entry) => sanitizeThreadSelector(entry.item)),
                         };
                       }),
                     );
@@ -1199,85 +1243,40 @@ export const McpOrchestrationServiceLive = Layer.effect(
             ),
           ),
         ),
-      getCurrentThreadSettings: () =>
+      getThreadSettings: (input) =>
         requireRead().pipe(
           Effect.flatMap(() =>
-            requireCurrentThread().pipe(
-              Effect.bindTo("thread"),
-              Effect.bind("providers", () =>
-                providerRegistry.getProviders.pipe(
-                  Effect.mapError((error) =>
-                    toInternalError("Failed to load provider registry snapshots.", error),
-                  ),
-                ),
-              ),
-              Effect.flatMap(({ thread, providers }) => {
-                const provider = providers.find(
-                  (candidate) => candidate.instanceId === thread.modelSelection.instanceId,
-                );
-                if (!provider) {
-                  return Effect.fail(
-                    toNotFoundError(
-                      `Provider instance '${thread.modelSelection.instanceId}' for the current thread was not found.`,
-                    ),
-                  );
-                }
+            Effect.gen(function* () {
+              const invocation = yield* McpInvocationContext.McpInvocationContext;
+              const targetThreadId = input.threadId ?? invocation.threadId;
+              const thread = yield* requireThreadDetail(targetThreadId);
+              const resolved = yield* resolveMcpModelSelection(thread.modelSelection);
 
-                const model = provider.models.find(
-                  (candidate) => candidate.slug === thread.modelSelection.model,
-                );
-                if (!model) {
-                  return Effect.fail(
-                    toNotFoundError(
-                      `Model '${thread.modelSelection.model}' for the current thread was not found.`,
-                    ),
-                  );
-                }
-
-                const hydratedDescriptors = getProviderOptionDescriptors({
-                  caps: model.capabilities ?? { optionDescriptors: [] },
-                  selections: thread.modelSelection.options,
-                });
-
-                return Effect.succeed({
-                  threadId: thread.id,
-                  projectId: thread.projectId,
-                  provider: {
-                    instanceId: provider.instanceId,
-                    driver: provider.driver,
-                    name: providerDisplayName(provider),
-                  },
-                  model: {
-                    slug: model.slug,
-                    name: model.name,
-                  },
-                  options: (thread.modelSelection.options ?? []).map((selection) => {
-                    const descriptor = hydratedDescriptors.find(
-                      (candidate) => candidate.id === selection.id,
-                    );
-                    return {
-                      id: selection.id,
-                      value: selection.value,
-                      label: descriptor?.label ?? selection.id,
-                      ...(descriptor
-                        ? {
-                            valueLabel: getProviderOptionCurrentLabel(descriptor),
-                          }
-                        : {}),
-                    };
-                  }),
-                  runtimeMode: thread.runtimeMode,
-                  interactionMode: thread.interactionMode,
-                  checkoutMode:
-                    thread.branch !== null || thread.worktreePath !== null
-                      ? "new_worktree"
-                      : "current_checkout",
-                  branch: thread.branch,
-                  worktreePath: thread.worktreePath,
-                  session: thread.session,
-                });
-              }),
-            ),
+              return {
+                threadId: thread.id,
+                projectId: thread.projectId,
+                title: thread.title,
+                parentThreadId: thread.parentThreadId,
+                createdAt: thread.createdAt,
+                updatedAt: thread.updatedAt,
+                archivedAt: thread.archivedAt,
+                modelSelection: thread.modelSelection,
+                resolvedModel: resolved.resolved,
+                ...(resolved.warning ? { modelResolutionWarning: resolved.warning } : {}),
+                runtimeMode: thread.runtimeMode,
+                interactionMode: thread.interactionMode,
+                checkoutMode:
+                  thread.branch !== null || thread.worktreePath !== null
+                    ? "new_worktree"
+                    : "current_checkout",
+                branch: thread.branch,
+                worktreePath: thread.worktreePath,
+                threadDepth: getThreadTreeDepth(thread),
+                maxThreadDepth: MAX_THREAD_TREE_DEPTH,
+                canCreateChildThread: canThreadCreateChild(thread),
+                session: thread.session,
+              };
+            }),
           ),
         ),
       addProject: (rawInput) =>

@@ -435,6 +435,32 @@ it.effect("lists MCP-enabled models through the MCP transport", () =>
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect("reads thread settings through the renamed MCP transport tool", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* HttpRouter.serve(makeIntegrationLayer([]), {
+        disableListenLog: true,
+        disableLogger: true,
+      }).pipe(Layer.build);
+      const issuedToken = yield* issueMcpToken();
+      const initialize = yield* initializeMcpSession(issuedToken);
+      const response = yield* callMcpTool(
+        initialize.sessionId,
+        issuedToken,
+        "get_thread_settings",
+        {},
+      );
+
+      expect(response.structuredContent).toMatchObject({
+        threadId: currentThreadId,
+        projectId: currentProjectId,
+        title: "Current MCP Thread",
+        modelSelection: defaultModelSelection(),
+      });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("creates a child thread through the MCP transport", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -446,7 +472,8 @@ it.effect("creates a child thread through the MCP transport", () =>
       const issuedToken = yield* issueMcpToken();
       const initialize = yield* initializeMcpSession(issuedToken);
       const response = yield* callMcpTool(initialize.sessionId, issuedToken, "create_thread", {
-        placement: "child_of_current",
+        placement: "child_of_thread",
+        parentThreadId: currentThreadId,
         title: "Investigate failing tests",
       });
 
@@ -474,7 +501,8 @@ it.effect("returns final bootstrap metadata for accepted create_thread responses
       const issuedToken = yield* issueMcpToken();
       const initialize = yield* initializeMcpSession(issuedToken);
       const response = yield* callMcpTool(initialize.sessionId, issuedToken, "create_thread", {
-        placement: "child_of_current",
+        placement: "child_of_thread",
+        parentThreadId: currentThreadId,
         title: "Investigate bootstrap checkout",
         message: "Start this in a prepared worktree",
         checkoutMode: "new_worktree",
@@ -504,6 +532,49 @@ it.effect("returns final bootstrap metadata for accepted create_thread responses
         type: "thread.meta.update",
         branch: "t3code/mcp-http-bootstrap",
         worktreePath: "/work/mcp-test/.worktrees/http-bootstrap",
+      });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("prepares a worktree for first send_thread_message through the MCP transport", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      yield* HttpRouter.serve(makeIntegrationLayer(dispatchedCommands), {
+        disableListenLog: true,
+        disableLogger: true,
+      }).pipe(Layer.build);
+      const issuedToken = yield* issueMcpToken();
+      const initialize = yield* initializeMcpSession(issuedToken);
+      const response = yield* callMcpTool(
+        initialize.sessionId,
+        issuedToken,
+        "send_thread_message",
+        {
+          threadId: currentThreadId,
+          message: "Start this in a prepared worktree",
+          checkoutMode: "new_worktree",
+          baseBranch: "main",
+          branch: "t3code/mcp-http-bootstrap",
+        },
+      );
+
+      expect(response.structuredContent).toMatchObject({
+        status: "accepted",
+        threadId: currentThreadId,
+        messageId: expect.any(String),
+        sequence: 1,
+      });
+      expect(dispatchedCommands.map((command) => command.type)).toEqual(["thread.turn.start"]);
+      expect(dispatchedCommands[0]).toMatchObject({
+        type: "thread.turn.start",
+        threadId: currentThreadId,
+        message: {
+          role: "user",
+          text: "Start this in a prepared worktree",
+          attachments: [],
+        },
       });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),

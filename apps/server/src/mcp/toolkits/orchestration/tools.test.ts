@@ -43,6 +43,13 @@ it("uses explicit object schemas for no-input orchestration tools", () => {
   expect(schema.type).toBe("object");
 });
 
+it("renames current thread settings reads to get_thread_settings", () => {
+  expect(OrchestrationToolkit.tools.get_thread_settings).toBeDefined();
+  expect(
+    "get_current_thread_settings" in (OrchestrationToolkit.tools as Record<string, unknown>),
+  ).toBe(false);
+});
+
 it("exposes project settings tools separately from project selectors", () => {
   expect(OrchestrationToolkit.tools.list_projects).toBeDefined();
   expect(OrchestrationToolkit.tools.get_project_details).toBeDefined();

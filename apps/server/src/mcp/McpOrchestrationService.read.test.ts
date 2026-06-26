@@ -548,6 +548,15 @@ it.effect("listThreads merges title matches with message-hit matches without dup
       search: "deploy",
     });
 
+    expect(result.threads[0]).toMatchObject({
+      id: ThreadId.make("thread-title"),
+      threadDepth: 0,
+      maxThreadDepth: 1,
+      canCreateChildThread: true,
+    });
+    expect(result.threads[0]).not.toHaveProperty("modelSelection");
+    expect(result.threads[0]).not.toHaveProperty("runtimeMode");
+    expect(result.threads[0]).not.toHaveProperty("interactionMode");
     expect(result.threads.map((thread) => thread.id)).toEqual([
       ThreadId.make("thread-title"),
       ThreadId.make("thread-message"),
@@ -601,42 +610,54 @@ it.effect("listThreads defaults to excluding archived threads", () =>
   ),
 );
 
-it.effect("getCurrentThreadSettings resolves provider and option labels for the MCP thread", () =>
+it.effect("getThreadSettings resolves provider and option labels for the MCP thread", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
-    const result = yield* service.getCurrentThreadSettings();
+    const result = yield* service.getThreadSettings({});
 
     expect(result).toMatchObject({
       threadId: ThreadId.make("thread-current"),
       projectId: ProjectId.make("project-current"),
-      provider: {
-        instanceId: ProviderInstanceId.make("codex"),
-        driver: "codex",
-        name: "Codex",
-      },
-      model: {
-        slug: "gpt-5.5",
-        name: "GPT-5.5",
-      },
-      options: [
-        {
-          id: "reasoningEffort",
-          value: "high",
-          label: "Reasoning",
-          valueLabel: "High",
-        },
-      ],
+      title: "Current MCP Thread",
+      parentThreadId: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+      modelSelection: defaultModelSelection({
+        options: [{ id: "reasoningEffort", value: "high" }],
+      }),
       checkoutMode: "new_worktree",
       branch: "feat/mcp-read",
       worktreePath: "/worktrees/thread-current",
       session: {
         status: "running",
       },
+      threadDepth: 0,
+      maxThreadDepth: 1,
+      canCreateChildThread: true,
     });
-    expect(result).not.toHaveProperty("parentThreadId");
-    expect(result).not.toHaveProperty("threadDepth");
-    expect(result).not.toHaveProperty("maxThreadDepth");
-    expect(result).not.toHaveProperty("canCreateChildThread");
+    expect(result.modelSelection).toEqual(
+      defaultModelSelection({
+        options: [{ id: "reasoningEffort", value: "high" }],
+      }),
+    );
+    expect(result.resolvedModel?.provider).toMatchObject({
+      instanceId: ProviderInstanceId.make("codex"),
+      driver: "codex",
+      name: "Codex",
+    });
+    expect(result.resolvedModel?.model).toMatchObject({
+      slug: "gpt-5.5",
+      name: "GPT-5.5",
+    });
+    expect(result.resolvedModel?.options).toEqual([
+      {
+        id: "reasoningEffort",
+        value: "high",
+        label: "Reasoning",
+        valueLabel: "High",
+      },
+    ]);
   }).pipe(
     Effect.provide(
       makeReadHarnessLayer({
@@ -670,6 +691,7 @@ it.effect("getCurrentThreadSettings resolves provider and option labels for the 
         threadDetail: makeThreadDetail({
           id: ThreadId.make("thread-current"),
           projectId: ProjectId.make("project-current"),
+          title: "Current MCP Thread",
           modelSelection: defaultModelSelection({
             options: [{ id: "reasoningEffort", value: "high" }],
           }),
@@ -686,6 +708,34 @@ it.effect("getCurrentThreadSettings resolves provider and option labels for the 
             activeTurnId: null,
             lastError: null,
             updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        }),
+      }),
+    ),
+  ),
+);
+
+it.effect("getThreadSettings returns raw stale model selection with a warning", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.getThreadSettings({});
+
+    expect(result.modelSelection).toEqual({
+      instanceId: ProviderInstanceId.make("missing"),
+      model: "missing-model",
+    });
+    expect(result.resolvedModel).toBeNull();
+    expect(result.modelResolutionWarning).toContain("missing");
+  }).pipe(
+    Effect.provide(
+      makeReadHarnessLayer({
+        providers: [],
+        threadDetail: makeThreadDetail({
+          id: ThreadId.make("thread-current"),
+          projectId: ProjectId.make("project-current"),
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("missing"),
+            model: "missing-model",
           },
         }),
       }),

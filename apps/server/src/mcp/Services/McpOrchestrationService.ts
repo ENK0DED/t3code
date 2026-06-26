@@ -179,11 +179,11 @@ export interface ListThreadsResult {
     readonly projectId: ProjectId;
     readonly parentThreadId: ThreadId | null;
     readonly title: string;
-    readonly modelSelection: ModelSelection;
-    readonly runtimeMode: RuntimeMode;
-    readonly interactionMode: ProviderInteractionMode;
     readonly branch: string | null;
     readonly worktreePath: string | null;
+    readonly threadDepth: 0 | 1;
+    readonly maxThreadDepth: 1;
+    readonly canCreateChildThread: boolean;
     readonly createdAt: string;
     readonly updatedAt: string;
     readonly archivedAt: string | null;
@@ -196,29 +196,25 @@ export interface ListThreadsResult {
   }>;
 }
 
-export interface CurrentThreadSettingsResult {
+export interface ThreadSettingsResult {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
-  readonly provider: {
-    readonly instanceId: ProviderInstanceId;
-    readonly driver: ProviderDriverKind;
-    readonly name: string;
-  };
-  readonly model: {
-    readonly slug: string;
-    readonly name: string;
-  };
-  readonly options: ReadonlyArray<{
-    readonly id: string;
-    readonly value: string | boolean;
-    readonly label: string;
-    readonly valueLabel?: string | undefined;
-  }>;
+  readonly title: string;
+  readonly parentThreadId: ThreadId | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly archivedAt: string | null;
+  readonly modelSelection: ModelSelection;
+  readonly resolvedModel: ResolvedMcpModel | null;
+  readonly modelResolutionWarning?: string | undefined;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly checkoutMode: "current_checkout" | "new_worktree";
   readonly branch: string | null;
   readonly worktreePath: string | null;
+  readonly threadDepth: 0 | 1;
+  readonly maxThreadDepth: 1;
+  readonly canCreateChildThread: boolean;
   readonly session: unknown;
 }
 
@@ -302,8 +298,10 @@ export interface McpOrchestrationServiceShape {
   readonly getThreadHistory: (
     input: GetThreadHistoryInput,
   ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
-  readonly getCurrentThreadSettings: () => Effect.Effect<
-    CurrentThreadSettingsResult,
+  readonly getThreadSettings: (input: {
+    readonly threadId?: ThreadId | undefined;
+  }) => Effect.Effect<
+    ThreadSettingsResult,
     McpOrchestrationError,
     McpInvocationContext.McpInvocationContext
   >;

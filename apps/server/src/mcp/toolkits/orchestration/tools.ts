@@ -45,6 +45,11 @@ const ThreadIdInput = Schema.String.annotate({
   .check(Schema.isNonEmpty())
   .pipe(Schema.brand("ThreadId"));
 
+const OptionalThreadIdInput = Schema.optional(ThreadIdInput).annotate({
+  description:
+    "Thread id returned by list_threads or create_thread. Omit to use the current MCP credential thread.",
+});
+
 const OptionalParentThreadIdInput = Schema.optional(ThreadIdInput).annotate({
   description:
     "Existing top-level thread id to use as the parent when placement is child_of_thread. The parent must be in the target project and must not already be a sub-thread.",
@@ -227,11 +232,14 @@ export const GetThreadHistoryTool = Tool.make("get_thread_history", {
   dependencies,
 });
 
-export const GetCurrentThreadSettingsTool = Tool.make("get_current_thread_settings", {
-  description: "Return settings for the current MCP credential thread.",
+export const GetThreadSettingsTool = Tool.make("get_thread_settings", {
+  description:
+    "Return thread settings and resolved model details. Omit threadId to inspect the current MCP credential thread.",
   success: Schema.Unknown,
   failure: McpOrchestrationError,
-  parameters: EmptyObjectInput,
+  parameters: Schema.Struct({
+    threadId: OptionalThreadIdInput,
+  }),
   dependencies,
 });
 
@@ -471,7 +479,7 @@ export const OrchestrationToolkit = Toolkit.make(
   DeleteProjectActionTool,
   ListThreadsTool,
   GetThreadHistoryTool,
-  GetCurrentThreadSettingsTool,
+  GetThreadSettingsTool,
   AddProjectTool,
   CreateThreadTool,
   SendThreadMessageTool,
