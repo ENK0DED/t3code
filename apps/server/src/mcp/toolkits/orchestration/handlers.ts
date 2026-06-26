@@ -1,52 +1,67 @@
 import * as Effect from "effect/Effect";
 
-import { McpOrchestrationService } from "../../Services/McpOrchestrationService.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import {
+  McpOrchestrationError,
+  McpOrchestrationService,
+} from "../../Services/McpOrchestrationService.ts";
 import { OrchestrationToolkit } from "./tools.ts";
+
+const invokeRead = Effect.fn("OrchestrationToolkit.invokeRead")(function* <A>(
+  operation: Effect.Effect<A, McpOrchestrationError, McpOrchestrationService>,
+): Effect.fn.Return<
+  A,
+  McpOrchestrationError,
+  McpInvocationContext.McpInvocationContext | McpOrchestrationService
+> {
+  yield* McpInvocationContext.requireMcpOrchestrationRead().pipe(
+    Effect.mapError(
+      (error) =>
+        new McpOrchestrationError({
+          code: "forbidden",
+          message: error.message,
+        }),
+    ),
+  );
+  return yield* operation;
+});
+
+const invokeWrite = Effect.fn("OrchestrationToolkit.invokeWrite")(function* <A>(
+  operation: Effect.Effect<A, McpOrchestrationError, McpOrchestrationService>,
+): Effect.fn.Return<
+  A,
+  McpOrchestrationError,
+  McpInvocationContext.McpInvocationContext | McpOrchestrationService
+> {
+  yield* McpInvocationContext.requireMcpOrchestrationWrite().pipe(
+    Effect.mapError(
+      (error) =>
+        new McpOrchestrationError({
+          code: "forbidden",
+          message: error.message,
+        }),
+    ),
+  );
+  return yield* operation;
+});
 
 export const OrchestrationToolkitHandlersLive = OrchestrationToolkit.toLayer({
   list_mcp_models: () =>
-    Effect.gen(function* () {
-      const service = yield* McpOrchestrationService;
-      return yield* service.listMcpModels();
-    }),
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.listMcpModels()))),
   list_projects: (input) =>
-    Effect.gen(function* () {
-      const service = yield* McpOrchestrationService;
-      return yield* service.listProjects(input);
-    }),
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.listProjects(input)))),
   list_threads: (input) =>
-    Effect.gen(function* () {
-      const service = yield* McpOrchestrationService;
-      return yield* service.listThreads(input);
-    }),
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.listThreads(input)))),
   get_thread_history: (input) =>
-    Effect.gen(function* () {
-      const service = yield* McpOrchestrationService;
-      return yield* service.getThreadHistory(input);
-    }),
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.getThreadHistory(input)))),
   get_current_thread_settings: () =>
-    Effect.gen(function* () {
-      const service = yield* McpOrchestrationService;
-      return yield* service.getCurrentThreadSettings();
-    }),
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.getCurrentThreadSettings()))),
   add_project: (input) =>
-    Effect.gen(function* () {
-      const service = yield* McpOrchestrationService;
-      return yield* service.addProject(input);
-    }),
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.addProject(input)))),
   create_thread: (input) =>
-    Effect.gen(function* () {
-      const service = yield* McpOrchestrationService;
-      return yield* service.createThread(input);
-    }),
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.createThread(input)))),
   send_thread_message: (input) =>
-    Effect.gen(function* () {
-      const service = yield* McpOrchestrationService;
-      return yield* service.sendThreadMessage(input);
-    }),
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.sendThreadMessage(input)))),
   update_thread_settings: (input) =>
-    Effect.gen(function* () {
-      const service = yield* McpOrchestrationService;
-      return yield* service.updateThreadSettings(input);
-    }),
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.updateThreadSettings(input)))),
 });

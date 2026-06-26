@@ -280,3 +280,50 @@ it.effect("issues provider MCP credentials with orchestration capabilities", () 
     expect(resolved?.capabilities.has("orchestration.write")).toBe(true);
   }).pipe(Effect.provide(RegistryTestLayer)),
 );
+
+it.effect("denies orchestration read tools without read capability", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const denied = yield* server.callTool({ name: "list_mcp_models", arguments: {} }).pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, {
+          ...invocation,
+          capabilities: new Set(["preview"] as const),
+        }),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+
+      expect(denied.isError).toBe(true);
+      expect(denied.content[0]?.type).toBe("text");
+      expect(denied.content[0]?.type === "text" ? denied.content[0].text : "").toContain(
+        "does not grant the orchestration.read capability",
+      );
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("denies orchestration write tools without write capability", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const denied = yield* server
+        .callTool({
+          name: "add_project",
+          arguments: { path: "/srv/dev/projects/t3code-mcp-orchestration" },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, {
+            ...invocation,
+            capabilities: new Set(["preview", "orchestration.read"] as const),
+          }),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+
+      expect(denied.isError).toBe(true);
+      expect(denied.content[0]?.type).toBe("text");
+      expect(denied.content[0]?.type === "text" ? denied.content[0].text : "").toContain(
+        "does not grant the orchestration.write capability",
+      );
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);

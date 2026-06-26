@@ -8,12 +8,13 @@ import {
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
 
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
   McpOrchestrationError,
   McpOrchestrationService,
 } from "../../Services/McpOrchestrationService.ts";
 
-const dependencies = [McpOrchestrationService];
+const dependencies = [McpInvocationContext.McpInvocationContext, McpOrchestrationService];
 
 export const ListMcpModelsTool = Tool.make("list_mcp_models", {
   description: "Return provider instances and MCP-enabled models available to MCP tools.",
