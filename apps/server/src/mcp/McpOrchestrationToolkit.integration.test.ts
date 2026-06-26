@@ -518,8 +518,9 @@ it.effect("serves the planned orchestration toolkit HTTP tool surface", () =>
       const orchestrationToolNames =
         payload.result?.tools
           ?.map((tool) => tool.name)
-          .filter((name) => expectedToolNames.includes(name as (typeof expectedToolNames)[number])) ??
-        [];
+          .filter((name) =>
+            expectedToolNames.includes(name as (typeof expectedToolNames)[number]),
+          ) ?? [];
       expect(orchestrationToolNames).toEqual(expectedToolNames);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
