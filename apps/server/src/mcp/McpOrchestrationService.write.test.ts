@@ -1253,6 +1253,41 @@ it.effect("createThread rejects MCP-disabled model", () =>
   ),
 );
 
+it.effect("createThread rejects baseBranch when no first message prepares a worktree", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.createThread({
+        checkoutMode: "new_worktree",
+        baseBranch: "main",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("base_branch_without_first_turn_worktree");
+    }
+  }).pipe(Effect.provide(makeWriteHarnessLayer({}))),
+);
+
+it.effect("createThread rejects branch without explicit new_worktree checkout mode", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.createThread({
+        branch: "feature/mcp",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("checkout_mode_required");
+    }
+  }).pipe(Effect.provide(makeWriteHarnessLayer({}))),
+);
+
 it.effect("sendThreadMessage rejects running target threads", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
@@ -1292,6 +1327,102 @@ it.effect("sendThreadMessage rejects running target threads", () =>
             latestTurn: {
               state: "running",
             } as never,
+          }),
+        ],
+      }),
+    ),
+  ),
+);
+
+it.effect("sendThreadMessage rejects archived threads", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.sendThreadMessage({
+        threadId: ThreadId.make("thread-current"),
+        message: "hello",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("thread_archived");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        threadDetails: [
+          threadDetail({
+            id: ThreadId.make("thread-current"),
+            archivedAt: "2026-01-02T00:00:00.000Z",
+          }),
+        ],
+      }),
+    ),
+  ),
+);
+
+it.effect("sendThreadMessage rejects branch without explicit new_worktree checkout mode", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.sendThreadMessage({
+        threadId: ThreadId.make("thread-current"),
+        message: "hello",
+        branch: "feature/mcp",
+      } as never),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("checkout_mode_required");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        threadDetails: [threadDetail({ id: ThreadId.make("thread-current") })],
+      }),
+    ),
+  ),
+);
+
+it.effect("sendThreadMessage rejects checkout bootstrap fields on non-empty threads", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.sendThreadMessage({
+        threadId: ThreadId.make("thread-current"),
+        message: "hello",
+        checkoutMode: "new_worktree",
+        baseBranch: "main",
+      } as never),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("checkout_bootstrap_not_allowed");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        threadDetails: [
+          threadDetail({
+            id: ThreadId.make("thread-current"),
+            messages: [
+              {
+                id: "message-1" as never,
+                role: "user",
+                text: "existing",
+                attachments: [],
+                turnId: null,
+                streaming: false,
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              },
+            ],
           }),
         ],
       }),
@@ -1350,6 +1481,104 @@ it.effect("updateThreadSettings rejects invalid option values", () =>
       expect(Cause.pretty(exit.cause)).toContain("invalid_model_option");
     }
   }).pipe(Effect.provide(makeWriteHarnessLayer())),
+);
+
+it.effect("updateThreadSettings rejects empty updates", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.updateThreadSettings({ threadId: ThreadId.make("thread-current") }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("thread_settings_empty_update");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        threadDetails: [threadDetail({ id: ThreadId.make("thread-current") })],
+      }),
+    ),
+  ),
+);
+
+it.effect("updateThreadSettings can rename an idle active thread", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* service.updateThreadSettings({
+        threadId: ThreadId.make("thread-current"),
+        title: "Renamed thread",
+      } as never);
+
+      expect(dispatchedCommands).toContainEqual(
+        expect.objectContaining({
+          type: "thread.meta.update",
+          threadId: ThreadId.make("thread-current"),
+          title: "Renamed thread",
+        }),
+      );
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          threadDetails: [threadDetail({ id: ThreadId.make("thread-current") })],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("updateThreadSettings rejects current checkout with non-null worktreePath", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.updateThreadSettings({
+        threadId: ThreadId.make("thread-current"),
+        checkoutMode: "current_checkout",
+        worktreePath: "/work/current/.worktrees/mcp",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("invalid_checkout_fields");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        threadDetails: [threadDetail({ id: ThreadId.make("thread-current") })],
+      }),
+    ),
+  ),
+);
+
+it.effect("updateThreadSettings rejects non-empty new_worktree mode without a worktree path", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.updateThreadSettings({
+        threadId: ThreadId.make("thread-current"),
+        checkoutMode: "new_worktree",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("missing_worktree_path");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        threadDetails: [threadDetail({ id: ThreadId.make("thread-current") })],
+      }),
+    ),
+  ),
 );
 
 it.effect(

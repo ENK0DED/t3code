@@ -113,7 +113,17 @@ const OptionalCheckoutModeInput = Schema.optional(
     "Checkout handling for the thread. Use current_checkout for the project workspace or new_worktree for branch/worktree metadata and first-turn worktree preparation.",
 });
 
-const OptionalBranchInput = Schema.optional(
+const OptionalBootstrapBranchInput = Schema.optional(
+  Schema.String.annotate({
+    description:
+      "Optional branch name for first-turn new_worktree bootstrap. Omit to let T3 Code derive a branch. Null is not accepted.",
+  }),
+).annotate({
+  description:
+    "Optional branch name for first-turn new_worktree bootstrap. Omit to let T3 Code derive a branch. Null is not accepted.",
+});
+
+const OptionalThreadMetadataBranchInput = Schema.optional(
   Schema.NullOr(
     Schema.String.annotate({
       description: "Git branch name associated with a new_worktree checkout, or null to clear it.",
@@ -429,8 +439,7 @@ export const CreateThreadTool = Tool.make("create_thread", {
     runtimeMode: OptionalRuntimeModeInput,
     interactionMode: OptionalInteractionModeInput,
     checkoutMode: OptionalCheckoutModeInput,
-    branch: OptionalBranchInput,
-    worktreePath: OptionalWorktreePathInput,
+    branch: OptionalBootstrapBranchInput,
     baseBranch: OptionalBaseBranchInput,
   }),
   dependencies,
@@ -446,6 +455,9 @@ export const SendThreadMessageTool = Tool.make("send_thread_message", {
       description: "User message to send to the idle thread.",
     }),
     modelSelection: OptionalModelSelectionInput,
+    checkoutMode: OptionalCheckoutModeInput,
+    branch: OptionalBootstrapBranchInput,
+    baseBranch: OptionalBaseBranchInput,
   }),
   dependencies,
 });
@@ -456,13 +468,19 @@ export const UpdateThreadSettingsTool = Tool.make("update_thread_settings", {
   failure: McpOrchestrationError,
   parameters: Schema.Struct({
     threadId: ThreadIdInput,
+    title: Schema.optional(
+      Schema.String.annotate({
+        description: "Human-readable thread title.",
+      }),
+    ).annotate({
+      description: "Human-readable thread title.",
+    }),
     modelSelection: OptionalModelSelectionInput,
     runtimeMode: OptionalRuntimeModeInput,
     interactionMode: OptionalInteractionModeInput,
     checkoutMode: OptionalCheckoutModeInput,
-    branch: OptionalBranchInput,
+    branch: OptionalThreadMetadataBranchInput,
     worktreePath: OptionalWorktreePathInput,
-    baseBranch: OptionalBaseBranchInput,
   }),
   dependencies,
 });

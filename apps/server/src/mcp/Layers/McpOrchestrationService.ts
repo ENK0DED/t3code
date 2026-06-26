@@ -199,6 +199,10 @@ function providerDisplayName(provider: ServerProvider): string {
 
 const explicitUndefined = <T>(value: T | undefined): T | undefined => value;
 
+function hasProvidedKey<T extends object>(input: T, key: keyof T): boolean {
+  return Object.prototype.hasOwnProperty.call(input, key);
+}
+
 function sanitizeProjectSelector(project: {
   readonly id: ProjectId;
   readonly title: string;
@@ -436,6 +440,27 @@ export const McpOrchestrationServiceLive = Layer.effect(
       return thread;
     });
 
+    const rejectArchivedThread = (thread: {
+      readonly id: ThreadId;
+      readonly archivedAt: string | null;
+    }) =>
+      thread.archivedAt === null
+        ? Effect.void
+        : Effect.fail(
+            new McpOrchestrationError({
+              code: "thread_archived",
+              message: `Tool did not execute because thread '${thread.id}' is archived.`,
+            }),
+          );
+
+    const requireWritableThread = Effect.fn("McpOrchestrationService.requireWritableThread")(
+      function* (threadId: ThreadId) {
+        const thread = yield* requireIdleThread(threadId);
+        yield* rejectArchivedThread(thread);
+        return thread;
+      },
+    );
+
     const requireCurrentThread = Effect.fn("McpOrchestrationService.requireCurrentThread")(
       function* () {
         const invocation = yield* McpInvocationContext.McpInvocationContext;
@@ -473,28 +498,113 @@ export const McpOrchestrationServiceLive = Layer.effect(
         ),
       });
 
+    const validateCreateThreadCheckout = (
+      input: {
+        readonly checkoutMode: "current_checkout" | "new_worktree" | undefined;
+        readonly branch: string | null | undefined;
+        readonly worktreePath: string | null | undefined;
+        readonly baseBranch: string | undefined;
+      },
+      hasMessage: boolean,
+    ) =>
+      Effect.gen(function* () {
+        if (input.worktreePath !== undefined) {
+          return yield* new McpOrchestrationError({
+            code: "invalid_checkout_fields",
+            message:
+              "create_thread does not accept worktreePath. Worktree paths are produced by first-turn bootstrap.",
+          });
+        }
+        if (
+          (input.branch !== undefined || input.baseBranch !== undefined) &&
+          input.checkoutMode !== "new_worktree"
+        ) {
+          return yield* new McpOrchestrationError({
+            code: "checkout_mode_required",
+            message: "branch and baseBranch require checkoutMode 'new_worktree'.",
+          });
+        }
+        if (!hasMessage && input.baseBranch !== undefined) {
+          return yield* new McpOrchestrationError({
+            code: "base_branch_without_first_turn_worktree",
+            message: "baseBranch is only valid when a first message prepares a new worktree.",
+          });
+        }
+        if (hasMessage && input.checkoutMode === "new_worktree" && !input.baseBranch) {
+          return yield* new McpOrchestrationError({
+            code: "missing_base_branch",
+            message: "baseBranch is required when the first turn prepares a new worktree.",
+          });
+        }
+      });
+
+    const validateSendThreadMessageCheckout = (input: {
+      readonly thread: OrchestrationThread;
+      readonly checkoutMode: "current_checkout" | "new_worktree" | undefined;
+      readonly branch: string | null | undefined;
+      readonly worktreePath: string | null | undefined;
+      readonly baseBranch: string | undefined;
+    }) =>
+      Effect.gen(function* () {
+        if (input.worktreePath !== undefined) {
+          return yield* new McpOrchestrationError({
+            code: "invalid_checkout_fields",
+            message:
+              "send_thread_message does not accept worktreePath. Worktree paths are produced by first-turn bootstrap.",
+          });
+        }
+        if (
+          (input.branch !== undefined || input.baseBranch !== undefined) &&
+          input.checkoutMode !== "new_worktree"
+        ) {
+          return yield* new McpOrchestrationError({
+            code: "checkout_mode_required",
+            message: "branch and baseBranch require checkoutMode 'new_worktree'.",
+          });
+        }
+
+        const hasBootstrapFields =
+          input.checkoutMode !== undefined ||
+          input.branch !== undefined ||
+          input.baseBranch !== undefined ||
+          input.worktreePath !== undefined;
+        if (input.thread.messages.length > 0 && hasBootstrapFields) {
+          return yield* new McpOrchestrationError({
+            code: "checkout_bootstrap_not_allowed",
+            message:
+              "checkout bootstrap fields are only valid for the first message in an empty thread.",
+          });
+        }
+
+        if (input.checkoutMode === "new_worktree" && input.baseBranch === undefined) {
+          return yield* new McpOrchestrationError({
+            code: "missing_base_branch",
+            message: "baseBranch is required when the first turn prepares a new worktree.",
+          });
+        }
+      });
+
+    const mapOrchestrationProjectsReadError = <A, E>(effect: Effect.Effect<A, E>) =>
+      effect.pipe(
+        Effect.mapError((error) =>
+          toInternalError("Failed to read orchestration projects.", error),
+        ),
+      );
+
     const findExistingProjectByWorkspaceRoot = Effect.fn(
       "McpOrchestrationService.findExistingProjectByWorkspaceRoot",
     )(function* (workspaceRoot: string) {
-      const existing = yield* projectionSnapshotQuery
-        .getActiveProjectByWorkspaceRoot(workspaceRoot)
-        .pipe(
-          Effect.mapError((error) =>
-            toInternalError("Failed to read orchestration projects.", error),
-          ),
-        );
+      const existing = yield* mapOrchestrationProjectsReadError(
+        projectionSnapshotQuery.getActiveProjectByWorkspaceRoot(workspaceRoot),
+      );
       if (Option.isSome(existing)) {
         return existing.value;
       }
 
       const normalizedWorkspaceRoot = normalizeProjectPathForComparison(workspaceRoot);
-      const projects = yield* projectionSnapshotQuery
-        .listProjectShells()
-        .pipe(
-          Effect.mapError((error) =>
-            toInternalError("Failed to read orchestration projects.", error),
-          ),
-        );
+      const projects = yield* mapOrchestrationProjectsReadError(
+        projectionSnapshotQuery.listProjectShells(),
+      );
       return (
         projects.find(
           (project) =>
@@ -1357,8 +1467,24 @@ export const McpOrchestrationServiceLive = Layer.effect(
           const currentThread = yield* requireThreadDetail(invocation.threadId);
           const targetProjectId = input.projectId ?? currentThread.projectId;
           const targetProject = yield* requireProject(targetProjectId);
-          const desiredModelSelection = input.modelSelection ?? currentThread.modelSelection;
+          const settings = yield* serverSettings.getSettings.pipe(
+            Effect.mapError((error) => toInternalError("Failed to load server settings.", error)),
+          );
+          const desiredModelSelection =
+            input.modelSelection ??
+            targetProject.defaultModelSelection ??
+            currentThread.modelSelection ??
+            settings.textGenerationModelSelection;
           yield* validateMcpModelSelection(desiredModelSelection);
+          yield* validateCreateThreadCheckout(
+            {
+              checkoutMode: input.checkoutMode,
+              branch: input.branch,
+              worktreePath: input.worktreePath,
+              baseBranch: input.baseBranch,
+            },
+            input.message !== undefined,
+          );
 
           const parentThreadId = yield* resolveParentThreadId({
             placement: input.placement,
@@ -1448,13 +1574,6 @@ export const McpOrchestrationServiceLive = Layer.effect(
             };
           }
 
-          if (shouldPrepareWorktree && !bootstrapBaseBranch) {
-            return yield* new McpOrchestrationError({
-              code: "missing_base_branch",
-              message: `Thread '${threadId}' requires a baseBranch when checkoutMode is 'new_worktree' and a first message is supplied.`,
-            });
-          }
-
           const messageId = makeMessageId();
           const accepted = yield* bootstrapDispatcher
             .dispatch({
@@ -1516,8 +1635,12 @@ export const McpOrchestrationServiceLive = Layer.effect(
             readonly threadId: ThreadId;
             readonly message: string;
             readonly modelSelection?: ModelSelection;
+            readonly checkoutMode?: "current_checkout" | "new_worktree";
+            readonly branch?: string | null;
+            readonly worktreePath?: string | null;
+            readonly baseBranch?: string;
           };
-          const thread = yield* requireIdleThread(input.threadId);
+          const thread = yield* requireWritableThread(input.threadId);
           const desiredModelSelection = input.modelSelection ?? thread.modelSelection;
           yield* validateMcpModelSelection(desiredModelSelection);
           yield* validateSessionCompatibility({
@@ -1525,31 +1648,71 @@ export const McpOrchestrationServiceLive = Layer.effect(
             desiredModelSelection,
             requestedModelSelection: input.modelSelection,
           });
+          yield* validateSendThreadMessageCheckout({
+            thread,
+            checkoutMode: input.checkoutMode,
+            branch: input.branch,
+            worktreePath: input.worktreePath,
+            baseBranch: input.baseBranch,
+          });
 
           const messageId = makeMessageId();
           const createdAt = yield* currentIsoTimestamp();
-          const accepted = yield* orchestrationEngine
-            .dispatch({
-              type: "thread.turn.start",
-              commandId: makeCommandId("thread-turn-start"),
-              threadId: input.threadId,
-              message: {
-                messageId,
-                role: "user",
-                text: input.message,
-                attachments: [],
-              },
-              modelSelection: desiredModelSelection,
-              titleSeed: thread.title,
-              runtimeMode: thread.runtimeMode,
-              interactionMode: thread.interactionMode,
-              createdAt,
-            })
-            .pipe(
-              Effect.mapError((error) =>
-                toInternalError("Failed to dispatch orchestration command.", error),
-              ),
-            );
+          const accepted =
+            input.checkoutMode === "new_worktree"
+              ? yield* requireProject(thread.projectId).pipe(
+                  Effect.flatMap((project) =>
+                    bootstrapDispatcher.dispatch({
+                      type: "thread.turn.start",
+                      commandId: makeCommandId("thread-turn-start"),
+                      threadId: input.threadId,
+                      message: {
+                        messageId,
+                        role: "user",
+                        text: input.message,
+                        attachments: [],
+                      },
+                      modelSelection: desiredModelSelection,
+                      titleSeed: thread.title,
+                      runtimeMode: thread.runtimeMode,
+                      interactionMode: thread.interactionMode,
+                      bootstrap: {
+                        prepareWorktree: {
+                          projectCwd: project.workspaceRoot,
+                          baseBranch: input.baseBranch!,
+                          branch: input.branch ?? buildTemporaryWorktreeBranchName(randomHex),
+                        },
+                        runSetupScript: true,
+                      },
+                      createdAt,
+                    }),
+                  ),
+                  Effect.mapError((error) =>
+                    toInternalError("Failed to dispatch orchestration command.", error),
+                  ),
+                )
+              : yield* orchestrationEngine
+                  .dispatch({
+                    type: "thread.turn.start",
+                    commandId: makeCommandId("thread-turn-start"),
+                    threadId: input.threadId,
+                    message: {
+                      messageId,
+                      role: "user",
+                      text: input.message,
+                      attachments: [],
+                    },
+                    modelSelection: desiredModelSelection,
+                    titleSeed: thread.title,
+                    runtimeMode: thread.runtimeMode,
+                    interactionMode: thread.interactionMode,
+                    createdAt,
+                  })
+                  .pipe(
+                    Effect.mapError((error) =>
+                      toInternalError("Failed to dispatch orchestration command.", error),
+                    ),
+                  );
 
           return {
             status: "accepted" as const,
@@ -1562,6 +1725,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
         Effect.gen(function* () {
           const input = rawInput as {
             readonly threadId: ThreadId;
+            readonly title?: string;
             readonly modelSelection?: ModelSelection;
             readonly runtimeMode?: RuntimeMode;
             readonly interactionMode?: "default" | "plan";
@@ -1569,7 +1733,21 @@ export const McpOrchestrationServiceLive = Layer.effect(
             readonly branch?: string | null;
             readonly worktreePath?: string | null;
           };
-          const thread = yield* requireIdleThread(input.threadId);
+          const thread = yield* requireWritableThread(input.threadId);
+          const hasUpdate =
+            input.title !== undefined ||
+            input.modelSelection !== undefined ||
+            input.runtimeMode !== undefined ||
+            input.interactionMode !== undefined ||
+            input.checkoutMode !== undefined ||
+            hasProvidedKey(input, "branch") ||
+            hasProvidedKey(input, "worktreePath");
+          if (!hasUpdate) {
+            return yield* new McpOrchestrationError({
+              code: "thread_settings_empty_update",
+              message: "At least one thread setting field is required.",
+            });
+          }
           const desiredModelSelection = input.modelSelection ?? thread.modelSelection;
           yield* validateMcpModelSelection(desiredModelSelection);
           yield* validateSessionCompatibility({
@@ -1578,26 +1756,70 @@ export const McpOrchestrationServiceLive = Layer.effect(
             requestedModelSelection: input.modelSelection,
           });
 
+          const desiredTitle =
+            input.title === undefined ? thread.title : sanitizeThreadTitle(input.title);
           const desiredRuntimeMode = input.runtimeMode ?? thread.runtimeMode;
+          const hasBranchInput = hasProvidedKey(input, "branch");
+          const hasWorktreePathInput = hasProvidedKey(input, "worktreePath");
           const desiredInteractionMode = input.interactionMode ?? thread.interactionMode;
           const desiredCheckoutMode =
             input.checkoutMode ??
-            ((input.branch ?? undefined) !== undefined ||
-            (input.worktreePath ?? undefined) !== undefined
+            (hasBranchInput || hasWorktreePathInput
               ? "new_worktree"
               : thread.branch !== null || thread.worktreePath !== null
                 ? "new_worktree"
                 : "current_checkout");
-          const desiredBranch =
-            desiredCheckoutMode === "current_checkout"
-              ? null
-              : (input.branch ?? thread.branch ?? null);
-          const desiredWorktreePath =
-            desiredCheckoutMode === "current_checkout"
-              ? null
-              : (input.worktreePath ?? thread.worktreePath ?? null);
+          const desiredBranch = (() => {
+            if (desiredCheckoutMode === "current_checkout") {
+              return null;
+            }
+            if (hasBranchInput) {
+              return input.branch ?? null;
+            }
+            return thread.branch ?? null;
+          })();
+          const desiredWorktreePath = (() => {
+            if (desiredCheckoutMode === "current_checkout") {
+              return null;
+            }
+            if (hasWorktreePathInput) {
+              return input.worktreePath ?? null;
+            }
+            return thread.worktreePath ?? null;
+          })();
+          if (
+            input.checkoutMode === "current_checkout" &&
+            ((input.branch !== undefined && input.branch !== null) ||
+              (input.worktreePath !== undefined && input.worktreePath !== null))
+          ) {
+            return yield* new McpOrchestrationError({
+              code: "invalid_checkout_fields",
+              message:
+                "current_checkout rejects non-null branch and worktreePath values because it clears checkout metadata.",
+            });
+          }
+          if (desiredCheckoutMode === "new_worktree" && desiredWorktreePath === null) {
+            return yield* new McpOrchestrationError({
+              code: "missing_worktree_path",
+              message: "new_worktree thread settings require a resulting worktreePath.",
+            });
+          }
 
           let lastSequence = 0;
+          if (thread.title !== desiredTitle) {
+            lastSequence = (yield* orchestrationEngine
+              .dispatch({
+                type: "thread.meta.update",
+                commandId: makeCommandId("thread-meta-title"),
+                threadId: input.threadId,
+                title: desiredTitle,
+              })
+              .pipe(
+                Effect.mapError((error) =>
+                  toInternalError("Failed to dispatch orchestration command.", error),
+                ),
+              )).sequence;
+          }
           if (!Equal.equals(thread.modelSelection, desiredModelSelection)) {
             lastSequence = (yield* orchestrationEngine
               .dispatch({

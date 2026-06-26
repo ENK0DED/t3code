@@ -64,7 +64,7 @@ it("exposes project settings tools separately from project selectors", () => {
   ).not.toContain("command");
 });
 
-it("keeps send_thread_message scoped to message delivery", () => {
+it("exposes first-turn worktree bootstrap fields on send_thread_message", () => {
   const schema = Tool.getJsonSchema(OrchestrationToolkit.tools.send_thread_message) as {
     readonly properties?: Readonly<Record<string, unknown>>;
   };
@@ -72,24 +72,37 @@ it("keeps send_thread_message scoped to message delivery", () => {
   expect(schema.properties?.threadId).toBeDefined();
   expect(schema.properties?.message).toBeDefined();
   expect(schema.properties?.modelSelection).toBeDefined();
-  expect(schema.properties?.checkoutMode).toBeUndefined();
-  expect(schema.properties?.branch).toBeUndefined();
-  expect(schema.properties?.baseBranch).toBeUndefined();
+  expect(schema.properties?.checkoutMode).toBeDefined();
+  expect(schema.properties?.branch).toBeDefined();
+  expect(schema.properties?.baseBranch).toBeDefined();
+  expect(schema.properties?.worktreePath).toBeUndefined();
 });
 
-it("retains baseBranch on update_thread_settings", () => {
+it("retains title and checkout metadata fields on update_thread_settings", () => {
   const schema = Tool.getJsonSchema(OrchestrationToolkit.tools.update_thread_settings) as {
     readonly properties?: Readonly<Record<string, unknown>>;
   };
 
   expect(schema.properties?.threadId).toBeDefined();
+  expect(schema.properties?.title).toBeDefined();
   expect(schema.properties?.modelSelection).toBeDefined();
   expect(schema.properties?.runtimeMode).toBeDefined();
   expect(schema.properties?.interactionMode).toBeDefined();
   expect(schema.properties?.checkoutMode).toBeDefined();
   expect(schema.properties?.branch).toBeDefined();
   expect(schema.properties?.worktreePath).toBeDefined();
+  expect(schema.properties?.baseBranch).toBeUndefined();
+});
+
+it("omits worktreePath from create_thread bootstrap inputs", () => {
+  const schema = Tool.getJsonSchema(OrchestrationToolkit.tools.create_thread) as {
+    readonly properties?: Readonly<Record<string, unknown>>;
+  };
+
+  expect(schema.properties?.checkoutMode).toBeDefined();
+  expect(schema.properties?.branch).toBeDefined();
   expect(schema.properties?.baseBranch).toBeDefined();
+  expect(schema.properties?.worktreePath).toBeUndefined();
 });
 
 it("retains create_thread child_of_current placement support", () => {
