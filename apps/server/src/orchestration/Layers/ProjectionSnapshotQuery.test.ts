@@ -72,6 +72,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         INSERT INTO projection_threads (
           thread_id,
           project_id,
+          parent_thread_id,
           title,
           model_selection_json,
           runtime_mode,
@@ -90,6 +91,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         VALUES (
           'thread-1',
           'project-1',
+          'thread-parent',
           'Thread 1',
           '{"provider":"codex","model":"gpt-5-codex"}',
           'full-access',
@@ -285,7 +287,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
-          parentThreadId: null,
+          parentThreadId: ThreadId.make("thread-parent"),
           title: "Thread 1",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -396,7 +398,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
-          parentThreadId: null,
+          parentThreadId: ThreadId.make("thread-parent"),
           title: "Thread 1",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),

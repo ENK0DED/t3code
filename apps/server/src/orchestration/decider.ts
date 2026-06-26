@@ -222,6 +222,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (command.parentThreadId !== null) {
+        const parentThread = readModel.threads.find(
+          (thread) => thread.id === command.parentThreadId,
+        );
+        if (!parentThread || parentThread.deletedAt !== null) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Parent thread '${command.parentThreadId}' does not exist.`,
+          });
+        }
+        if (parentThread.projectId !== command.projectId) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Parent thread '${command.parentThreadId}' belongs to a different project.`,
+          });
+        }
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -233,6 +250,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           projectId: command.projectId,
+          parentThreadId: command.parentThreadId,
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
+import { expect as effectExpect, it as effectIt } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   MessageId,
   CommandId,
@@ -18,6 +20,7 @@ import {
   requireThread,
   requireThreadAbsent,
 } from "./commandInvariants.ts";
+import { decideOrchestrationCommand } from "./decider.ts";
 
 const now = "2026-01-01T00:00:00.000Z";
 
@@ -220,4 +223,37 @@ describe("commandInvariants", () => {
       ),
     ).rejects.toThrow("greater than or equal to 0");
   });
+});
+
+const deciderLayer = effectIt.layer(NodeServices.layer);
+
+deciderLayer("commandInvariants decider checks", (it) => {
+  it.effect("rejects a parent thread in a different project", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        decideOrchestrationCommand({
+          readModel,
+          command: {
+            type: "thread.create",
+            commandId: CommandId.make("cmd-cross-project-parent"),
+            threadId: ThreadId.make("thread-child"),
+            projectId: ProjectId.make("project-b"),
+            parentThreadId: ThreadId.make("thread-1"),
+            title: "Child",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5.5",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        }),
+      );
+
+      effectExpect(error.message).toContain("belongs to a different project");
+    }),
+  );
 });

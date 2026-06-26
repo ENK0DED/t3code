@@ -94,6 +94,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         payload: {
           threadId: ThreadId.make("thread-1"),
           projectId: ProjectId.make("project-1"),
+          parentThreadId: ThreadId.make("thread-parent"),
           title: "Thread 1",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -145,6 +146,17 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       assert.deepEqual(projectRows, [
         { projectId: "project-1", title: "Project 1", scriptsJson: "[]" },
       ]);
+
+      const threadRows = yield* sql<{
+        readonly threadId: string;
+        readonly parentThreadId: string | null;
+      }>`
+        SELECT
+          thread_id AS "threadId",
+          parent_thread_id AS "parentThreadId"
+        FROM projection_threads
+      `;
+      assert.deepEqual(threadRows, [{ threadId: "thread-1", parentThreadId: "thread-parent" }]);
 
       const messageRows = yield* sql<{
         readonly messageId: string;
