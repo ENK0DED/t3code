@@ -581,6 +581,7 @@ describe("incremental orchestration updates", () => {
       makeEvent("thread.created", {
         threadId,
         projectId: recreatedProjectId,
+        parentThreadId: null,
         title: "Recovered thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),

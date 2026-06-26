@@ -427,6 +427,7 @@ function createSnapshotForTargetUser(options: {
       {
         id: THREAD_ID,
         projectId: PROJECT_ID,
+        parentThreadId: null,
         title: THREAD_TITLE,
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -493,6 +494,7 @@ function addThreadToSnapshot(
       {
         id: threadId,
         projectId: PROJECT_ID,
+        parentThreadId: null,
         title: "New thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -529,6 +531,7 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
   return {
     id: thread.id,
     projectId: thread.projectId,
+    parentThreadId: thread.parentThreadId,
     title: thread.title,
     modelSelection: thread.modelSelection,
     runtimeMode: thread.runtimeMode,
@@ -831,6 +834,7 @@ function createSnapshotWithSecondaryProject(options?: {
         {
           id: "thread-secondary-project" as ThreadId,
           projectId: SECOND_PROJECT_ID,
+          parentThreadId: null,
           title: "Release checklist",
           modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
           interactionMode: "default",
@@ -863,6 +867,7 @@ function createSnapshotWithSecondaryProject(options?: {
         {
           id: ARCHIVED_SECONDARY_THREAD_ID,
           projectId: SECOND_PROJECT_ID,
+          parentThreadId: null,
           title: "Archived Docs Notes",
           modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
           interactionMode: "default",
