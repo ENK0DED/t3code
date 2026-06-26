@@ -1,4 +1,5 @@
-import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -29,6 +30,12 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     defaultAdvertisedEndpointKey: null,
     ...overrides,
   };
+}
+
+function makeScopedThreadKey(environmentId: string, threadId: string): string {
+  return scopedThreadKey(
+    scopeThreadRef(EnvironmentId.make(environmentId), ThreadId.make(threadId)),
+  );
 }
 
 describe("uiStateStore pure functions", () => {
@@ -401,29 +408,33 @@ describe("uiStateStore pure functions", () => {
 
   it("setThreadTreeExpanded stores expanded thread ids per project", () => {
     const initialState = makeUiState();
+    const threadKey = makeScopedThreadKey("environment-a", "thread-parent");
 
-    const expanded = setThreadTreeExpanded(initialState, "project-key", "thread-parent", true);
-    const collapsed = setThreadTreeExpanded(expanded, "project-key", "thread-parent", false);
+    const expanded = setThreadTreeExpanded(initialState, "project-key", threadKey, true);
+    const collapsed = setThreadTreeExpanded(expanded, "project-key", threadKey, false);
 
     expect(expanded.expandedThreadTreeIdsByProject).toEqual({
-      "project-key": ["thread-parent"],
+      "project-key": [threadKey],
     });
     expect(collapsed.expandedThreadTreeIdsByProject).toEqual({});
   });
 
-  it("syncThreads prunes stale expanded thread tree ids", () => {
-    const thread1 = ThreadId.make("thread-1");
-    const thread2 = ThreadId.make("thread-2");
+  it("syncThreads keeps valid scoped expansion ids, removes stale ones, and preserves other projects", () => {
+    const thread1 = makeScopedThreadKey("environment-a", "thread-1");
+    const thread2 = makeScopedThreadKey("environment-a", "thread-2");
+    const thread3 = makeScopedThreadKey("environment-b", "thread-3");
     const initialState = makeUiState({
       expandedThreadTreeIdsByProject: {
         "project-key": [thread1, thread2],
+        "other-project": [thread3],
       },
     });
 
-    const next = syncThreads(initialState, [{ key: thread1 }]);
+    const next = syncThreads(initialState, [{ key: thread1 }, { key: thread3 }]);
 
     expect(next.expandedThreadTreeIdsByProject).toEqual({
       "project-key": [thread1],
+      "other-project": [thread3],
     });
   });
 
@@ -444,6 +455,23 @@ describe("uiStateStore pure functions", () => {
 
     expect(next.threadLastVisitedAtById).toEqual({});
     expect(next.threadChangedFilesExpandedById).toEqual({});
+  });
+
+  it("clearThreadUi removes only matching scoped expansion ids and preserves unrelated project state", () => {
+    const deletedThreadKey = makeScopedThreadKey("environment-a", "thread-1");
+    const keptThreadKey = makeScopedThreadKey("environment-b", "thread-2");
+    const initialState = makeUiState({
+      expandedThreadTreeIdsByProject: {
+        "project-key": [deletedThreadKey],
+        "other-project": [keptThreadKey],
+      },
+    });
+
+    const next = clearThreadUi(initialState, deletedThreadKey);
+
+    expect(next.expandedThreadTreeIdsByProject).toEqual({
+      "other-project": [keptThreadKey],
+    });
   });
 
   it("setThreadChangedFilesExpanded stores collapsed turns per thread", () => {

@@ -471,10 +471,10 @@ export function resolveThreadAncestorIds<
     id: string;
     parentThreadId: string | null;
   },
->(thread: TThread, threadById: ReadonlyMap<string, TThread>): string[] {
-  const ancestorIds: string[] = [];
-  const visited = new Set<string>([thread.id]);
-  let currentParentId = thread.parentThreadId;
+>(thread: TThread, threadById: ReadonlyMap<TThread["id"], TThread>): TThread["id"][] {
+  const ancestorIds: TThread["id"][] = [];
+  const visited = new Set<TThread["id"]>([thread.id]);
+  let currentParentId = thread.parentThreadId as TThread["id"] | null;
 
   while (currentParentId !== null) {
     if (visited.has(currentParentId)) {
@@ -486,7 +486,7 @@ export function resolveThreadAncestorIds<
     }
     ancestorIds.push(parent.id);
     visited.add(parent.id);
-    currentParentId = parent.parentThreadId;
+    currentParentId = parent.parentThreadId as TThread["id"] | null;
   }
 
   return ancestorIds;
@@ -497,6 +497,7 @@ export function buildThreadTreeRows<TThread extends ThreadTreeInput>(input: {
   readonly expandedThreadIds: ReadonlySet<string>;
   readonly activeThreadId: string | undefined;
   readonly sortOrder: SidebarThreadSortOrder;
+  readonly getThreadExpansionId?: ((thread: TThread) => string) | undefined;
 }): SidebarThreadTreeRow<TThread>[] {
   const threadIds = new Set(input.threads.map((thread) => thread.id));
   const sortedThreads = [...input.threads].toSorted((left, right) => {
@@ -528,8 +529,9 @@ export function buildThreadTreeRows<TThread extends ThreadTreeInput>(input: {
       return;
     }
     const children = byParent.get(thread.id) ?? [];
+    const threadExpansionId = input.getThreadExpansionId?.(thread) ?? thread.id;
     const expanded =
-      input.expandedThreadIds.has(thread.id) ||
+      input.expandedThreadIds.has(threadExpansionId) ||
       hasThreadDescendant(thread.id, input.activeThreadId, byParent);
     rows.push({
       thread,

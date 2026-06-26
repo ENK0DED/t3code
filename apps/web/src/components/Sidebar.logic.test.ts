@@ -774,6 +774,35 @@ describe("buildThreadTreeRows", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.descendantStatus?.label).toBe("Working");
   });
+
+  it("uses scoped expansion ids when a thread key resolver is provided", () => {
+    const rows = buildThreadTreeRows({
+      threads: [
+        sidebarThread({
+          id: "thread-parent",
+          environmentId: "environment-a",
+          parentThreadId: null,
+          updatedAt: "2026-01-02T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-child",
+          environmentId: "environment-a",
+          parentThreadId: "thread-parent",
+          updatedAt: "2026-01-03T00:00:00.000Z",
+        }),
+      ],
+      expandedThreadIds: new Set(["environment-a:thread-parent"]),
+      activeThreadId: undefined,
+      sortOrder: "updated_at",
+      getThreadExpansionId: (thread: SidebarThreadTestSummary) =>
+        `${thread.environmentId}:${thread.id}`,
+    });
+
+    expect(rows.map((row) => [row.thread.id, row.depth])).toEqual([
+      ["thread-parent", 0],
+      ["thread-child", 1],
+    ]);
+  });
 });
 
 function makeProject(overrides: Partial<Project> = {}): Project {
@@ -797,6 +826,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 
 type SidebarThreadTestSummary = {
   id: string;
+  environmentId: string;
   parentThreadId: string | null;
   session: Thread["session"];
   interactionMode: Thread["interactionMode"];
@@ -814,6 +844,7 @@ function sidebarThread(
 ): SidebarThreadTestSummary {
   return {
     id: "thread-1",
+    environmentId: localEnvironmentId,
     parentThreadId: null,
     interactionMode: DEFAULT_INTERACTION_MODE,
     session: null,

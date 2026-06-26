@@ -327,7 +327,7 @@ interface SidebarThreadRowProps {
   cancelRename: () => void;
   attemptArchiveThread: (threadRef: ScopedThreadRef) => Promise<void>;
   openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
-  onToggleThreadExpanded: (threadId: ThreadId) => void;
+  onToggleThreadExpanded: (threadKey: string) => void;
 }
 
 export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowProps) {
@@ -601,9 +601,9 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
       event.stopPropagation();
-      onToggleThreadExpanded(thread.id);
+      onToggleThreadExpanded(threadKey);
     },
-    [onToggleThreadExpanded, thread.id],
+    [onToggleThreadExpanded, threadKey],
   );
   const rowButtonRender = useMemo(() => <div role="button" tabIndex={0} />, []);
 
@@ -882,7 +882,7 @@ interface SidebarProjectThreadListProps {
   openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
   expandThreadListForProject: (projectKey: string) => void;
   collapseThreadListForProject: (projectKey: string) => void;
-  onToggleThreadExpanded: (threadId: ThreadId) => void;
+  onToggleThreadExpanded: (threadKey: string) => void;
 }
 
 const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
@@ -1277,6 +1277,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       expandedThreadIds: expandedThreadTreeIdSet,
       activeThreadId: activeRouteThreadId,
       sortOrder: threadSortOrder,
+      getThreadExpansionId: (thread) =>
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
     });
     const projectStatus = resolveProjectStatusIndicator(
       visibleProjectThreads.map((thread) => resolveProjectThreadStatus(thread)),
@@ -1298,8 +1300,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   ]);
 
   const handleToggleThreadExpanded = useCallback(
-    (threadId: ThreadId) => {
-      setThreadTreeExpanded(project.projectKey, threadId, !expandedThreadTreeIdSet.has(threadId));
+    (threadKey: string) => {
+      setThreadTreeExpanded(project.projectKey, threadKey, !expandedThreadTreeIdSet.has(threadKey));
     },
     [expandedThreadTreeIdSet, project.projectKey, setThreadTreeExpanded],
   );
@@ -3150,7 +3152,15 @@ export default function Sidebar() {
       (threadsByProjectKey.get(activeRouteProjectKey) ?? []).map((thread) => [thread.id, thread]),
     );
     for (const ancestorId of resolveThreadAncestorIds(activeThread, threadById)) {
-      setThreadTreeExpanded(activeRouteProjectKey, ancestorId, true);
+      const ancestorThread = threadById.get(ancestorId);
+      if (!ancestorThread) {
+        continue;
+      }
+      setThreadTreeExpanded(
+        activeRouteProjectKey,
+        scopedThreadKey(scopeThreadRef(ancestorThread.environmentId, ancestorThread.id)),
+        true,
+      );
     }
   }, [
     activeRouteProjectKey,
@@ -3190,7 +3200,15 @@ export default function Sidebar() {
         (threadsByProjectKey.get(projectKey) ?? []).map((candidate) => [candidate.id, candidate]),
       );
       for (const ancestorId of resolveThreadAncestorIds(thread, threadById)) {
-        setThreadTreeExpanded(projectKey, ancestorId, true);
+        const ancestorThread = threadById.get(ancestorId);
+        if (!ancestorThread) {
+          continue;
+        }
+        setThreadTreeExpanded(
+          projectKey,
+          scopedThreadKey(scopeThreadRef(ancestorThread.environmentId, ancestorThread.id)),
+          true,
+        );
       }
     }
   }, [
@@ -3380,6 +3398,8 @@ export default function Sidebar() {
           expandedThreadIds: new Set(expandedThreadTreeIdsByProject[project.projectKey] ?? []),
           activeThreadId,
           sortOrder: sidebarThreadSortOrder,
+          getThreadExpansionId: (thread) =>
+            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
         });
         const hasOverflowingThreads = projectThreadRows.length > sidebarThreadPreviewCount;
         const previewThreadRows =
