@@ -1280,6 +1280,42 @@ it.effect("createThread rejects archived child_of_thread parents", () =>
   ),
 );
 
+it.effect("createThread rejects child_of_thread when the parent is already a sub-thread", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const exit = yield* Effect.exit(
+        service.createThread({
+          placement: "child_of_thread",
+          parentThreadId: ThreadId.make("thread-sub"),
+          title: "Too deep",
+        }),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(dispatchedCommands).toEqual([]);
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause) as { readonly code: string };
+        expect(error.code).toBe("max_thread_depth_exceeded");
+      }
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          threadDetails: [
+            threadDetail({ id: ThreadId.make("thread-current") }),
+            threadDetail({
+              id: ThreadId.make("thread-sub"),
+              parentThreadId: ThreadId.make("thread-current"),
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
+);
+
 it.effect("createThread rejects MCP-disabled model", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;

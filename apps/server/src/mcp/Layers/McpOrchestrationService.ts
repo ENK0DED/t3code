@@ -794,6 +794,12 @@ export const McpOrchestrationServiceLive = Layer.effect(
           message: `cross_project_parent: Thread '${input.parentThreadId}' belongs to project '${parentThread.projectId}' and cannot parent a thread in project '${input.targetProjectId}'.`,
         });
       }
+      if (!canThreadCreateChild(parentThread)) {
+        return yield* new McpOrchestrationError({
+          code: "max_thread_depth_exceeded",
+          message: `max_thread_depth_exceeded: Thread '${input.parentThreadId}' is already at the maximum thread depth of ${MAX_THREAD_TREE_DEPTH}.`,
+        });
+      }
       return parentThread.id;
     });
 
