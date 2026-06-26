@@ -530,6 +530,12 @@ export const McpOrchestrationServiceLive = Layer.effect(
             message: "baseBranch is only valid when a first message prepares a new worktree.",
           });
         }
+        if (!hasMessage && input.branch !== undefined) {
+          return yield* new McpOrchestrationError({
+            code: "branch_without_first_turn_worktree",
+            message: "branch is only valid when a first message prepares a new worktree.",
+          });
+        }
         if (hasMessage && input.checkoutMode === "new_worktree" && !input.baseBranch) {
           return yield* new McpOrchestrationError({
             code: "missing_base_branch",
@@ -767,6 +773,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           case "top_level":
             return null;
           case "child_of_current":
+            yield* rejectArchivedThread(input.currentThread);
             return input.currentThread.id;
           case "child_of_thread":
             if (!input.explicitParentThreadId) {
@@ -789,6 +796,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
         return null;
       }
       const parentThread = yield* requireThreadDetail(input.parentThreadId);
+      yield* rejectArchivedThread(parentThread);
       if (parentThread.projectId !== input.targetProjectId) {
         return yield* new McpOrchestrationError({
           code: "cross_project_parent",

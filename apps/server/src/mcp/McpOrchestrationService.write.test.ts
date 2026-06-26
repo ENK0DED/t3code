@@ -1217,6 +1217,65 @@ it.effect("createThread rejects cross-project child_of_thread", () =>
   }).pipe(Effect.provide(makeWriteHarnessLayer())),
 );
 
+it.effect("createThread rejects archived current thread as a child_of_current parent", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.createThread({
+        title: "Archived parent",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("thread_archived");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        threadDetails: [
+          threadDetail({
+            id: ThreadId.make("thread-current"),
+            archivedAt: "2026-01-02T00:00:00.000Z",
+          }),
+        ],
+      }),
+    ),
+  ),
+);
+
+it.effect("createThread rejects archived child_of_thread parents", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.createThread({
+        placement: "child_of_thread",
+        parentThreadId: ThreadId.make("thread-archived"),
+        title: "Archived explicit parent",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("thread_archived");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        threadDetails: [
+          threadDetail({ id: ThreadId.make("thread-current") }),
+          threadDetail({
+            id: ThreadId.make("thread-archived"),
+            archivedAt: "2026-01-02T00:00:00.000Z",
+          }),
+        ],
+      }),
+    ),
+  ),
+);
+
 it.effect("createThread rejects MCP-disabled model", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
@@ -1267,6 +1326,24 @@ it.effect("createThread rejects baseBranch when no first message prepares a work
     if (Exit.isFailure(exit)) {
       const error = Cause.squash(exit.cause) as { readonly code: string };
       expect(error.code).toBe("base_branch_without_first_turn_worktree");
+    }
+  }).pipe(Effect.provide(makeWriteHarnessLayer({}))),
+);
+
+it.effect("createThread rejects branch when no first message prepares a worktree", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.createThread({
+        checkoutMode: "new_worktree",
+        branch: "feature/mcp",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("branch_without_first_turn_worktree");
     }
   }).pipe(Effect.provide(makeWriteHarnessLayer({}))),
 );
