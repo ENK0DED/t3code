@@ -33,6 +33,7 @@ function makeThread(
   return {
     runtimeMode: "full-access",
     interactionMode: "default",
+    parentThreadId: null,
     branch: null,
     worktreePath: null,
     latestTurn: null,

@@ -126,6 +126,7 @@ export function useProjectActions() {
         bootstrap: {
           createThread: {
             projectId: input.project.id,
+            parentThreadId: null,
             title: nextTitle,
             modelSelection: input.modelSelection,
             runtimeMode: input.runtimeMode,
