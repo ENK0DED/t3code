@@ -19,6 +19,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadTurnStartBootstrapDispatcher } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/providerMaintenance.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TextGeneration } from "../textGeneration/TextGeneration.ts";
@@ -57,6 +58,8 @@ const fakeEnvironment = ServerEnvironment.of({
   getEnvironmentId: Effect.succeed(environmentId),
   getDescriptor: Effect.die("unused"),
 });
+const unsupportedProviderOperation = (operation: string) =>
+  Effect.die(new Error(`${operation} unused`)) as never;
 const TestLayer = McpHttpServer.McpToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(PreviewAutomationBroker.layer),
@@ -113,6 +116,24 @@ const TestLayer = McpHttpServer.McpToolkitRegistrationLive.pipe(
               ),
             setProviderMaintenanceActionState: () => Effect.succeed([]),
             streamChanges: Stream.empty,
+          }),
+        ),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(
+          ProviderService,
+          ProviderService.of({
+            startSession: () => unsupportedProviderOperation("startSession"),
+            sendTurn: () => unsupportedProviderOperation("sendTurn"),
+            interruptTurn: () => unsupportedProviderOperation("interruptTurn"),
+            respondToRequest: () => unsupportedProviderOperation("respondToRequest"),
+            respondToUserInput: () => unsupportedProviderOperation("respondToUserInput"),
+            stopSession: () => unsupportedProviderOperation("stopSession"),
+            listSessions: () => Effect.succeed([]),
+            getCapabilities: () => unsupportedProviderOperation("getCapabilities"),
+            getInstanceInfo: () => unsupportedProviderOperation("getInstanceInfo"),
+            rollbackConversation: () => unsupportedProviderOperation("rollbackConversation"),
+            streamEvents: Stream.empty,
           }),
         ),
       ),

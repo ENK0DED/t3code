@@ -38,8 +38,12 @@ import * as McpInvocationContext from "../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadTurnStartBootstrapDispatcher } from "../../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
-import { validateProviderSessionModelSelectionCompatibility } from "../../orchestration/providerSessionCompatibility.ts";
+import {
+  resolveCurrentSessionModelSelectionForCompatibility,
+  validateProviderSessionModelSelectionCompatibility,
+} from "../../orchestration/providerSessionCompatibility.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { sanitizeThreadTitle } from "../../textGeneration/TextGenerationUtils.ts";
@@ -231,6 +235,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
     const orchestrationEngine = yield* OrchestrationEngineService;
     const bootstrapDispatcher = yield* ThreadTurnStartBootstrapDispatcher;
     const providerRegistry = yield* ProviderRegistry;
+    const providerService = yield* ProviderService;
     const serverSettings = yield* ServerSettingsService;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const textGeneration = yield* TextGeneration;
@@ -492,13 +497,27 @@ export const McpOrchestrationServiceLive = Layer.effect(
       if (input.thread.session === null) {
         return;
       }
+      const activeSession = yield* providerService
+        .listSessions()
+        .pipe(
+          Effect.map((sessions) =>
+            sessions.find((session) => session.threadId === input.thread.id),
+          ),
+        );
+      const currentInstanceId =
+        activeSession?.providerInstanceId ??
+        input.thread.session.providerInstanceId ??
+        input.thread.modelSelection.instanceId;
+      const currentModelSelection = resolveCurrentSessionModelSelectionForCompatibility({
+        threadModelSelection: input.thread.modelSelection,
+        currentInstanceId,
+        activeSessionModel: activeSession?.model,
+      });
       const providers = yield* providerRegistry.getProviders.pipe(
         Effect.mapError((error) =>
           toInternalError("Failed to load provider registry snapshots.", error),
         ),
       );
-      const currentInstanceId =
-        input.thread.session.providerInstanceId ?? input.thread.modelSelection.instanceId;
       const currentProvider = providers.find(
         (candidate) => candidate.instanceId === currentInstanceId,
       );
@@ -520,10 +539,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
       const compatibilityDetail = validateProviderSessionModelSelectionCompatibility({
         threadId: input.thread.id,
         hasStartedSession: true,
-        currentModelSelection: {
-          ...input.thread.modelSelection,
-          instanceId: currentInstanceId,
-        },
+        currentModelSelection,
         requestedModelSelection: input.requestedModelSelection,
         currentIdentity: {
           instanceId: currentInstanceId,

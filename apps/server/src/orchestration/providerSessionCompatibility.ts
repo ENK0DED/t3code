@@ -12,6 +12,20 @@ export interface ProviderSessionCompatibilityIdentity {
   readonly requiresNewThreadForModelChange?: boolean | undefined;
 }
 
+export function resolveCurrentSessionModelSelectionForCompatibility(input: {
+  readonly threadModelSelection: ModelSelection;
+  readonly currentInstanceId: ProviderInstanceId;
+  readonly activeSessionModel?: string | undefined;
+}): ModelSelection {
+  return input.activeSessionModel !== undefined
+    ? {
+        ...input.threadModelSelection,
+        instanceId: input.currentInstanceId,
+        model: input.activeSessionModel,
+      }
+    : input.threadModelSelection;
+}
+
 export function validateProviderSessionModelSelectionCompatibility(input: {
   readonly threadId: ThreadId;
   readonly hasStartedSession: boolean;

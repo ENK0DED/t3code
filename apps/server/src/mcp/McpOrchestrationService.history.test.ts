@@ -25,6 +25,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { ThreadTurnStartBootstrapDispatcher } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import { ProjectionThreadMessageSearchRepository } from "../persistence/Services/ProjectionThreadMessageSearch.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/providerMaintenance.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TextGeneration } from "../textGeneration/TextGeneration.ts";
@@ -155,6 +156,7 @@ const makeHistoryHarnessLayer = (input?: {
   readonly textGenerationModelSelection?: ModelSelection;
   readonly largeMessageText?: string;
 }) => {
+  const unsupported = (operation: string) => Effect.die(new Error(`${operation} unused`)) as never;
   const thread = makeThreadDetail({
     id: ThreadId.make(input?.largeMessageText ? "thread-large" : "thread-1"),
     projectId: ProjectId.make("project-1"),
@@ -220,6 +222,24 @@ const makeHistoryHarnessLayer = (input?: {
             ],
           }),
         ]),
+      ),
+    ),
+    Layer.provideMerge(
+      Layer.succeed(
+        ProviderService,
+        ProviderService.of({
+          startSession: () => unsupported("startSession"),
+          sendTurn: () => unsupported("sendTurn"),
+          interruptTurn: () => unsupported("interruptTurn"),
+          respondToRequest: () => unsupported("respondToRequest"),
+          respondToUserInput: () => unsupported("respondToUserInput"),
+          stopSession: () => unsupported("stopSession"),
+          listSessions: () => Effect.succeed([]),
+          getCapabilities: () => unsupported("getCapabilities"),
+          getInstanceInfo: () => unsupported("getInstanceInfo"),
+          rollbackConversation: () => unsupported("rollbackConversation"),
+          streamEvents: Stream.empty,
+        }),
       ),
     ),
     Layer.provideMerge(

@@ -26,6 +26,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { ThreadTurnStartBootstrapDispatcher } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import { ProjectionThreadMessageSearchRepository } from "../persistence/Services/ProjectionThreadMessageSearch.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/providerMaintenance.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TextGeneration } from "../textGeneration/TextGeneration.ts";
@@ -207,8 +208,10 @@ const makeReadHarnessLayer = (input?: {
   threadDetail?: OrchestrationThread | null;
   searchThreadIds?: ReadonlyArray<string>;
   session?: OrchestrationSession | null;
-}) =>
-  McpOrchestrationServiceLive.pipe(
+}) => {
+  const unsupported = (operation: string) => Effect.die(new Error(`${operation} unused`)) as never;
+
+  return McpOrchestrationServiceLive.pipe(
     Layer.provideMerge(
       Layer.succeed(
         ThreadTurnStartBootstrapDispatcher,
@@ -230,6 +233,24 @@ const makeReadHarnessLayer = (input?: {
     ),
     Layer.provideMerge(
       Layer.succeed(ProviderRegistry, providerRegistryMock(input?.providers ?? [])),
+    ),
+    Layer.provideMerge(
+      Layer.succeed(
+        ProviderService,
+        ProviderService.of({
+          startSession: () => unsupported("startSession"),
+          sendTurn: () => unsupported("sendTurn"),
+          interruptTurn: () => unsupported("interruptTurn"),
+          respondToRequest: () => unsupported("respondToRequest"),
+          respondToUserInput: () => unsupported("respondToUserInput"),
+          stopSession: () => unsupported("stopSession"),
+          listSessions: () => Effect.succeed([]),
+          getCapabilities: () => unsupported("getCapabilities"),
+          getInstanceInfo: () => unsupported("getInstanceInfo"),
+          rollbackConversation: () => unsupported("rollbackConversation"),
+          streamEvents: Stream.empty,
+        }),
+      ),
     ),
     Layer.provideMerge(
       Layer.succeed(
@@ -280,6 +301,7 @@ const makeReadHarnessLayer = (input?: {
       ),
     ),
   );
+};
 
 it.effect("listMcpModels excludes models disabled in server settings", () =>
   Effect.gen(function* () {

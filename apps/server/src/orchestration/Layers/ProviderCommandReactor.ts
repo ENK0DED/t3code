@@ -41,7 +41,10 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
-import { validateProviderSessionModelSelectionCompatibility } from "../providerSessionCompatibility.ts";
+import {
+  resolveCurrentSessionModelSelectionForCompatibility,
+  validateProviderSessionModelSelectionCompatibility,
+} from "../providerSessionCompatibility.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
@@ -399,14 +402,11 @@ const make = Effect.gen(function* () {
     const preferredProvider: ProviderDriverKind = desiredDriverKind;
     if (thread.session !== null) {
       const providers = yield* providerRegistry.getProviders;
-      const currentModelSelection =
-        activeSession?.model !== undefined
-          ? {
-              ...thread.modelSelection,
-              instanceId: currentInstanceId,
-              model: activeSession.model,
-            }
-          : thread.modelSelection;
+      const currentModelSelection = resolveCurrentSessionModelSelectionForCompatibility({
+        threadModelSelection: thread.modelSelection,
+        currentInstanceId,
+        activeSessionModel: activeSession?.model,
+      });
       const compatibilityDetail = validateProviderSessionModelSelectionCompatibility({
         threadId,
         hasStartedSession: true,

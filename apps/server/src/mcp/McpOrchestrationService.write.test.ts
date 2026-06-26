@@ -9,6 +9,7 @@ import {
   type OrchestrationProjectShell,
   type OrchestrationThread,
   type OrchestrationThreadShell,
+  type ProviderSession,
   type ServerProvider,
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
@@ -27,6 +28,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { ThreadTurnStartBootstrapDispatcherLive } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import { ProjectionThreadMessageSearchRepository } from "../persistence/Services/ProjectionThreadMessageSearch.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/providerMaintenance.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TextGeneration } from "../textGeneration/TextGeneration.ts";
@@ -229,6 +231,7 @@ const makeWriteHarnessLayer = (input?: {
   readonly threads?: ReadonlyArray<OrchestrationThreadShell>;
   readonly threadDetails?: ReadonlyArray<OrchestrationThread>;
   readonly providers?: ReadonlyArray<ServerProvider>;
+  readonly runtimeSessions?: ReadonlyArray<ProviderSession>;
   readonly settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
   readonly dispatchedCommands?: Array<OrchestrationCommand>;
   readonly createWorktreeCalls?: Array<{
@@ -285,6 +288,7 @@ const makeWriteHarnessLayer = (input?: {
   const threadDetailById = Object.fromEntries(threadDetails.map((thread) => [thread.id, thread]));
   const threadShellById = Object.fromEntries(threads.map((thread) => [thread.id, thread]));
   const dispatchedCommands = input?.dispatchedCommands ?? [];
+  const runtimeSessions = input?.runtimeSessions ?? [];
   const createWorktreeCalls = input?.createWorktreeCalls ?? [];
   const setupRunCalls = input?.setupRunCalls ?? [];
   const refreshStatusCalls = input?.refreshStatusCalls ?? [];
@@ -317,6 +321,24 @@ const makeWriteHarnessLayer = (input?: {
       Layer.succeed(
         ProviderRegistry,
         providerRegistryMock(input?.providers ?? [makeProvider({ instanceId: "codex" })]),
+      ),
+    ),
+    Layer.provideMerge(
+      Layer.succeed(
+        ProviderService,
+        ProviderService.of({
+          startSession: () => unsupported("startSession"),
+          sendTurn: () => unsupported("sendTurn"),
+          interruptTurn: () => unsupported("interruptTurn"),
+          respondToRequest: () => unsupported("respondToRequest"),
+          respondToUserInput: () => unsupported("respondToUserInput"),
+          stopSession: () => unsupported("stopSession"),
+          listSessions: () => Effect.succeed(runtimeSessions),
+          getCapabilities: () => unsupported("getCapabilities"),
+          getInstanceInfo: () => unsupported("getInstanceInfo"),
+          rollbackConversation: () => unsupported("rollbackConversation"),
+          streamEvents: Stream.empty,
+        }),
       ),
     ),
     Layer.provideMerge(ServerSettingsService.layerTest(input?.settings ?? {})),
@@ -911,6 +933,91 @@ it.effect("updateThreadSettings rejects invalid option values", () =>
       expect(Cause.pretty(exit.cause)).toContain("invalid_model_option");
     }
   }).pipe(Effect.provide(makeWriteHarnessLayer())),
+);
+
+it.effect(
+  "updateThreadSettings uses the live bound session model when persisted thread metadata is stale",
+  () =>
+    (() => {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      return Effect.gen(function* () {
+        const service = yield* McpOrchestrationService;
+        const result = yield* service.updateThreadSettings({
+          threadId: ThreadId.make("thread-current"),
+          modelSelection: defaultModelSelection({
+            instanceId: ProviderInstanceId.make("codex-home"),
+            model: "gpt-5.5-pro",
+          }),
+        });
+
+        expect(result).toMatchObject({
+          status: "updated",
+          threadId: "thread-current",
+          sequence: 1,
+        });
+        expect(dispatchedCommands).toHaveLength(1);
+        expect(dispatchedCommands[0]).toMatchObject({
+          type: "thread.meta.update",
+          threadId: "thread-current",
+          modelSelection: {
+            instanceId: "codex-home",
+            model: "gpt-5.5-pro",
+          },
+        });
+      }).pipe(
+        Effect.provide(
+          makeWriteHarnessLayer({
+            dispatchedCommands,
+            providers: [
+              makeProvider({
+                instanceId: "codex-home",
+                requiresNewThreadForModelChange: true,
+                models: [
+                  { slug: "gpt-5.5", name: "GPT-5.5", isCustom: false, capabilities: null },
+                  {
+                    slug: "gpt-5.5-pro",
+                    name: "GPT-5.5 Pro",
+                    isCustom: false,
+                    capabilities: null,
+                  },
+                ],
+              }),
+            ],
+            runtimeSessions: [
+              {
+                provider: ProviderDriverKind.make("codex"),
+                providerInstanceId: ProviderInstanceId.make("codex-home"),
+                status: "ready",
+                runtimeMode: "full-access",
+                model: "gpt-5.5-pro",
+                threadId: ThreadId.make("thread-current"),
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              },
+            ],
+            threadDetails: [
+              threadDetail({
+                id: ThreadId.make("thread-current"),
+                modelSelection: defaultModelSelection({
+                  instanceId: ProviderInstanceId.make("codex-home"),
+                  model: "gpt-5.5",
+                }),
+                session: {
+                  threadId: ThreadId.make("thread-current"),
+                  status: "ready",
+                  providerName: "codex",
+                  providerInstanceId: ProviderInstanceId.make("codex-home"),
+                  runtimeMode: "full-access",
+                  activeTurnId: null,
+                  lastError: null,
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                },
+              }),
+            ],
+          }),
+        ),
+      );
+    })(),
 );
 
 it.effect(
