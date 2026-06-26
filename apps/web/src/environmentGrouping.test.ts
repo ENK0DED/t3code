@@ -60,6 +60,7 @@ function makeSidebarThreadSummary(
   overrides: Partial<SidebarThreadSummary> &
     Pick<SidebarThreadSummary, "id" | "environmentId" | "projectId" | "title">,
 ): SidebarThreadSummary {
+  const { parentThreadId = null, ...restOverrides } = overrides;
   return {
     interactionMode: DEFAULT_INTERACTION_MODE,
     session: null,
@@ -73,7 +74,8 @@ function makeSidebarThreadSummary(
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
-    ...overrides,
+    ...restOverrides,
+    parentThreadId,
   };
 }
 

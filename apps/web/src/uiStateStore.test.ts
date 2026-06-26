@@ -12,6 +12,7 @@ import {
   reorderProjects,
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
+  setThreadTreeExpanded,
   setThreadChangedFilesExpanded,
   syncProjects,
   syncThreads,
@@ -24,6 +25,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     projectOrder: [],
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
+    expandedThreadTreeIdsByProject: {},
     defaultAdvertisedEndpointKey: null,
     ...overrides,
   };
@@ -395,6 +397,34 @@ describe("uiStateStore pure functions", () => {
 
     expect(next.projectExpandedById[project1]).toBe(false);
     expect(next.projectOrder).toEqual([project1]);
+  });
+
+  it("setThreadTreeExpanded stores expanded thread ids per project", () => {
+    const initialState = makeUiState();
+
+    const expanded = setThreadTreeExpanded(initialState, "project-key", "thread-parent", true);
+    const collapsed = setThreadTreeExpanded(expanded, "project-key", "thread-parent", false);
+
+    expect(expanded.expandedThreadTreeIdsByProject).toEqual({
+      "project-key": ["thread-parent"],
+    });
+    expect(collapsed.expandedThreadTreeIdsByProject).toEqual({});
+  });
+
+  it("syncThreads prunes stale expanded thread tree ids", () => {
+    const thread1 = ThreadId.make("thread-1");
+    const thread2 = ThreadId.make("thread-2");
+    const initialState = makeUiState({
+      expandedThreadTreeIdsByProject: {
+        "project-key": [thread1, thread2],
+      },
+    });
+
+    const next = syncThreads(initialState, [{ key: thread1 }]);
+
+    expect(next.expandedThreadTreeIdsByProject).toEqual({
+      "project-key": [thread1],
+    });
   });
 
   it("clearThreadUi removes visit state for deleted threads", () => {

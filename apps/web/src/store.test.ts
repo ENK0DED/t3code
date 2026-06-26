@@ -60,6 +60,7 @@ function withActiveEnvironmentState(
 }
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
+  const { parentThreadId = null, ...restOverrides } = overrides;
   return {
     id: ThreadId.make("thread-1"),
     environmentId: localEnvironmentId,
@@ -83,7 +84,8 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     latestTurn: null,
     branch: null,
     worktreePath: null,
-    ...overrides,
+    ...restOverrides,
+    parentThreadId,
   };
 }
 
@@ -118,6 +120,7 @@ function makeState(thread: Thread): AppState {
         environmentId: thread.environmentId,
         codexThreadId: thread.codexThreadId,
         projectId: thread.projectId,
+        parentThreadId: thread.parentThreadId,
         title: thread.title,
         modelSelection: thread.modelSelection,
         runtimeMode: thread.runtimeMode,

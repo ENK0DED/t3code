@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { ProviderDriverKind } from "@t3tools/contracts";
 
 import {
+  buildThreadTreeRows,
   createThreadJumpHintVisibilityController,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
@@ -716,6 +717,65 @@ describe("getVisibleThreadsForProject", () => {
   });
 });
 
+describe("buildThreadTreeRows", () => {
+  it("nests child threads under their parent and preserves top-level order", () => {
+    const rows = buildThreadTreeRows({
+      threads: [
+        sidebarThread({
+          id: "thread-parent",
+          parentThreadId: null,
+          updatedAt: "2026-01-02T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-other",
+          parentThreadId: null,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-child",
+          parentThreadId: "thread-parent",
+          updatedAt: "2026-01-03T00:00:00.000Z",
+        }),
+      ],
+      expandedThreadIds: new Set(["thread-parent"]),
+      activeThreadId: undefined,
+      sortOrder: "updated_at",
+    });
+
+    expect(rows.map((row) => [row.thread.id, row.depth])).toEqual([
+      ["thread-parent", 0],
+      ["thread-child", 1],
+      ["thread-other", 0],
+    ]);
+  });
+
+  it("rolls descendant status onto collapsed parent rows", () => {
+    const rows = buildThreadTreeRows({
+      threads: [
+        sidebarThread({ id: "thread-parent", parentThreadId: null }),
+        sidebarThread({
+          id: "thread-child",
+          parentThreadId: "thread-parent",
+          session: {
+            provider: ProviderDriverKind.make("codex"),
+            status: "running",
+            activeTurnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            orchestrationStatus: "running",
+          },
+        }),
+      ],
+      expandedThreadIds: new Set(),
+      activeThreadId: undefined,
+      sortOrder: "updated_at",
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.descendantStatus?.label).toBe("Working");
+  });
+});
+
 function makeProject(overrides: Partial<Project> = {}): Project {
   const { defaultModelSelection, ...rest } = overrides;
   return {
@@ -735,7 +795,41 @@ function makeProject(overrides: Partial<Project> = {}): Project {
   };
 }
 
+type SidebarThreadTestSummary = {
+  id: string;
+  parentThreadId: string | null;
+  session: Thread["session"];
+  interactionMode: Thread["interactionMode"];
+  latestTurn: Thread["latestTurn"];
+  createdAt: string;
+  updatedAt?: string | undefined;
+  latestUserMessageAt: string | null;
+  hasPendingApprovals: boolean;
+  hasPendingUserInput: boolean;
+  hasActionableProposedPlan: boolean;
+};
+
+function sidebarThread(
+  overrides: Partial<SidebarThreadTestSummary> = {},
+): SidebarThreadTestSummary {
+  return {
+    id: "thread-1",
+    parentThreadId: null,
+    interactionMode: DEFAULT_INTERACTION_MODE,
+    session: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    latestTurn: null,
+    latestUserMessageAt: null,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    hasActionableProposedPlan: false,
+    ...overrides,
+  };
+}
+
 function makeThread(overrides: Partial<Thread> = {}): Thread {
+  const { parentThreadId = null, ...restOverrides } = overrides;
   return {
     id: ThreadId.make("thread-1"),
     environmentId: localEnvironmentId,
@@ -761,7 +855,8 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     worktreePath: null,
     turnDiffSummaries: [],
     activities: [],
-    ...overrides,
+    ...restOverrides,
+    parentThreadId,
   };
 }
 

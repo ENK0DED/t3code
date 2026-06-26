@@ -45,6 +45,7 @@ function buildThread(title: string): SidebarThreadSummary {
     id: THREAD_ID,
     environmentId: ENVIRONMENT_ID,
     projectId: PROJECT_ID,
+    parentThreadId: null,
     title,
     interactionMode: DEFAULT_INTERACTION_MODE,
     session: null,
@@ -105,6 +106,10 @@ function Harness() {
           thread={buildThread(title)}
           projectCwd={null}
           orderedProjectThreadKeys={[]}
+          depth={0}
+          hasChildren={false}
+          expanded={false}
+          descendantStatus={null}
           isActive={false}
           jumpLabel={null}
           appSettingsConfirmThreadArchive={false}
@@ -126,6 +131,7 @@ function Harness() {
           cancelRename={cancelRename}
           attemptArchiveThread={spies.attemptArchiveThread}
           openPrLink={spies.openPrLink}
+          onToggleThreadExpanded={vi.fn()}
         />
       </ul>
     </AppAtomRegistryProvider>

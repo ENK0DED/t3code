@@ -31,6 +31,7 @@ export interface UiProjectState {
 export interface UiThreadState {
   threadLastVisitedAtById: Record<string, string>;
   threadChangedFilesExpandedById: Record<string, Record<string, boolean>>;
+  expandedThreadTreeIdsByProject: Record<string, string[]>;
 }
 
 export interface UiEndpointState {
@@ -57,6 +58,7 @@ const initialState: UiState = {
   projectOrder: [],
   threadLastVisitedAtById: {},
   threadChangedFilesExpandedById: {},
+  expandedThreadTreeIdsByProject: {},
   defaultAdvertisedEndpointKey: null,
 };
 
@@ -247,6 +249,42 @@ function nestedBooleanRecordsEqual(
   return true;
 }
 
+function stringArrayRecordsEqual(
+  left: Record<string, readonly string[]>,
+  right: Record<string, readonly string[]>,
+): boolean {
+  const leftEntries = Object.entries(left);
+  const rightEntries = Object.entries(right);
+  if (leftEntries.length !== rightEntries.length) {
+    return false;
+  }
+  for (const [key, values] of leftEntries) {
+    const rightValues = right[key];
+    if (
+      rightValues === undefined ||
+      values.length !== rightValues.length ||
+      values.some((value, index) => value !== rightValues[index])
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function pruneExpandedThreadTreeIdsByProject(
+  expandedThreadTreeIdsByProject: Record<string, string[]>,
+  retainedThreadIds: ReadonlySet<string>,
+): Record<string, string[]> {
+  return Object.fromEntries(
+    Object.entries(expandedThreadTreeIdsByProject).flatMap(([projectKey, threadIds]) => {
+      const retainedExpandedThreadIds = threadIds.filter((threadId) =>
+        retainedThreadIds.has(threadId),
+      );
+      return retainedExpandedThreadIds.length > 0 ? [[projectKey, retainedExpandedThreadIds]] : [];
+    }),
+  );
+}
+
 export function syncProjects(state: UiState, projects: readonly SyncProjectInput[]): UiState {
   const previousProjectCwdById = new Map(currentProjectCwdById);
   const previousLogicalKeyByPhysicalKey = new Map(currentLogicalKeyByPhysicalKey);
@@ -427,11 +465,19 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
       retainedThreadIds.has(threadId),
     ),
   );
+  const nextExpandedThreadTreeIdsByProject = pruneExpandedThreadTreeIdsByProject(
+    state.expandedThreadTreeIdsByProject,
+    retainedThreadIds,
+  );
   if (
     recordsEqual(state.threadLastVisitedAtById, nextThreadLastVisitedAtById) &&
     nestedBooleanRecordsEqual(
       state.threadChangedFilesExpandedById,
       nextThreadChangedFilesExpandedById,
+    ) &&
+    stringArrayRecordsEqual(
+      state.expandedThreadTreeIdsByProject,
+      nextExpandedThreadTreeIdsByProject,
     )
   ) {
     return state;
@@ -440,6 +486,7 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
     ...state,
     threadLastVisitedAtById: nextThreadLastVisitedAtById,
     threadChangedFilesExpandedById: nextThreadChangedFilesExpandedById,
+    expandedThreadTreeIdsByProject: nextExpandedThreadTreeIdsByProject,
   };
 }
 
@@ -492,17 +539,30 @@ export function markThreadUnread(
 export function clearThreadUi(state: UiState, threadId: string): UiState {
   const hasVisitedState = threadId in state.threadLastVisitedAtById;
   const hasChangedFilesState = threadId in state.threadChangedFilesExpandedById;
-  if (!hasVisitedState && !hasChangedFilesState) {
+  const expandedProjectEntries = Object.entries(state.expandedThreadTreeIdsByProject);
+  const hasThreadTreeState = expandedProjectEntries.some(([, threadIds]) =>
+    threadIds.includes(threadId),
+  );
+  if (!hasVisitedState && !hasChangedFilesState && !hasThreadTreeState) {
     return state;
   }
   const nextThreadLastVisitedAtById = { ...state.threadLastVisitedAtById };
   const nextThreadChangedFilesExpandedById = { ...state.threadChangedFilesExpandedById };
   delete nextThreadLastVisitedAtById[threadId];
   delete nextThreadChangedFilesExpandedById[threadId];
+  const nextExpandedThreadTreeIdsByProject = Object.fromEntries(
+    expandedProjectEntries.flatMap(([projectKey, threadIds]) => {
+      const retainedThreadIds = threadIds.filter(
+        (expandedThreadId) => expandedThreadId !== threadId,
+      );
+      return retainedThreadIds.length > 0 ? [[projectKey, retainedThreadIds]] : [];
+    }),
+  );
   return {
     ...state,
     threadLastVisitedAtById: nextThreadLastVisitedAtById,
     threadChangedFilesExpandedById: nextThreadChangedFilesExpandedById,
+    expandedThreadTreeIdsByProject: nextExpandedThreadTreeIdsByProject,
   };
 }
 
@@ -590,6 +650,34 @@ export function setProjectExpanded(state: UiState, projectId: string, expanded: 
   };
 }
 
+export function setThreadTreeExpanded(
+  state: UiState,
+  projectKey: string,
+  threadId: string,
+  expanded: boolean,
+): UiState {
+  const currentThreadIds = state.expandedThreadTreeIdsByProject[projectKey] ?? [];
+  const currentlyExpanded = currentThreadIds.includes(threadId);
+  if (currentlyExpanded === expanded) {
+    return state;
+  }
+
+  const nextProjectThreadIds = expanded
+    ? [...currentThreadIds, threadId]
+    : currentThreadIds.filter((currentThreadId) => currentThreadId !== threadId);
+  const nextExpandedThreadTreeIdsByProject = { ...state.expandedThreadTreeIdsByProject };
+  if (nextProjectThreadIds.length > 0) {
+    nextExpandedThreadTreeIdsByProject[projectKey] = nextProjectThreadIds;
+  } else {
+    delete nextExpandedThreadTreeIdsByProject[projectKey];
+  }
+
+  return {
+    ...state,
+    expandedThreadTreeIdsByProject: nextExpandedThreadTreeIdsByProject,
+  };
+}
+
 export function reorderProjects(
   state: UiState,
   draggedProjectIds: readonly string[],
@@ -640,6 +728,7 @@ interface UiStateStore extends UiState {
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
   clearThreadUi: (threadId: string) => void;
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
+  setThreadTreeExpanded: (projectKey: string, threadId: string, expanded: boolean) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
   toggleProject: (projectId: string) => void;
   setProjectExpanded: (projectId: string, expanded: boolean) => void;
@@ -660,6 +749,8 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
   clearThreadUi: (threadId) => set((state) => clearThreadUi(state, threadId)),
   setThreadChangedFilesExpanded: (threadId, turnId, expanded) =>
     set((state) => setThreadChangedFilesExpanded(state, threadId, turnId, expanded)),
+  setThreadTreeExpanded: (projectKey, threadId, expanded) =>
+    set((state) => setThreadTreeExpanded(state, projectKey, threadId, expanded)),
   setDefaultAdvertisedEndpointKey: (key) =>
     set((state) => setDefaultAdvertisedEndpointKey(state, key)),
   toggleProject: (projectId) => set((state) => toggleProject(state, projectId)),

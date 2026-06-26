@@ -38,6 +38,14 @@ export interface ThreadStatusPill {
   pulse: boolean;
 }
 
+export interface SidebarThreadTreeRow<TThread> {
+  readonly thread: TThread;
+  readonly depth: number;
+  readonly hasChildren: boolean;
+  readonly expanded: boolean;
+  readonly descendantStatus: ThreadStatusPill | null;
+}
+
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   "Pending Approval": 5,
   "Awaiting Input": 4,
@@ -418,6 +426,132 @@ export function resolveProjectStatusIndicator(
   }
 
   return highestPriorityStatus;
+}
+
+type ThreadTreeInput = ThreadStatusInput &
+  ThreadSortInput & {
+    id: string;
+    parentThreadId: string | null;
+  };
+
+function hasThreadDescendant(
+  threadId: string,
+  targetThreadId: string | undefined,
+  childrenByParentId: ReadonlyMap<string, readonly { id: string }[]>,
+): boolean {
+  if (!targetThreadId) {
+    return false;
+  }
+  const children = childrenByParentId.get(threadId) ?? [];
+  for (const child of children) {
+    if (child.id === targetThreadId) {
+      return true;
+    }
+    if (hasThreadDescendant(child.id, targetThreadId, childrenByParentId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function resolveDescendantThreadStatus<TThread extends ThreadTreeInput>(
+  threads: readonly TThread[],
+  childrenByParentId: ReadonlyMap<string, readonly TThread[]>,
+): ThreadStatusPill | null {
+  return resolveProjectStatusIndicator(
+    threads.flatMap((thread) => [
+      resolveThreadStatusPill({ thread }),
+      resolveDescendantThreadStatus(childrenByParentId.get(thread.id) ?? [], childrenByParentId),
+    ]),
+  );
+}
+
+export function resolveThreadAncestorIds<
+  TThread extends {
+    id: string;
+    parentThreadId: string | null;
+  },
+>(thread: TThread, threadById: ReadonlyMap<string, TThread>): string[] {
+  const ancestorIds: string[] = [];
+  const visited = new Set<string>([thread.id]);
+  let currentParentId = thread.parentThreadId;
+
+  while (currentParentId !== null) {
+    if (visited.has(currentParentId)) {
+      break;
+    }
+    const parent = threadById.get(currentParentId);
+    if (!parent) {
+      break;
+    }
+    ancestorIds.push(parent.id);
+    visited.add(parent.id);
+    currentParentId = parent.parentThreadId;
+  }
+
+  return ancestorIds;
+}
+
+export function buildThreadTreeRows<TThread extends ThreadTreeInput>(input: {
+  readonly threads: readonly TThread[];
+  readonly expandedThreadIds: ReadonlySet<string>;
+  readonly activeThreadId: string | undefined;
+  readonly sortOrder: SidebarThreadSortOrder;
+}): SidebarThreadTreeRow<TThread>[] {
+  const threadIds = new Set(input.threads.map((thread) => thread.id));
+  const sortedThreads = [...input.threads].toSorted((left, right) => {
+    const rightTimestamp = getThreadSortTimestamp(right, input.sortOrder);
+    const leftTimestamp = getThreadSortTimestamp(left, input.sortOrder);
+    const byTimestamp =
+      rightTimestamp === leftTimestamp ? 0 : rightTimestamp > leftTimestamp ? 1 : -1;
+    if (byTimestamp !== 0) return byTimestamp;
+    return right.id.localeCompare(left.id);
+  });
+  const rootThreads: TThread[] = [];
+  const byParent = new Map<string, TThread[]>();
+  for (const thread of sortedThreads) {
+    if (thread.parentThreadId === null || !threadIds.has(thread.parentThreadId)) {
+      rootThreads.push(thread);
+      continue;
+    }
+    const siblings = byParent.get(thread.parentThreadId);
+    if (siblings) {
+      siblings.push(thread);
+    } else {
+      byParent.set(thread.parentThreadId, [thread]);
+    }
+  }
+
+  const rows: SidebarThreadTreeRow<TThread>[] = [];
+  const visit = (thread: TThread, depth: number, ancestors: ReadonlySet<string>) => {
+    if (ancestors.has(thread.id)) {
+      return;
+    }
+    const children = byParent.get(thread.id) ?? [];
+    const expanded =
+      input.expandedThreadIds.has(thread.id) ||
+      hasThreadDescendant(thread.id, input.activeThreadId, byParent);
+    rows.push({
+      thread,
+      depth,
+      hasChildren: children.length > 0,
+      expanded,
+      descendantStatus: expanded ? null : resolveDescendantThreadStatus(children, byParent),
+    });
+    if (!expanded) {
+      return;
+    }
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(thread.id);
+    for (const child of children) {
+      visit(child, depth + 1, nextAncestors);
+    }
+  };
+
+  for (const thread of rootThreads) {
+    visit(thread, 0, new Set());
+  }
+  return rows;
 }
 
 export function getVisibleThreadsForProject<T extends Pick<Thread, "id">>(input: {

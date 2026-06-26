@@ -7,6 +7,7 @@ import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "
 const localEnvironmentId = EnvironmentId.make("environment-local");
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
+  const { parentThreadId = null, ...restOverrides } = overrides;
   return {
     id: ThreadId.make("thread-1"),
     environmentId: localEnvironmentId,
@@ -30,7 +31,8 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     latestTurn: null,
     branch: null,
     worktreePath: null,
-    ...overrides,
+    ...restOverrides,
+    parentThreadId,
   };
 }
 
