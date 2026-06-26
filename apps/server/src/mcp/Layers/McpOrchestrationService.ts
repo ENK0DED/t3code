@@ -758,23 +758,14 @@ export const McpOrchestrationServiceLive = Layer.effect(
     );
 
     const resolveParentThreadId = (input: {
-      readonly placement?: "child_of_current" | "top_level" | "child_of_thread" | undefined;
+      readonly placement?: "top_level" | "child_of_thread" | undefined;
       readonly explicitParentThreadId?: ThreadId | undefined;
-      readonly targetProjectId: ProjectId;
-      readonly currentThread: OrchestrationThread;
     }): Effect.Effect<ThreadId | null, McpOrchestrationError> =>
       Effect.gen(function* () {
-        const placement =
-          input.placement ??
-          (input.targetProjectId === input.currentThread.projectId
-            ? "child_of_current"
-            : "top_level");
+        const placement = input.placement ?? "top_level";
         switch (placement) {
           case "top_level":
             return null;
-          case "child_of_current":
-            yield* rejectArchivedThread(input.currentThread);
-            return input.currentThread.id;
           case "child_of_thread":
             if (!input.explicitParentThreadId) {
               return yield* new McpOrchestrationError({
@@ -1459,7 +1450,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
         Effect.gen(function* () {
           const input = rawInput as {
             readonly projectId?: ProjectId;
-            readonly placement?: "child_of_current" | "top_level" | "child_of_thread";
+            readonly placement?: "top_level" | "child_of_thread";
             readonly parentThreadId?: ThreadId;
             readonly title?: string;
             readonly message?: string;
@@ -1497,8 +1488,6 @@ export const McpOrchestrationServiceLive = Layer.effect(
           const parentThreadId = yield* resolveParentThreadId({
             placement: input.placement,
             explicitParentThreadId: input.parentThreadId,
-            targetProjectId,
-            currentThread,
           });
           yield* validateParentThreadProject({ parentThreadId, targetProjectId });
 

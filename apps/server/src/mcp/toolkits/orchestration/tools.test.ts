@@ -3,6 +3,9 @@ import { Tool } from "effect/unstable/ai";
 
 import { OrchestrationToolkit } from "./tools.ts";
 
+const legacyThreadSettingsToolName = ["get", "current", "thread", "settings"].join("_");
+const legacyPlacement = ["child", "of", "current"].join("_");
+
 const expectedToolNames = [
   "list_mcp_models",
   "list_projects",
@@ -80,7 +83,7 @@ it("exports the orchestration MCP toolkit in the planned HTTP surface order", ()
 it("renames current thread settings reads to get_thread_settings", () => {
   expect(OrchestrationToolkit.tools.get_thread_settings).toBeDefined();
   expect(
-    "get_current_thread_settings" in (OrchestrationToolkit.tools as Record<string, unknown>),
+    legacyThreadSettingsToolName in (OrchestrationToolkit.tools as Record<string, unknown>),
   ).toBe(false);
 });
 
@@ -154,11 +157,11 @@ it("omits worktreePath from create_thread bootstrap inputs", () => {
   expect(schema.properties?.worktreePath).toBeUndefined();
 });
 
-it("retains create_thread child_of_current placement support", () => {
+it("exposes only top_level and child_of_thread create_thread placements", () => {
   const createSchema = Tool.getJsonSchema(OrchestrationToolkit.tools.create_thread);
   const serialized = JSON.stringify(createSchema);
 
-  expect(serialized).toContain("child_of_current");
+  expect(serialized).not.toContain(legacyPlacement);
   expect(serialized).toContain("child_of_thread");
   expect(serialized).toContain("top_level");
 });

@@ -4,6 +4,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
+import { canThreadCreateChild, MAX_THREAD_TREE_DEPTH } from "@t3tools/shared/threadTree";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -236,6 +237,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
             detail: `Parent thread '${command.parentThreadId}' belongs to a different project.`,
+          });
+        }
+        if (!canThreadCreateChild(parentThread)) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Parent thread '${command.parentThreadId}' is already at the maximum thread depth of ${MAX_THREAD_TREE_DEPTH}.`,
           });
         }
       }

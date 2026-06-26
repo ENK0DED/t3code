@@ -394,11 +394,7 @@ export const AddProjectTool = Tool.make("add_project", {
   dependencies,
 });
 
-export const ThreadPlacement = Schema.Literals([
-  "child_of_current",
-  "top_level",
-  "child_of_thread",
-]);
+export const ThreadPlacement = Schema.Literals(["top_level", "child_of_thread"]);
 
 export const CreateThreadTool = Tool.make("create_thread", {
   description:
@@ -410,11 +406,11 @@ export const CreateThreadTool = Tool.make("create_thread", {
     placement: Schema.optional(
       ThreadPlacement.annotate({
         description:
-          "Where to place the new thread. Defaults to child_of_current in the current project, otherwise top_level. Use child_of_thread with parentThreadId to pick a specific parent thread.",
+          "Where to place the new thread. Defaults to top_level. Use child_of_thread with parentThreadId to pick a specific parent thread.",
       }),
     ).annotate({
       description:
-        "Where to place the new thread. Defaults to child_of_current in the current project, otherwise top_level. Use child_of_thread with parentThreadId to pick a specific parent thread.",
+        "Where to place the new thread. Defaults to top_level. Use child_of_thread with parentThreadId to pick a specific parent thread.",
     }),
     parentThreadId: OptionalParentThreadIdInput,
     title: Schema.optional(

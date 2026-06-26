@@ -647,7 +647,8 @@ it.effect("creates a child thread through the MCP transport", () =>
       const issuedToken = yield* issueMcpToken();
       const initialize = yield* initializeMcpSession(issuedToken);
       const response = yield* callMcpTool(initialize.sessionId, issuedToken, "create_thread", {
-        placement: "child_of_current",
+        placement: "child_of_thread",
+        parentThreadId: currentThreadId,
         title: "Investigate failing tests",
       });
 
@@ -675,7 +676,8 @@ it.effect("returns final bootstrap metadata for accepted create_thread responses
       const issuedToken = yield* issueMcpToken();
       const initialize = yield* initializeMcpSession(issuedToken);
       const response = yield* callMcpTool(initialize.sessionId, issuedToken, "create_thread", {
-        placement: "child_of_current",
+        placement: "child_of_thread",
+        parentThreadId: currentThreadId,
         title: "Investigate bootstrap checkout",
         message: "Start this in a prepared worktree",
         checkoutMode: "new_worktree",

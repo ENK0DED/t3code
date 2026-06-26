@@ -905,7 +905,7 @@ it.effect("createProjectAction rejects auto-open preview without preview URL", (
   ),
 );
 
-it.effect("createThread defaults placement to child_of_current for the current project", () =>
+it.effect("createThread defaults placement to top_level", () =>
   (() => {
     const dispatchedCommands: Array<OrchestrationCommand> = [];
     return Effect.gen(function* () {
@@ -921,7 +921,7 @@ it.effect("createThread defaults placement to child_of_current for the current p
       });
       expect(dispatchedCommands[0]).toMatchObject({
         type: "thread.create",
-        parentThreadId: "thread-current",
+        parentThreadId: null,
         projectId: "project-current",
         title: "Top-level Thread",
       });
@@ -952,7 +952,7 @@ it.effect("createThread with a message creates the thread before starting the tu
       ]);
       expect(dispatchedCommands[0]).toMatchObject({
         type: "thread.create",
-        parentThreadId: "thread-current",
+        parentThreadId: null,
         projectId: "project-current",
         title: "Investigate reconnects",
       });
@@ -1008,7 +1008,7 @@ it.effect(
         ]);
         expect(dispatchedCommands[0]).toMatchObject({
           type: "thread.create",
-          parentThreadId: "thread-current",
+          parentThreadId: null,
           projectId: "project-current",
           title: "Follow-up thread",
           branch: "feature/current",
@@ -1217,32 +1217,36 @@ it.effect("createThread rejects cross-project child_of_thread", () =>
   }).pipe(Effect.provide(makeWriteHarnessLayer())),
 );
 
-it.effect("createThread rejects archived current thread as a child_of_current parent", () =>
-  Effect.gen(function* () {
-    const service = yield* McpOrchestrationService;
-    const exit = yield* Effect.exit(
-      service.createThread({
-        title: "Archived parent",
-      }),
-    );
+it.effect(
+  "createThread rejects archived current thread as an explicit child_of_thread parent",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const exit = yield* Effect.exit(
+        service.createThread({
+          placement: "child_of_thread",
+          parentThreadId: ThreadId.make("thread-current"),
+          title: "Archived parent",
+        }),
+      );
 
-    expect(Exit.isFailure(exit)).toBe(true);
-    if (Exit.isFailure(exit)) {
-      const error = Cause.squash(exit.cause) as { readonly code: string };
-      expect(error.code).toBe("thread_archived");
-    }
-  }).pipe(
-    Effect.provide(
-      makeWriteHarnessLayer({
-        threadDetails: [
-          threadDetail({
-            id: ThreadId.make("thread-current"),
-            archivedAt: "2026-01-02T00:00:00.000Z",
-          }),
-        ],
-      }),
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause) as { readonly code: string };
+        expect(error.code).toBe("thread_archived");
+      }
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              archivedAt: "2026-01-02T00:00:00.000Z",
+            }),
+          ],
+        }),
+      ),
     ),
-  ),
 );
 
 it.effect("createThread rejects archived child_of_thread parents", () =>

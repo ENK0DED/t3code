@@ -256,4 +256,44 @@ deciderLayer("commandInvariants decider checks", (it) => {
       effectExpect(error.message).toContain("belongs to a different project");
     }),
   );
+
+  it.effect("rejects creating a thread below the maximum thread depth", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        decideOrchestrationCommand({
+          readModel: {
+            ...readModel,
+            threads: [
+              ...readModel.threads,
+              {
+                ...readModel.threads[0]!,
+                id: ThreadId.make("thread-sub"),
+                parentThreadId: ThreadId.make("thread-1"),
+                title: "Sub-thread",
+              },
+            ],
+          },
+          command: {
+            type: "thread.create",
+            commandId: CommandId.make("cmd-too-deep-parent"),
+            threadId: ThreadId.make("thread-child"),
+            projectId: ProjectId.make("project-a"),
+            parentThreadId: ThreadId.make("thread-sub"),
+            title: "Too deep",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5.5",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        }),
+      );
+
+      effectExpect(error.message).toContain("maximum thread depth");
+    }),
+  );
 });
