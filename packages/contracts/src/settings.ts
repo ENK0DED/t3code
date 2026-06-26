@@ -39,6 +39,24 @@ export const SidebarThreadPreviewCount = Schema.Int.check(
 export type SidebarThreadPreviewCount = typeof SidebarThreadPreviewCount.Type;
 export const DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT: SidebarThreadPreviewCount = 6;
 
+export const DEFAULT_TERMINAL_FONT_FAMILY =
+  '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace';
+export const MAX_TERMINAL_FONT_FAMILY_LENGTH = 240;
+
+const hasTerminalFontControlCharacter = (value: string): boolean => {
+  return value.split("").some((char) => char.charCodeAt(0) <= 0x1f || char.charCodeAt(0) === 0x7f);
+};
+
+export const TerminalFontFamily = TrimmedNonEmptyString.pipe(
+  Schema.check(Schema.isMaxLength(MAX_TERMINAL_FONT_FAMILY_LENGTH)),
+  Schema.check(
+    Schema.makeFilter((value) => !hasTerminalFontControlCharacter(value), {
+      expected: "font family without control characters",
+    }),
+  ),
+);
+export type TerminalFontFamily = typeof TerminalFontFamily.Type;
+
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -87,6 +105,9 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   sidebarThreadPreviewCount: SidebarThreadPreviewCount.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT)),
+  ),
+  terminalFontFamily: TerminalFontFamily.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_TERMINAL_FONT_FAMILY)),
   ),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
@@ -566,6 +587,7 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
+  terminalFontFamily: Schema.optionalKey(TerminalFontFamily),
   timestampFormat: Schema.optionalKey(TimestampFormat),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });

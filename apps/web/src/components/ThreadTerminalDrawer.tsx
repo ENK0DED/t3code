@@ -63,6 +63,7 @@ import { useAttachedTerminalSession } from "../state/terminalSessions";
 import { serverEnvironment } from "../state/server";
 import { previewEnvironment } from "../state/preview";
 import { terminalEnvironment } from "../state/terminal";
+import { useClientSettings } from "../hooks/useSettings";
 import { openTerminalLinkInPreview } from "./preview/openTerminalLinkInPreview";
 import { useAtomCommand } from "../state/use-atom-command";
 
@@ -333,6 +334,8 @@ export function TerminalViewport({
   const selectionActionOpenRef = useRef(false);
   const selectionActionTimerRef = useRef<number | null>(null);
   const keybindingsRef = useRef(keybindings);
+  const terminalFontFamily = useClientSettings((settings) => settings.terminalFontFamily);
+  const terminalFontFamilyRef = useRef(terminalFontFamily);
   const runtimeEnvKey = useMemo(() => runtimeEnvSignature(runtimeEnv), [runtimeEnv]);
   const handleSessionExited = useEffectEvent(() => {
     onSessionExited();
@@ -379,6 +382,10 @@ export function TerminalViewport({
   }, [keybindings]);
 
   useEffect(() => {
+    terminalFontFamilyRef.current = terminalFontFamily;
+  }, [terminalFontFamily]);
+
+  useEffect(() => {
     const mount = containerRef.current;
     if (!mount) return;
 
@@ -390,8 +397,7 @@ export function TerminalViewport({
       lineHeight: 1,
       fontSize: 12,
       scrollback: 5_000,
-      fontFamily:
-        '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace',
+      fontFamily: terminalFontFamilyRef.current,
       theme: terminalThemeFromApp(mount),
     });
     terminal.loadAddon(fitAddon);
@@ -765,6 +771,27 @@ export function TerminalViewport({
     }
     previousSessionRef.current = current;
   }, [autoFocus, terminalBuffer, terminalError, terminalStatus, terminalVersion]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal || !fitAddon) return;
+    if (terminal.options.fontFamily === terminalFontFamily) return;
+
+    const wasAtBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
+    terminal.options.fontFamily = terminalFontFamily;
+    const frame = window.requestAnimationFrame(() => {
+      fitTerminalSafely(fitAddon);
+      if (wasAtBottom) {
+        terminal.scrollToBottom();
+      }
+      void resizeTerminal(terminal.cols, terminal.rows);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [environmentId, terminalFontFamily, terminalId, threadId]);
 
   useEffect(() => {
     if (!autoFocus) return;
