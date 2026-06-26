@@ -485,22 +485,17 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
 
-    const upsertMessageFts = (message: ProjectionThreadMessage) =>
+    const upsertMessageFtsByMessageId = (messageId: ProjectionThreadMessage["messageId"]) =>
       sql`
         INSERT INTO projection_thread_messages_fts (
-          message_id,
-          thread_id,
-          role,
-          text,
-          created_at
+          rowid,
+          text
         )
-        VALUES (
-          ${message.messageId},
-          ${message.threadId},
-          ${message.role},
-          ${message.text},
-          ${message.createdAt}
-        )
+        SELECT
+          rowid,
+          text
+        FROM projection_thread_messages
+        WHERE message_id = ${messageId}
       `.pipe(
         Effect.asVoid,
         Effect.mapError(toPersistenceSqlError("ProjectionPipeline.threadMessages.upsertFts:query")),
@@ -508,7 +503,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
     const deleteMessageFtsByMessageId = (messageId: ProjectionThreadMessage["messageId"]) =>
       sql`
-        DELETE FROM projection_thread_messages_fts
+        INSERT INTO projection_thread_messages_fts(
+          projection_thread_messages_fts,
+          rowid,
+          text
+        )
+        SELECT
+          'delete',
+          rowid,
+          text
+        FROM projection_thread_messages
         WHERE message_id = ${messageId}
       `.pipe(
         Effect.asVoid,
@@ -519,12 +523,39 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
     const deleteMessageFtsByThread = (threadId: ThreadId) =>
       sql`
-        DELETE FROM projection_thread_messages_fts
+        INSERT INTO projection_thread_messages_fts(
+          projection_thread_messages_fts,
+          rowid,
+          text
+        )
+        SELECT
+          'delete',
+          rowid,
+          text
+        FROM projection_thread_messages
         WHERE thread_id = ${threadId}
       `.pipe(
         Effect.asVoid,
         Effect.mapError(
           toPersistenceSqlError("ProjectionPipeline.threadMessages.deleteFtsByThread:query"),
+        ),
+      );
+
+    const rebuildMessageFtsByThread = (threadId: ThreadId) =>
+      sql`
+        INSERT INTO projection_thread_messages_fts (
+          rowid,
+          text
+        )
+        SELECT
+          rowid,
+          text
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId}
+      `.pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionPipeline.threadMessages.rebuildFtsByThread:query"),
         ),
       );
 
@@ -860,6 +891,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             messageId: event.payload.messageId,
           });
           const previousMessage = Option.getOrUndefined(existingMessage);
+          if (Option.isSome(existingMessage)) {
+            yield* deleteMessageFtsByMessageId(event.payload.messageId);
+          }
           const nextText = Option.match(existingMessage, {
             onNone: () => event.payload.text,
             onSome: (message) => {
@@ -890,8 +924,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             updatedAt: event.payload.updatedAt,
           } satisfies ProjectionThreadMessage;
           yield* projectionThreadMessageRepository.upsert(nextMessage);
-          yield* deleteMessageFtsByMessageId(event.payload.messageId);
-          yield* upsertMessageFts(nextMessage);
+          yield* upsertMessageFtsByMessageId(event.payload.messageId);
           return;
         }
 
@@ -915,16 +948,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             return;
           }
 
+          yield* deleteMessageFtsByThread(event.payload.threadId);
           yield* projectionThreadMessageRepository.deleteByThreadId({
             threadId: event.payload.threadId,
           });
-          yield* deleteMessageFtsByThread(event.payload.threadId);
           yield* Effect.forEach(keptRows, projectionThreadMessageRepository.upsert, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
-          yield* Effect.forEach(keptRows, upsertMessageFts, {
-            concurrency: 1,
-          }).pipe(Effect.asVoid);
+          yield* rebuildMessageFtsByThread(event.payload.threadId);
           attachmentSideEffects.prunedThreadRelativePaths.set(
             event.payload.threadId,
             collectThreadAttachmentRelativePaths(event.payload.threadId, keptRows),

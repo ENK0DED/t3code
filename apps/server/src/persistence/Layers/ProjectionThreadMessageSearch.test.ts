@@ -12,6 +12,22 @@ const layer = it.layer(
   ProjectionThreadMessageSearchRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
 );
 
+const backfillThreadMessageFts = (sql: SqlClient.SqlClient) =>
+  Effect.gen(function* () {
+    yield* sql`
+      INSERT INTO projection_thread_messages_fts(projection_thread_messages_fts)
+      VALUES ('delete-all')
+    `;
+    yield* sql`
+      INSERT INTO projection_thread_messages_fts (
+        rowid,
+        text
+      )
+      SELECT rowid, text
+      FROM projection_thread_messages
+    `;
+  });
+
 layer("ProjectionThreadMessageSearchRepository", (it) => {
   it.effect("searches active project threads and excludes archived threads by default", () =>
     Effect.gen(function* () {
@@ -137,17 +153,7 @@ layer("ProjectionThreadMessageSearchRepository", (it) => {
             '2026-01-01T00:00:00.000Z'
           )
       `;
-      yield* sql`
-        INSERT INTO projection_thread_messages_fts (
-          message_id,
-          thread_id,
-          role,
-          text,
-          created_at
-        )
-        SELECT message_id, thread_id, role, text, created_at
-        FROM projection_thread_messages
-      `;
+      yield* backfillThreadMessageFts(sql);
 
       const repo = yield* ProjectionThreadMessageSearchRepository;
       const hits = yield* repo.searchByProject({
@@ -289,17 +295,7 @@ layer("ProjectionThreadMessageSearchRepository", (it) => {
             '2026-01-01T00:00:00.000Z'
           )
       `;
-      yield* sql`
-        INSERT INTO projection_thread_messages_fts (
-          message_id,
-          thread_id,
-          role,
-          text,
-          created_at
-        )
-        SELECT message_id, thread_id, role, text, created_at
-        FROM projection_thread_messages
-      `;
+      yield* backfillThreadMessageFts(sql);
 
       const repo = yield* ProjectionThreadMessageSearchRepository;
       const includeHits = yield* repo.searchByProject({
@@ -322,6 +318,147 @@ layer("ProjectionThreadMessageSearchRepository", (it) => {
       assert.deepEqual(
         onlyHits.map((hit) => hit.threadId),
         ["thread-include-archived"],
+      );
+    }),
+  );
+
+  it.effect("excludes deleted threads even when the FTS row matches", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-deleted-thread',
+          'Project',
+          '/repo',
+          NULL,
+          '[]',
+          '2026-01-01T00:00:00.000Z',
+          '2026-01-01T00:00:00.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          parent_thread_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          created_at,
+          updated_at,
+          archived_at,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          deleted_at
+        )
+        VALUES
+          (
+            'thread-deleted-active',
+            'project-deleted-thread',
+            NULL,
+            'Active',
+            '{"instanceId":"codex","model":"gpt-5.5"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            '2026-01-01T00:00:00.000Z',
+            '2026-01-01T00:00:00.000Z',
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            NULL
+          ),
+          (
+            'thread-deleted-hidden',
+            'project-deleted-thread',
+            NULL,
+            'Deleted',
+            '{"instanceId":"codex","model":"gpt-5.5"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            '2026-01-01T00:00:00.000Z',
+            '2026-01-01T00:00:00.000Z',
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-01-02T00:00:00.000Z'
+          )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          attachments_json,
+          is_streaming,
+          created_at,
+          updated_at
+        )
+        VALUES
+          (
+            'message-deleted-active',
+            'thread-deleted-active',
+            NULL,
+            'user',
+            'Reconnect active thread',
+            NULL,
+            0,
+            '2026-01-01T00:00:00.000Z',
+            '2026-01-01T00:00:00.000Z'
+          ),
+          (
+            'message-deleted-hidden',
+            'thread-deleted-hidden',
+            NULL,
+            'user',
+            'Reconnect deleted thread',
+            NULL,
+            0,
+            '2026-01-01T00:00:00.000Z',
+            '2026-01-01T00:00:00.000Z'
+          )
+      `;
+      yield* backfillThreadMessageFts(sql);
+
+      const repo = yield* ProjectionThreadMessageSearchRepository;
+      const hits = yield* repo.searchByProject({
+        projectId: ProjectId.make("project-deleted-thread"),
+        query: "reconnect",
+        archived: "include",
+        limit: 20,
+      });
+
+      assert.deepEqual(
+        hits.map((hit) => hit.threadId),
+        ["thread-deleted-active"],
       );
     }),
   );

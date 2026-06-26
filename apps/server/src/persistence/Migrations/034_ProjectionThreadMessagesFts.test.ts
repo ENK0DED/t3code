@@ -9,7 +9,7 @@ import Migration034 from "./034_ProjectionThreadMessagesFts.ts";
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
 layer("034_ProjectionThreadMessagesFts", (it) => {
-  it.effect("creates and backfills the FTS table", () =>
+  it.effect("creates a contentless FTS table and backfills it by source rowid", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
@@ -52,9 +52,19 @@ layer("034_ProjectionThreadMessagesFts", (it) => {
 
       yield* Migration034;
 
+      const tableDefinitionRows = yield* sql<{ readonly sql: string }>`
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'projection_thread_messages_fts'
+      `;
+      assert.isTrue((tableDefinitionRows[0]?.sql ?? "").includes("content=''"));
+
       const rows = yield* sql<{ readonly messageId: string }>`
-        SELECT message_id AS "messageId"
+        SELECT messages.message_id AS "messageId"
         FROM projection_thread_messages_fts
+        INNER JOIN projection_thread_messages AS messages
+          ON messages.rowid = projection_thread_messages_fts.rowid
         WHERE projection_thread_messages_fts MATCH 'reconnect'
       `;
       assert.deepEqual(rows, [{ messageId: "message-1" }]);

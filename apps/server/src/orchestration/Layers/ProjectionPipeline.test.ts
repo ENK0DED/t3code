@@ -270,8 +270,10 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-fts-
         yield* projectionPipeline.bootstrap;
 
         const rows = yield* sql<{ readonly messageId: string }>`
-          SELECT message_id AS "messageId"
+          SELECT messages.message_id AS "messageId"
           FROM projection_thread_messages_fts
+          INNER JOIN projection_thread_messages AS messages
+            ON messages.rowid = projection_thread_messages_fts.rowid
           WHERE projection_thread_messages_fts MATCH 'reconnect'
         `;
         assert.deepEqual(rows, [{ messageId: "message-fts" }]);
@@ -283,6 +285,131 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-fts-
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(
   "OrchestrationProjectionPipeline",
   (it) => {
+    it.effect("replaces the FTS row when the same message id is projected again", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const now = "2026-01-01T00:00:00.000Z";
+
+        const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+          Effect.gen(function* () {
+            const persistedEvent = yield* eventStore.append(event);
+            yield* projectionPipeline.projectEvent(persistedEvent);
+          });
+
+        yield* appendAndProject({
+          type: "project.created",
+          eventId: EventId.make("evt-fts-replace-project"),
+          aggregateKind: "project",
+          aggregateId: ProjectId.make("project-fts-replace"),
+          occurredAt: now,
+          commandId: CommandId.make("cmd-fts-replace-project"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-fts-replace-project"),
+          metadata: {},
+          payload: {
+            projectId: ProjectId.make("project-fts-replace"),
+            title: "Project FTS Replace",
+            workspaceRoot: "/tmp/project-fts-replace",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.created",
+          eventId: EventId.make("evt-fts-replace-thread"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-fts-replace"),
+          occurredAt: now,
+          commandId: CommandId.make("cmd-fts-replace-thread"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-fts-replace-thread"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-fts-replace"),
+            projectId: ProjectId.make("project-fts-replace"),
+            parentThreadId: null,
+            title: "Thread FTS Replace",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-fts-replace-message-1"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-fts-replace"),
+          occurredAt: "2026-01-01T00:00:01.000Z",
+          commandId: CommandId.make("cmd-fts-replace-message-1"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-fts-replace-message-1"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-fts-replace"),
+            messageId: MessageId.make("message-fts-replace"),
+            role: "assistant",
+            text: "Investigate reconnect failures",
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-01-01T00:00:01.000Z",
+            updatedAt: "2026-01-01T00:00:01.000Z",
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-fts-replace-message-2"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-fts-replace"),
+          occurredAt: "2026-01-01T00:00:02.000Z",
+          commandId: CommandId.make("cmd-fts-replace-message-2"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-fts-replace-message-2"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-fts-replace"),
+            messageId: MessageId.make("message-fts-replace"),
+            role: "assistant",
+            text: "Investigate indexing failures",
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-01-01T00:00:02.000Z",
+            updatedAt: "2026-01-01T00:00:02.000Z",
+          },
+        });
+
+        const reconnectHits = yield* sql<{ readonly messageId: string }>`
+          SELECT messages.message_id AS "messageId"
+          FROM projection_thread_messages_fts
+          INNER JOIN projection_thread_messages AS messages
+            ON messages.rowid = projection_thread_messages_fts.rowid
+          WHERE projection_thread_messages_fts MATCH 'reconnect'
+        `;
+        const indexingHits = yield* sql<{ readonly messageId: string }>`
+          SELECT messages.message_id AS "messageId"
+          FROM projection_thread_messages_fts
+          INNER JOIN projection_thread_messages AS messages
+            ON messages.rowid = projection_thread_messages_fts.rowid
+          WHERE projection_thread_messages_fts MATCH 'indexing'
+        `;
+
+        assert.deepEqual(reconnectHits, []);
+        assert.deepEqual(indexingHits, [{ messageId: "message-fts-replace" }]);
+      }),
+    );
+
     it.effect("stores message attachment references without mutating payloads", () =>
       Effect.gen(function* () {
         const projectionPipeline = yield* OrchestrationProjectionPipeline;
@@ -2501,6 +2628,24 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           role: "assistant",
         },
       ]);
+
+      const removedHits = yield* sql<{ readonly messageId: string }>`
+        SELECT messages.message_id AS "messageId"
+        FROM projection_thread_messages_fts
+        INNER JOIN projection_thread_messages AS messages
+          ON messages.rowid = projection_thread_messages_fts.rowid
+        WHERE projection_thread_messages_fts MATCH 'removed'
+      `;
+      const keptHits = yield* sql<{ readonly messageId: string }>`
+        SELECT messages.message_id AS "messageId"
+        FROM projection_thread_messages_fts
+        INNER JOIN projection_thread_messages AS messages
+          ON messages.rowid = projection_thread_messages_fts.rowid
+        WHERE projection_thread_messages_fts MATCH 'kept'
+      `;
+
+      assert.deepEqual(removedHits, []);
+      assert.deepEqual(keptHits, [{ messageId: "assistant-keep" }]);
     }),
   );
 });

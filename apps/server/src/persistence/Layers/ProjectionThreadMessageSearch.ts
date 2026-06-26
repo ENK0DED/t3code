@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
@@ -22,6 +23,54 @@ function toFtsQuery(query: string): string {
     .join(" ");
 }
 
+function toSnippetTerms(query: string): ReadonlyArray<string> {
+  return query
+    .trim()
+    .split(/\s+/)
+    .map((term) => term.replaceAll('"', ""))
+    .filter((term) => term.length > 0);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildSnippet(text: string, terms: ReadonlyArray<string>): string {
+  if (text.length === 0) {
+    return "";
+  }
+
+  const normalizedText = text.toLowerCase();
+  const matches = terms
+    .map((term) => ({ term, index: normalizedText.indexOf(term.toLowerCase()) }))
+    .filter((match) => match.index >= 0)
+    .sort((left, right) => left.index - right.index);
+  const firstMatch = matches[0];
+  if (!firstMatch) {
+    return text.length <= 96 ? text : `${text.slice(0, 93)}...`;
+  }
+
+  const start = Math.max(0, firstMatch.index - 36);
+  const end = Math.min(text.length, firstMatch.index + firstMatch.term.length + 36);
+  const prefix = start > 0 ? "..." : "";
+  const suffix = end < text.length ? "..." : "";
+  const fragment = text.slice(start, end);
+  const highlighted = fragment.replace(
+    new RegExp(escapeRegExp(firstMatch.term), "i"),
+    (value) => `<mark>${value}</mark>`,
+  );
+  return `${prefix}${highlighted}${suffix}`;
+}
+
+const ProjectionThreadMessageSearchRow = Schema.Struct({
+  threadId: ProjectionThreadMessageSearchHit.fields.threadId,
+  messageId: ProjectionThreadMessageSearchHit.fields.messageId,
+  role: ProjectionThreadMessageSearchHit.fields.role,
+  text: Schema.String,
+  rank: ProjectionThreadMessageSearchHit.fields.rank,
+  createdAt: ProjectionThreadMessageSearchHit.fields.createdAt,
+});
+
 export const makeProjectionThreadMessageSearchRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
@@ -38,19 +87,21 @@ export const makeProjectionThreadMessageSearchRepository = Effect.gen(function* 
 
   const searchProjectionThreadMessageRows = SqlSchema.findAll({
     Request: SearchProjectionThreadMessagesInput,
-    Result: ProjectionThreadMessageSearchHit,
+    Result: ProjectionThreadMessageSearchRow,
     execute: ({ projectId, query, archived, limit }) =>
       sql`
         SELECT
-          projection_thread_messages_fts.thread_id AS "threadId",
-          projection_thread_messages_fts.message_id AS "messageId",
-          projection_thread_messages_fts.role AS "role",
-          snippet(projection_thread_messages_fts, 3, '<mark>', '</mark>', '...', 12) AS "snippet",
+          messages.thread_id AS "threadId",
+          messages.message_id AS "messageId",
+          messages.role AS "role",
+          messages.text AS "text",
           bm25(projection_thread_messages_fts) AS "rank",
-          projection_thread_messages_fts.created_at AS "createdAt"
+          messages.created_at AS "createdAt"
         FROM projection_thread_messages_fts
+        INNER JOIN projection_thread_messages AS messages
+          ON messages.rowid = projection_thread_messages_fts.rowid
         INNER JOIN projection_threads AS threads
-          ON threads.thread_id = projection_thread_messages_fts.thread_id
+          ON threads.thread_id = messages.thread_id
         WHERE threads.project_id = ${projectId}
           AND threads.deleted_at IS NULL
           AND ${archivePredicate(archived)}
@@ -64,6 +115,7 @@ export const makeProjectionThreadMessageSearchRepository = Effect.gen(function* 
     input,
   ) => {
     const normalizedQuery = toFtsQuery(input.query);
+    const snippetTerms = toSnippetTerms(input.query);
     if (normalizedQuery.length === 0) {
       return Effect.succeed([]);
     }
@@ -72,6 +124,16 @@ export const makeProjectionThreadMessageSearchRepository = Effect.gen(function* 
       ...input,
       query: normalizedQuery,
     }).pipe(
+      Effect.map((rows) =>
+        rows.map((row) => ({
+          threadId: row.threadId,
+          messageId: row.messageId,
+          role: row.role,
+          snippet: buildSnippet(row.text, snippetTerms),
+          rank: row.rank,
+          createdAt: row.createdAt,
+        })),
+      ),
       Effect.mapError(
         toPersistenceSqlError("ProjectionThreadMessageSearchRepository.searchByProject:query"),
       ),

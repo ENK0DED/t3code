@@ -7,33 +7,25 @@ export default Effect.gen(function* () {
   yield* sql`
     CREATE VIRTUAL TABLE IF NOT EXISTS projection_thread_messages_fts
     USING fts5(
-      message_id UNINDEXED,
-      thread_id UNINDEXED,
-      role UNINDEXED,
       text,
-      created_at UNINDEXED,
+      content='',
       tokenize='unicode61'
     )
   `;
 
   yield* sql`
-    DELETE FROM projection_thread_messages_fts
+    INSERT INTO projection_thread_messages_fts(projection_thread_messages_fts)
+    VALUES ('delete-all')
   `;
 
   yield* sql`
     INSERT INTO projection_thread_messages_fts (
-      message_id,
-      thread_id,
-      role,
-      text,
-      created_at
+      rowid,
+      text
     )
     SELECT
-      message_id,
-      thread_id,
-      role,
-      text,
-      created_at
+      rowid,
+      text
     FROM projection_thread_messages
   `;
 });
