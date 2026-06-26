@@ -3,6 +3,25 @@ import { Tool } from "effect/unstable/ai";
 
 import { OrchestrationToolkit } from "./tools.ts";
 
+const expectedToolNames = [
+  "list_mcp_models",
+  "list_projects",
+  "get_project_details",
+  "get_project_settings",
+  "update_project_settings",
+  "list_threads",
+  "get_thread_settings",
+  "get_thread_history",
+  "list_project_actions",
+  "create_project_action",
+  "update_project_action",
+  "delete_project_action",
+  "add_project",
+  "create_thread",
+  "send_thread_message",
+  "update_thread_settings",
+] as const;
+
 const schemaHasDescription = (schema: unknown): boolean => {
   if (!schema || typeof schema !== "object") return false;
   const record = schema as Record<string, unknown>;
@@ -37,10 +56,25 @@ it("exports provider-compatible object schemas with described parameters", () =>
 });
 
 it("uses explicit object schemas for no-input orchestration tools", () => {
-  const schema = Tool.getJsonSchema(OrchestrationToolkit.tools.list_mcp_models) as {
-    readonly type?: unknown;
-  };
-  expect(schema.type).toBe("object");
+  for (const toolName of ["list_mcp_models", "get_thread_settings"] as const) {
+    const schema = Tool.getJsonSchema(OrchestrationToolkit.tools[toolName]) as {
+      readonly type?: unknown;
+      readonly properties?: Readonly<Record<string, unknown>>;
+      readonly anyOf?: unknown;
+      readonly oneOf?: unknown;
+    };
+
+    expect(schema.type, `${toolName} must use an object-shaped parameter schema`).toBe("object");
+    expect(schema.anyOf, `${toolName} must not export a root anyOf`).toBeUndefined();
+    expect(schema.oneOf, `${toolName} must not export a root oneOf`).toBeUndefined();
+    expect(schema.properties ?? {}, `${toolName} should serialize to an object schema`).toEqual(
+      expect.any(Object),
+    );
+  }
+});
+
+it("exports the orchestration MCP toolkit in the planned HTTP surface order", () => {
+  expect(Object.keys(OrchestrationToolkit.tools)).toEqual(expectedToolNames);
 });
 
 it("renames current thread settings reads to get_thread_settings", () => {
@@ -62,6 +96,21 @@ it("exposes project settings tools separately from project selectors", () => {
   expect(
     JSON.stringify(Tool.getJsonSchema(OrchestrationToolkit.tools.list_project_actions)),
   ).not.toContain("command");
+  expect(
+    JSON.stringify(Tool.getJsonSchema(OrchestrationToolkit.tools.get_project_details)),
+  ).not.toContain("command");
+  expect(
+    JSON.stringify(Tool.getJsonSchema(OrchestrationToolkit.tools.get_project_settings)),
+  ).not.toContain("command");
+  expect(
+    JSON.stringify(Tool.getJsonSchema(OrchestrationToolkit.tools.delete_project_action)),
+  ).not.toContain("command");
+  expect(
+    JSON.stringify(Tool.getJsonSchema(OrchestrationToolkit.tools.create_project_action)),
+  ).toContain("command");
+  expect(
+    JSON.stringify(Tool.getJsonSchema(OrchestrationToolkit.tools.update_project_action)),
+  ).toContain("command");
 });
 
 it("exposes first-turn worktree bootstrap fields on send_thread_message", () => {

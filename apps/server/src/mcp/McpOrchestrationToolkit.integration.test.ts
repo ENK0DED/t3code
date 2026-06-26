@@ -411,6 +411,25 @@ function issueMcpToken() {
   });
 }
 
+const expectedToolNames = [
+  "list_mcp_models",
+  "list_projects",
+  "get_project_details",
+  "get_project_settings",
+  "update_project_settings",
+  "list_threads",
+  "get_thread_settings",
+  "get_thread_history",
+  "list_project_actions",
+  "create_project_action",
+  "update_project_action",
+  "delete_project_action",
+  "add_project",
+  "create_thread",
+  "send_thread_message",
+  "update_thread_settings",
+] as const;
+
 it.effect("lists MCP-enabled models through the MCP transport", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -456,6 +475,161 @@ it.effect("reads thread settings through the renamed MCP transport tool", () =>
         projectId: currentProjectId,
         title: "Current MCP Thread",
         modelSelection: defaultModelSelection(),
+      });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("serves the planned orchestration toolkit HTTP tool surface", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* HttpRouter.serve(makeIntegrationLayer([]), {
+        disableListenLog: true,
+        disableLogger: true,
+      }).pipe(Layer.build);
+      const issuedToken = yield* issueMcpToken();
+      const initialize = yield* initializeMcpSession(issuedToken);
+      const httpClient = yield* HttpClient.HttpClient;
+      const response = yield* httpClient.post("/mcp", {
+        headers: {
+          accept: "application/json, text/event-stream",
+          authorization: `Bearer ${issuedToken}`,
+          "content-type": "application/json",
+          "mcp-session-id": initialize.sessionId,
+        },
+        body: HttpBody.text(
+          yield* encodeUnknownJsonString({
+            jsonrpc: "2.0",
+            id: 3,
+            method: "tools/list",
+            params: {},
+          }),
+          "application/json",
+        ),
+      });
+
+      expect(response.status).toBe(200);
+      const payload = (yield* parseJsonRpcResponse(yield* response.text)) as {
+        readonly result?: { readonly tools?: ReadonlyArray<{ readonly name: string }> };
+        readonly error?: unknown;
+      };
+
+      expect(payload.error).toBeUndefined();
+      const orchestrationToolNames =
+        payload.result?.tools
+          ?.map((tool) => tool.name)
+          .filter((name) => expectedToolNames.includes(name as (typeof expectedToolNames)[number])) ??
+        [];
+      expect(orchestrationToolNames).toEqual(expectedToolNames);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("reads project details through the MCP transport", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* HttpRouter.serve(makeIntegrationLayer([]), {
+        disableListenLog: true,
+        disableLogger: true,
+      }).pipe(Layer.build);
+      const issuedToken = yield* issueMcpToken();
+      const initialize = yield* initializeMcpSession(issuedToken);
+      const response = yield* callMcpTool(
+        initialize.sessionId,
+        issuedToken,
+        "get_project_details",
+        {},
+      );
+
+      expect(response.structuredContent).toMatchObject({
+        projectId: currentProjectId,
+        title: "MCP Test Project",
+        workspaceRoot: "/work/mcp-test",
+        repositorySummary: null,
+      });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("reads project settings through the MCP transport", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* HttpRouter.serve(makeIntegrationLayer([]), {
+        disableListenLog: true,
+        disableLogger: true,
+      }).pipe(Layer.build);
+      const issuedToken = yield* issueMcpToken();
+      const initialize = yield* initializeMcpSession(issuedToken);
+      const response = yield* callMcpTool(
+        initialize.sessionId,
+        issuedToken,
+        "get_project_settings",
+        {},
+      );
+
+      expect(response.structuredContent).toMatchObject({
+        projectId: currentProjectId,
+        title: "MCP Test Project",
+        defaultModelSelection: null,
+        resolvedDefaultModel: null,
+      });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("lists project actions through the MCP transport", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* HttpRouter.serve(makeIntegrationLayer([]), {
+        disableListenLog: true,
+        disableLogger: true,
+      }).pipe(Layer.build);
+      const issuedToken = yield* issueMcpToken();
+      const initialize = yield* initializeMcpSession(issuedToken);
+      const response = yield* callMcpTool(
+        initialize.sessionId,
+        issuedToken,
+        "list_project_actions",
+        {},
+      );
+
+      expect(response.structuredContent).toMatchObject({
+        projectId: currentProjectId,
+        actions: [],
+      });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("updates project settings through the MCP transport with an explicit project id", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      yield* HttpRouter.serve(makeIntegrationLayer(dispatchedCommands), {
+        disableListenLog: true,
+        disableLogger: true,
+      }).pipe(Layer.build);
+      const issuedToken = yield* issueMcpToken();
+      const initialize = yield* initializeMcpSession(issuedToken);
+      const response = yield* callMcpTool(
+        initialize.sessionId,
+        issuedToken,
+        "update_project_settings",
+        {
+          projectId: currentProjectId,
+          title: "Renamed MCP Test Project",
+        },
+      );
+
+      expect(response.structuredContent).toMatchObject({
+        status: "updated",
+        projectId: currentProjectId,
+      });
+      expect(dispatchedCommands).toHaveLength(1);
+      expect(dispatchedCommands[0]).toMatchObject({
+        type: "project.meta.update",
+        projectId: currentProjectId,
+        title: "Renamed MCP Test Project",
       });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
