@@ -4,8 +4,10 @@ import { describe, expect, it } from "vite-plus/test";
 import { deriveProviderInstanceEntries } from "./providerInstances";
 import {
   getAppModelOptionsForInstance,
+  isModelEnabledForMcp,
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
+  toggleModelMcpDisabled,
 } from "./modelSelection";
 
 function provider(input: {
@@ -267,6 +269,43 @@ describe("instance-scoped model selection", () => {
     expect(resolveAppModelSelectionState(settings, providers)).toEqual({
       instanceId: ProviderInstanceId.make("claude_openrouter"),
       model: "openai/gpt-5.5",
+    });
+  });
+});
+
+describe("MCP model enablement preferences", () => {
+  it("treats models as enabled unless explicitly disabled for the provider instance", () => {
+    expect(
+      isModelEnabledForMcp({
+        mcpDisabledModelsByProvider: {},
+        instanceId: "codex",
+        model: "gpt-5.5",
+      }),
+    ).toBe(true);
+
+    expect(
+      isModelEnabledForMcp({
+        mcpDisabledModelsByProvider: {
+          codex: ["gpt-5.5"],
+        },
+        instanceId: "codex",
+        model: "gpt-5.5",
+      }),
+    ).toBe(false);
+  });
+
+  it("toggles disabled model slugs without affecting other providers", () => {
+    expect(
+      toggleModelMcpDisabled({
+        mcpDisabledModelsByProvider: {
+          codex: ["gpt-5.5"],
+          claudeAgent: ["claude-opus-4-6"],
+        },
+        instanceId: "codex",
+        model: "gpt-5.5",
+      }),
+    ).toEqual({
+      claudeAgent: ["claude-opus-4-6"],
     });
   });
 });

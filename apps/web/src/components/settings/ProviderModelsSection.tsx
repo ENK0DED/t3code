@@ -7,6 +7,7 @@ import {
   EyeOffIcon,
   InfoIcon,
   PlusIcon,
+  PlugIcon,
   StarIcon,
   XIcon,
 } from "lucide-react";
@@ -20,7 +21,11 @@ import { normalizeModelSlug } from "@t3tools/shared/model";
 
 import { cn } from "../../lib/utils";
 import { sortModelsForProviderInstance } from "../../modelOrdering";
-import { MAX_CUSTOM_MODEL_LENGTH } from "../../modelSelection";
+import {
+  isModelEnabledForMcp,
+  MAX_CUSTOM_MODEL_LENGTH,
+  toggleModelMcpDisabled,
+} from "../../modelSelection";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -62,6 +67,7 @@ interface ProviderModelsSectionProps {
   readonly favoriteModels: ReadonlyArray<string>;
   /** Explicit user-authored model ordering for this provider instance. */
   readonly modelOrder: ReadonlyArray<string>;
+  readonly mcpDisabledModelsByProvider: Record<string, readonly string[]>;
   /**
    * Commit the new custom-model list. Caller is responsible for routing the
    * write to the correct storage (legacy `settings.providers[kind]` vs.
@@ -71,6 +77,7 @@ interface ProviderModelsSectionProps {
   readonly onHiddenModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onFavoriteModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
+  readonly onMcpDisabledModelsByProviderChange: (next: Record<string, string[]>) => void;
 }
 
 /**
@@ -92,10 +99,12 @@ export function ProviderModelsSection({
   hiddenModels,
   favoriteModels,
   modelOrder,
+  mcpDisabledModelsByProvider,
   onChange,
   onHiddenModelsChange,
   onFavoriteModelsChange,
   onModelOrderChange,
+  onMcpDisabledModelsByProviderChange,
 }: ProviderModelsSectionProps) {
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -202,6 +211,11 @@ export function ProviderModelsSection({
             previousModel !== undefined && favoriteModelSet.has(previousModel.slug) === isFavorite;
           const canMoveDown =
             nextModel !== undefined && favoriteModelSet.has(nextModel.slug) === isFavorite;
+          const isMcpEnabled = isModelEnabledForMcp({
+            mcpDisabledModelsByProvider,
+            instanceId,
+            model: model.slug,
+          });
           const descriptors = caps?.optionDescriptors ?? [];
           if (descriptors.some((descriptor) => descriptor.id === "fastMode")) {
             capLabels.push("Fast mode");
@@ -335,6 +349,43 @@ export function ProviderModelsSection({
                   </TooltipTrigger>
                   <TooltipPopup side="top">Move down</TooltipPopup>
                 </Tooltip>
+                {!model.isCustom ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          size="icon-xs"
+                          variant="ghost"
+                          className={cn(
+                            "size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground",
+                            isMcpEnabled && "text-cyan-500 hover:text-cyan-600",
+                          )}
+                          onClick={() =>
+                            onMcpDisabledModelsByProviderChange(
+                              toggleModelMcpDisabled({
+                                mcpDisabledModelsByProvider,
+                                instanceId,
+                                model: model.slug,
+                              }),
+                            )
+                          }
+                          aria-label={
+                            isMcpEnabled
+                              ? `Block MCP tools from using ${model.name}`
+                              : `Allow MCP tools to use ${model.name}`
+                          }
+                        />
+                      }
+                    >
+                      <PlugIcon className="size-3" />
+                    </TooltipTrigger>
+                    <TooltipPopup side="top">
+                      {isMcpEnabled
+                        ? "Block MCP tools from using this model"
+                        : "Allow MCP tools to use this model"}
+                    </TooltipPopup>
+                  </Tooltip>
+                ) : null}
                 {!model.isCustom ? (
                   <Tooltip>
                     <TooltipTrigger

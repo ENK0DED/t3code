@@ -348,9 +348,11 @@ interface ProviderInstanceCardProps {
   readonly hiddenModels: ReadonlyArray<string>;
   readonly favoriteModels: ReadonlyArray<string>;
   readonly modelOrder: ReadonlyArray<string>;
+  readonly mcpDisabledModelsByProvider: Record<string, readonly string[]>;
   readonly onHiddenModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onFavoriteModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
+  readonly onMcpDisabledModelsByProviderChange: (next: Record<string, string[]>) => void;
   readonly onRunUpdate?: (() => void) | undefined;
   readonly isUpdating?: boolean | undefined;
 }
@@ -392,9 +394,11 @@ export function ProviderInstanceCard({
   hiddenModels,
   favoriteModels,
   modelOrder,
+  mcpDisabledModelsByProvider,
   onHiddenModelsChange,
   onFavoriteModelsChange,
   onModelOrderChange,
+  onMcpDisabledModelsByProviderChange,
   onRunUpdate,
   isUpdating = false,
 }: ProviderInstanceCardProps) {
@@ -787,10 +791,12 @@ export function ProviderInstanceCard({
                 hiddenModels={hiddenModels}
                 favoriteModels={favoriteModels}
                 modelOrder={modelOrder}
+                mcpDisabledModelsByProvider={mcpDisabledModelsByProvider}
                 onChange={updateCustomModels}
                 onHiddenModelsChange={onHiddenModelsChange}
                 onFavoriteModelsChange={onFavoriteModelsChange}
                 onModelOrderChange={onModelOrderChange}
+                onMcpDisabledModelsByProviderChange={onMcpDisabledModelsByProviderChange}
               />
             ) : (
               <div className="border-t border-border/60 px-4 py-3 sm:px-5">

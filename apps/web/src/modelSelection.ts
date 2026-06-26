@@ -327,3 +327,31 @@ export function resolveAppModelSelectionState(
 
   return createModelSelection(defaultInstanceIdForDriver(provider), model, modelOptionsForDispatch);
 }
+
+export function isModelEnabledForMcp(input: {
+  readonly mcpDisabledModelsByProvider: Record<string, readonly string[]>;
+  readonly instanceId: string;
+  readonly model: string;
+}): boolean {
+  return !(input.mcpDisabledModelsByProvider[input.instanceId] ?? []).includes(input.model);
+}
+
+export function toggleModelMcpDisabled(input: {
+  readonly mcpDisabledModelsByProvider: Record<string, readonly string[]>;
+  readonly instanceId: string;
+  readonly model: string;
+}): Record<string, string[]> {
+  const current = input.mcpDisabledModelsByProvider[input.instanceId] ?? [];
+  const disabled = current.includes(input.model)
+    ? current.filter((model) => model !== input.model)
+    : [...current, input.model];
+  const next = Object.fromEntries(
+    Object.entries(input.mcpDisabledModelsByProvider).map(([key, value]) => [key, [...value]]),
+  );
+  if (disabled.length === 0) {
+    delete next[input.instanceId];
+  } else {
+    next[input.instanceId] = disabled;
+  }
+  return next;
+}
