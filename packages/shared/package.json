@@ -135,6 +135,10 @@
       "types": "./src/path.ts",
       "import": "./src/path.ts"
     },
+    "./projectPaths": {
+      "types": "./src/projectPaths.ts",
+      "import": "./src/projectPaths.ts"
+    },
     "./addProject": {
       "types": "./src/addProject.ts",
       "import": "./src/addProject.ts"

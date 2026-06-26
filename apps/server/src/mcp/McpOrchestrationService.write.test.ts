@@ -24,11 +24,15 @@ import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts
 import { McpOrchestrationService } from "./Services/McpOrchestrationService.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadTurnStartBootstrapDispatcherLive } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import { ProjectionThreadMessageSearchRepository } from "../persistence/Services/ProjectionThreadMessageSearch.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/providerMaintenance.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TextGeneration } from "../textGeneration/TextGeneration.ts";
+import { GitWorkflowService } from "../git/GitWorkflowService.ts";
+import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
+import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
 
 const defaultModelSelection = (overrides?: Partial<ModelSelection>): ModelSelection => ({
   instanceId: ProviderInstanceId.make("codex"),
@@ -102,7 +106,7 @@ const makeProvider = (input: {
   models?: ReadonlyArray<ServerProvider["models"][number]>;
   displayName?: string;
   requiresNewThreadForModelChange?: boolean;
-  continuationGroupKey?: string;
+  continuationGroupKey?: string | null;
 }): ServerProvider => ({
   instanceId: ProviderInstanceId.make(input.instanceId),
   driver: input.driver ?? ProviderDriverKind.make("codex"),
@@ -114,11 +118,15 @@ const makeProvider = (input: {
   auth: { status: "authenticated" },
   checkedAt: "2026-01-01T00:00:00.000Z",
   availability: "available",
-  continuation: {
-    groupKey:
-      input.continuationGroupKey ??
-      `${String(input.driver ?? ProviderDriverKind.make("codex"))}:instance:${input.instanceId}`,
-  },
+  ...(input.continuationGroupKey === null
+    ? {}
+    : {
+        continuation: {
+          groupKey:
+            input.continuationGroupKey ??
+            `${String(input.driver ?? ProviderDriverKind.make("codex"))}:instance:${input.instanceId}`,
+        },
+      }),
   ...(typeof input.requiresNewThreadForModelChange === "boolean"
     ? { requiresNewThreadForModelChange: input.requiresNewThreadForModelChange }
     : {}),
@@ -223,6 +231,19 @@ const makeWriteHarnessLayer = (input?: {
   readonly providers?: ReadonlyArray<ServerProvider>;
   readonly settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
   readonly dispatchedCommands?: Array<OrchestrationCommand>;
+  readonly createWorktreeCalls?: Array<{
+    readonly cwd: string;
+    readonly refName: string;
+    readonly newRefName?: string | undefined;
+    readonly path: string | null;
+  }>;
+  readonly setupRunCalls?: Array<{
+    readonly threadId: string;
+    readonly projectId?: string;
+    readonly projectCwd?: string;
+    readonly worktreePath: string;
+  }>;
+  readonly refreshStatusCalls?: Array<string>;
 }) => {
   const projects = input?.projects ?? [
     makeProjectShell({
@@ -264,8 +285,13 @@ const makeWriteHarnessLayer = (input?: {
   const threadDetailById = Object.fromEntries(threadDetails.map((thread) => [thread.id, thread]));
   const threadShellById = Object.fromEntries(threads.map((thread) => [thread.id, thread]));
   const dispatchedCommands = input?.dispatchedCommands ?? [];
+  const createWorktreeCalls = input?.createWorktreeCalls ?? [];
+  const setupRunCalls = input?.setupRunCalls ?? [];
+  const refreshStatusCalls = input?.refreshStatusCalls ?? [];
+  const unsupported = (operation: string) => Effect.die(new Error(`${operation} unused`)) as never;
 
   return McpOrchestrationServiceLive.pipe(
+    Layer.provideMerge(ThreadTurnStartBootstrapDispatcherLive),
     Layer.provideMerge(
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
         environmentId: "environment-1" as never,
@@ -328,6 +354,83 @@ const makeWriteHarnessLayer = (input?: {
         }),
       ),
     ),
+    Layer.provideMerge(
+      Layer.succeed(
+        GitWorkflowService,
+        GitWorkflowService.of({
+          status: () => unsupported("status"),
+          localStatus: () => unsupported("localStatus"),
+          remoteStatus: () => unsupported("remoteStatus"),
+          invalidateLocalStatus: () => Effect.void,
+          invalidateRemoteStatus: () => Effect.void,
+          invalidateStatus: () => Effect.void,
+          pullCurrentBranch: () => unsupported("pullCurrentBranch"),
+          runStackedAction: () => unsupported("runStackedAction"),
+          resolvePullRequest: () => unsupported("resolvePullRequest"),
+          preparePullRequestThread: () => unsupported("preparePullRequestThread"),
+          listRefs: () => unsupported("listRefs"),
+          createWorktree: (call) =>
+            Effect.sync(() => {
+              createWorktreeCalls.push(call);
+              return {
+                worktree: {
+                  refName: call.newRefName ?? call.refName,
+                  path: "/work/current/.worktrees/mcp-bootstrap",
+                },
+              };
+            }),
+          removeWorktree: () => unsupported("removeWorktree"),
+          createRef: () => unsupported("createRef"),
+          switchRef: () => unsupported("switchRef"),
+          renameBranch: () => unsupported("renameBranch"),
+        }),
+      ),
+    ),
+    Layer.provideMerge(
+      Layer.succeed(
+        ProjectSetupScriptRunner,
+        ProjectSetupScriptRunner.of({
+          runForThread: (call) =>
+            Effect.sync(() => {
+              setupRunCalls.push(call);
+              return {
+                status: "started" as const,
+                scriptId: "setup",
+                scriptName: "Setup",
+                terminalId: "terminal-setup",
+                cwd: call.worktreePath,
+              };
+            }),
+        }),
+      ),
+    ),
+    Layer.provideMerge(
+      Layer.succeed(
+        VcsStatusBroadcaster,
+        VcsStatusBroadcaster.of({
+          getStatus: () => unsupported("getStatus"),
+          refreshLocalStatus: () => unsupported("refreshLocalStatus"),
+          refreshStatus: (cwd) =>
+            Effect.sync(() => {
+              refreshStatusCalls.push(cwd);
+              return {
+                isRepo: true,
+                hasPrimaryRemote: true,
+                isDefaultRef: false,
+                refName: "main",
+                hasWorkingTreeChanges: false,
+                workingTree: { files: [], insertions: 0, deletions: 0 },
+                hasUpstream: true,
+                aheadCount: 0,
+                behindCount: 0,
+                aheadOfDefaultCount: 0,
+                pr: null,
+              };
+            }),
+          streamStatus: () => Stream.empty,
+        }),
+      ),
+    ),
   );
 };
 
@@ -367,6 +470,122 @@ it.effect("createThread defaults placement to child_of_current", () =>
       });
     }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
   })(),
+);
+
+it.effect("createThread with a message creates the thread before starting the turn", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = (yield* service.createThread({
+        title: "Investigate reconnects",
+        message: "Please inspect reconnect failures",
+        checkoutMode: "current_checkout",
+      })) as { readonly threadId: ThreadId };
+
+      expect(result).toMatchObject({
+        status: "accepted",
+        threadId: expect.any(String),
+        messageId: expect.any(String),
+        sequence: 2,
+      });
+      expect(dispatchedCommands.map((command) => command.type)).toEqual([
+        "thread.create",
+        "thread.turn.start",
+      ]);
+      expect(dispatchedCommands[0]).toMatchObject({
+        type: "thread.create",
+        parentThreadId: "thread-current",
+        projectId: "project-current",
+        title: "Investigate reconnects",
+      });
+      expect(dispatchedCommands[1]).toMatchObject({
+        type: "thread.turn.start",
+        threadId: result.threadId,
+        message: {
+          role: "user",
+          text: "Please inspect reconnect failures",
+          attachments: [],
+        },
+      });
+      if (dispatchedCommands[1]?.type === "thread.turn.start") {
+        expect(dispatchedCommands[1].bootstrap).toBeUndefined();
+      }
+    }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
+  })(),
+);
+
+it.effect(
+  "createThread with a new worktree prepares checkout and setup before starting the turn",
+  () =>
+    (() => {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      const createWorktreeCalls: Array<{
+        readonly cwd: string;
+        readonly refName: string;
+        readonly newRefName?: string | undefined;
+        readonly path: string | null;
+      }> = [];
+      const setupRunCalls: Array<{
+        readonly threadId: string;
+        readonly projectId?: string;
+        readonly projectCwd?: string;
+        readonly worktreePath: string;
+      }> = [];
+      const refreshStatusCalls: Array<string> = [];
+      return Effect.gen(function* () {
+        const service = yield* McpOrchestrationService;
+        const result = (yield* service.createThread({
+          title: "New worktree task",
+          message: "Set up an isolated branch",
+          checkoutMode: "new_worktree",
+          baseBranch: "main",
+          branch: "t3code/mcp-bootstrap",
+        })) as { readonly threadId: ThreadId };
+
+        expect(result).toMatchObject({
+          status: "accepted",
+          sequence: 5,
+        });
+        expect(dispatchedCommands.map((command) => command.type)).toEqual([
+          "thread.create",
+          "thread.meta.update",
+          "thread.activity.append",
+          "thread.activity.append",
+          "thread.turn.start",
+        ]);
+        expect(createWorktreeCalls).toEqual([
+          {
+            cwd: "/work/current",
+            refName: "main",
+            newRefName: "t3code/mcp-bootstrap",
+            path: null,
+          },
+        ]);
+        expect(setupRunCalls).toEqual([
+          {
+            threadId: result.threadId,
+            projectId: "project-current",
+            projectCwd: "/work/current",
+            worktreePath: "/work/current/.worktrees/mcp-bootstrap",
+          },
+        ]);
+        yield* Effect.yieldNow;
+        expect(refreshStatusCalls).toEqual(["/work/current/.worktrees/mcp-bootstrap"]);
+        if (dispatchedCommands[4]?.type === "thread.turn.start") {
+          expect(dispatchedCommands[4].bootstrap).toBeUndefined();
+        }
+      }).pipe(
+        Effect.provide(
+          makeWriteHarnessLayer({
+            dispatchedCommands,
+            createWorktreeCalls,
+            setupRunCalls,
+            refreshStatusCalls,
+          }),
+        ),
+      );
+    })(),
 );
 
 it.effect("createThread rejects cross-project child_of_thread", () =>
@@ -521,6 +740,112 @@ it.effect("updateThreadSettings rejects invalid option values", () =>
       expect(Cause.pretty(exit.cause)).toContain("invalid_model_option");
     }
   }).pipe(Effect.provide(makeWriteHarnessLayer())),
+);
+
+it.effect(
+  "updateThreadSettings validates model switches against the bound session provider instance",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const exit = yield* Effect.exit(
+        service.updateThreadSettings({
+          threadId: ThreadId.make("thread-current"),
+          modelSelection: defaultModelSelection({
+            instanceId: ProviderInstanceId.make("codex-work"),
+          }),
+        }),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain("incompatible_model_session_switch");
+      }
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          providers: [
+            makeProvider({
+              instanceId: "codex-home",
+              continuationGroupKey: "codex:home:/home/user/.codex",
+            }),
+            makeProvider({
+              instanceId: "codex-work",
+              continuationGroupKey: "codex:home:/work/.codex",
+            }),
+          ],
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              modelSelection: defaultModelSelection({
+                instanceId: ProviderInstanceId.make("codex-work"),
+              }),
+              session: {
+                threadId: ThreadId.make("thread-current"),
+                status: "ready",
+                providerName: "codex",
+                providerInstanceId: ProviderInstanceId.make("codex-home"),
+                runtimeMode: "full-access",
+                activeTurnId: null,
+                lastError: null,
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              },
+            }),
+          ],
+        }),
+      ),
+    ),
+);
+
+it.effect("updateThreadSettings treats missing-vs-present continuation keys as incompatible", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.updateThreadSettings({
+        threadId: ThreadId.make("thread-current"),
+        modelSelection: defaultModelSelection({
+          instanceId: ProviderInstanceId.make("codex-work"),
+        }),
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      expect(Cause.pretty(exit.cause)).toContain("incompatible_model_session_switch");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        providers: [
+          makeProvider({
+            instanceId: "codex-home",
+            continuationGroupKey: null,
+          }),
+          makeProvider({
+            instanceId: "codex-work",
+            continuationGroupKey: "codex:home:/work/.codex",
+          }),
+        ],
+        threadDetails: [
+          threadDetail({
+            id: ThreadId.make("thread-current"),
+            modelSelection: defaultModelSelection({
+              instanceId: ProviderInstanceId.make("codex-home"),
+            }),
+            session: {
+              threadId: ThreadId.make("thread-current"),
+              status: "ready",
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex-home"),
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: "2026-01-01T00:00:00.000Z",
+            },
+          }),
+        ],
+      }),
+    ),
+  ),
 );
 
 it.effect(

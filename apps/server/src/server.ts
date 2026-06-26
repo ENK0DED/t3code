@@ -48,6 +48,7 @@ import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRun
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
+import { ThreadTurnStartBootstrapDispatcherLive } from "./orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
@@ -283,12 +284,27 @@ const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
   Layer.provideMerge(OrchestrationLayerLive),
 );
 
-const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
+const ProjectSetupScriptRunnerWithoutProjectionLayerLive = ProjectSetupScriptRunnerLive.pipe(
+  Layer.provide(TerminalLayerLive),
+);
+
+const ThreadTurnStartBootstrapDispatcherDependenciesLive = Layer.mergeAll(
+  GitWorkflowLayerLive,
+  ProjectSetupScriptRunnerWithoutProjectionLayerLive,
+  VcsStatusBroadcaster.layer.pipe(Layer.provide(GitWorkflowLayerLive)),
+).pipe(Layer.provide(OrchestrationLayerLive));
+
+const ThreadTurnStartBootstrapDispatcherLayerLive = ThreadTurnStartBootstrapDispatcherLive.pipe(
+  Layer.provide(ThreadTurnStartBootstrapDispatcherDependenciesLive),
+);
+
+const RuntimeCoreDependenciesBaseLive = ReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(CheckpointingLayerLive),
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(VcsLayerLive),
+  Layer.provideMerge(ThreadTurnStartBootstrapDispatcherLayerLive),
   Layer.provideMerge(ProviderRuntimeLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive)),
   Layer.provideMerge(PersistenceLayerLive),
@@ -314,6 +330,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(OpenCodeRuntimeLive),
   Layer.provideMerge(ServerSettingsLive),
   Layer.provideMerge(WorkspaceLayerLive),
+);
+
+const RuntimeCoreDependenciesLive = RuntimeCoreDependenciesBaseLive.pipe(
   Layer.provideMerge(ProjectFaviconResolverLayerLive),
   Layer.provideMerge(RepositoryIdentityResolverLive),
   Layer.provideMerge(ServerEnvironmentLive),

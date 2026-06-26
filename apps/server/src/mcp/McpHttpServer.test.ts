@@ -17,6 +17,7 @@ import {
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadTurnStartBootstrapDispatcher } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/providerMaintenance.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -61,6 +62,14 @@ const TestLayer = McpHttpServer.McpToolkitRegistrationLive.pipe(
   Layer.provideMerge(PreviewAutomationBroker.layer),
   Layer.provide(
     McpOrchestrationServiceLive.pipe(
+      Layer.provideMerge(
+        Layer.succeed(
+          ThreadTurnStartBootstrapDispatcher,
+          ThreadTurnStartBootstrapDispatcher.of({
+            dispatch: () => Effect.die("unused"),
+          }),
+        ),
+      ),
       Layer.provideMerge(
         Layer.succeed(ProjectionSnapshotQuery, {
           getCommandReadModel: () => Effect.die("unused"),

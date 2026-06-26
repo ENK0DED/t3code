@@ -1,6 +1,7 @@
 import {
   CommandId,
   MessageId,
+  type ModelSelection,
   type OrchestrationThread,
   ProjectId,
   PROVIDER_DISPLAY_NAMES,
@@ -35,6 +36,8 @@ import { randomUUID } from "node:crypto";
 import * as McpInvocationContext from "../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadTurnStartBootstrapDispatcher } from "../../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
+import { validateProviderSessionModelSelectionCompatibility } from "../../orchestration/providerSessionCompatibility.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
@@ -225,6 +228,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
   McpOrchestrationService,
   Effect.gen(function* () {
     const orchestrationEngine = yield* OrchestrationEngineService;
+    const bootstrapDispatcher = yield* ThreadTurnStartBootstrapDispatcher;
     const providerRegistry = yield* ProviderRegistry;
     const serverSettings = yield* ServerSettingsService;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -451,11 +455,8 @@ export const McpOrchestrationServiceLive = Layer.effect(
       "McpOrchestrationService.validateSessionCompatibility",
     )(function* (input: {
       readonly thread: OrchestrationThread;
-      readonly desiredModelSelection: {
-        readonly instanceId: ProviderInstanceId;
-        readonly model: string;
-        readonly options?: ReadonlyArray<ProviderOptionSelection> | undefined;
-      };
+      readonly desiredModelSelection: ModelSelection;
+      readonly requestedModelSelection?: ModelSelection | undefined;
     }) {
       if (input.thread.session === null) {
         return;
@@ -465,50 +466,52 @@ export const McpOrchestrationServiceLive = Layer.effect(
           toInternalError("Failed to load provider registry snapshots.", error),
         ),
       );
+      const currentInstanceId =
+        input.thread.session.providerInstanceId ?? input.thread.modelSelection.instanceId;
       const currentProvider = providers.find(
-        (candidate) => candidate.instanceId === input.thread.modelSelection.instanceId,
+        (candidate) => candidate.instanceId === currentInstanceId,
       );
       const desiredProvider = providers.find(
         (candidate) => candidate.instanceId === input.desiredModelSelection.instanceId,
       );
-      if (!currentProvider || !desiredProvider) {
-        return;
-      }
-
-      const modelChanged =
-        input.thread.modelSelection.instanceId !== input.desiredModelSelection.instanceId ||
-        input.thread.modelSelection.model !== input.desiredModelSelection.model;
-      if (
-        modelChanged &&
-        (currentProvider.requiresNewThreadForModelChange === true ||
-          desiredProvider.requiresNewThreadForModelChange === true)
-      ) {
+      if (!currentProvider) {
         return yield* new McpOrchestrationError({
-          code: "incompatible_model_session_switch",
-          message: `Thread '${input.thread.id}' cannot switch models after the conversation has started. Start a new thread to use '${input.desiredModelSelection.model}'.`,
+          code: "unknown_provider_instance",
+          message: `Provider instance '${currentInstanceId}' is not available.`,
         });
       }
-
-      if (input.desiredModelSelection.instanceId !== input.thread.modelSelection.instanceId) {
-        if (currentProvider.driver !== desiredProvider.driver) {
-          return yield* new McpOrchestrationError({
-            code: "incompatible_model_session_switch",
-            message: `Thread '${input.thread.id}' is bound to driver '${currentProvider.driver}' and cannot switch to '${desiredProvider.driver}'.`,
-          });
-        }
-
-        const currentContinuation = currentProvider.continuation?.groupKey;
-        const desiredContinuation = desiredProvider.continuation?.groupKey;
-        if (
-          currentContinuation &&
-          desiredContinuation &&
-          currentContinuation !== desiredContinuation
-        ) {
-          return yield* new McpOrchestrationError({
-            code: "incompatible_model_session_switch",
-            message: `Thread '${input.thread.id}' cannot switch from instance '${input.thread.modelSelection.instanceId}' to '${input.desiredModelSelection.instanceId}' because their provider resume state is incompatible.`,
-          });
-        }
+      if (!desiredProvider) {
+        return yield* new McpOrchestrationError({
+          code: "unknown_provider_instance",
+          message: `Provider instance '${input.desiredModelSelection.instanceId}' is not available.`,
+        });
+      }
+      const compatibilityDetail = validateProviderSessionModelSelectionCompatibility({
+        threadId: input.thread.id,
+        hasStartedSession: true,
+        currentModelSelection: {
+          ...input.thread.modelSelection,
+          instanceId: currentInstanceId,
+        },
+        requestedModelSelection: input.requestedModelSelection,
+        currentIdentity: {
+          instanceId: currentInstanceId,
+          driverKind: currentProvider.driver,
+          continuationKey: currentProvider.continuation?.groupKey,
+          requiresNewThreadForModelChange: currentProvider.requiresNewThreadForModelChange,
+        },
+        desiredIdentity: {
+          instanceId: input.desiredModelSelection.instanceId,
+          driverKind: desiredProvider.driver,
+          continuationKey: desiredProvider.continuation?.groupKey,
+          requiresNewThreadForModelChange: desiredProvider.requiresNewThreadForModelChange,
+        },
+      });
+      if (compatibilityDetail !== null) {
+        return yield* new McpOrchestrationError({
+          code: "incompatible_model_session_switch",
+          message: `incompatible_model_session_switch: ${compatibilityDetail}`,
+        });
       }
     });
 
@@ -912,15 +915,14 @@ export const McpOrchestrationServiceLive = Layer.effect(
 
           const createdAt = yield* currentIsoTimestamp();
           const projectId = makeProjectId();
+          const createCommand = buildProjectCreateCommand({
+            commandId: makeCommandId("project-create"),
+            projectId,
+            workspaceRoot: resolved.path,
+            createdAt,
+          });
           const accepted = yield* orchestrationEngine
-            .dispatch(
-              buildProjectCreateCommand({
-                commandId: makeCommandId("project-create"),
-                projectId,
-                workspaceRoot: resolved.path,
-                createdAt,
-              }),
-            )
+            .dispatch(createCommand)
             .pipe(
               Effect.mapError((error) =>
                 toInternalError("Failed to dispatch orchestration command.", error),
@@ -931,10 +933,10 @@ export const McpOrchestrationServiceLive = Layer.effect(
             status: "created" as const,
             project: {
               id: projectId,
-              title: resolved.path.split(/[/\\]/).findLast(Boolean) ?? resolved.path,
-              workspaceRoot: resolved.path,
+              title: createCommand.title,
+              workspaceRoot: createCommand.workspaceRoot,
               repositoryIdentity: null,
-              defaultModelSelection: null,
+              defaultModelSelection: createCommand.defaultModelSelection,
               scripts: [],
               createdAt,
               updatedAt: createdAt,
@@ -950,11 +952,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
             readonly parentThreadId?: ThreadId;
             readonly title?: string;
             readonly message?: string;
-            readonly modelSelection?: {
-              readonly instanceId: ProviderInstanceId;
-              readonly model: string;
-              readonly options?: ReadonlyArray<ProviderOptionSelection>;
-            };
+            readonly modelSelection?: ModelSelection;
             readonly runtimeMode?: RuntimeMode;
             readonly interactionMode?: "default" | "plan";
             readonly checkoutMode?: "current_checkout" | "new_worktree";
@@ -1033,7 +1031,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           }
 
           const messageId = makeMessageId();
-          const accepted = yield* orchestrationEngine
+          const accepted = yield* bootstrapDispatcher
             .dispatch({
               type: "thread.turn.start",
               commandId: makeCommandId("thread-create-turn-start"),
@@ -1091,11 +1089,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           const input = rawInput as {
             readonly threadId: ThreadId;
             readonly message: string;
-            readonly modelSelection?: {
-              readonly instanceId: ProviderInstanceId;
-              readonly model: string;
-              readonly options?: ReadonlyArray<ProviderOptionSelection>;
-            };
+            readonly modelSelection?: ModelSelection;
           };
           const thread = yield* requireIdleThread(input.threadId);
           const desiredModelSelection = input.modelSelection ?? thread.modelSelection;
@@ -1103,6 +1097,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           yield* validateSessionCompatibility({
             thread,
             desiredModelSelection,
+            requestedModelSelection: input.modelSelection,
           });
 
           const messageId = makeMessageId();
@@ -1141,11 +1136,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
         Effect.gen(function* () {
           const input = rawInput as {
             readonly threadId: ThreadId;
-            readonly modelSelection?: {
-              readonly instanceId: ProviderInstanceId;
-              readonly model: string;
-              readonly options?: ReadonlyArray<ProviderOptionSelection>;
-            };
+            readonly modelSelection?: ModelSelection;
             readonly runtimeMode?: RuntimeMode;
             readonly interactionMode?: "default" | "plan";
             readonly checkoutMode?: "current_checkout" | "new_worktree";
@@ -1158,6 +1149,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           yield* validateSessionCompatibility({
             thread,
             desiredModelSelection,
+            requestedModelSelection: input.modelSelection,
           });
 
           const desiredRuntimeMode = input.runtimeMode ?? thread.runtimeMode;

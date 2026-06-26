@@ -22,6 +22,7 @@ import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts
 import { McpOrchestrationService } from "./Services/McpOrchestrationService.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadTurnStartBootstrapDispatcher } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import { ProjectionThreadMessageSearchRepository } from "../persistence/Services/ProjectionThreadMessageSearch.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/providerMaintenance.ts";
@@ -172,6 +173,14 @@ const makeHistoryHarnessLayer = (input?: {
   });
 
   return McpOrchestrationServiceLive.pipe(
+    Layer.provideMerge(
+      Layer.succeed(
+        ThreadTurnStartBootstrapDispatcher,
+        ThreadTurnStartBootstrapDispatcher.of({
+          dispatch: () => Effect.die("unused"),
+        }),
+      ),
+    ),
     Layer.provideMerge(
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
         environmentId: "environment-1" as never,
