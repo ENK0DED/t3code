@@ -1233,7 +1233,7 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByPlaceholder("Optional")).toBeInTheDocument();
   });
 
-  it("writes MCP-disabled model settings from the provider model row toggle", async () => {
+  it("writes MCP-disabled model settings from the provider model row toggle for custom models", async () => {
     const updateSettings = vi
       .fn<LocalApi["server"]["updateSettings"]>()
       .mockResolvedValue(DEFAULT_SERVER_SETTINGS);
@@ -1249,6 +1249,18 @@ describe("GeneralSettingsPanel observability", () => {
 
     setServerConfigSnapshot({
       ...createBaseServerConfig(),
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: {
+          [ProviderInstanceId.make("codex")]: {
+            driver: ProviderDriverKind.make("codex"),
+            enabled: true,
+            config: {
+              customModels: ["gpt-5.5-custom"],
+            },
+          },
+        },
+      },
       providers: [
         {
           instanceId: ProviderInstanceId.make("codex"),
@@ -1266,6 +1278,12 @@ describe("GeneralSettingsPanel observability", () => {
               isCustom: false,
               capabilities: {},
             },
+            {
+              slug: "gpt-5.5-custom",
+              name: "GPT-5.5 Custom",
+              isCustom: true,
+              capabilities: {},
+            },
           ],
           slashCommands: [],
           skills: [],
@@ -1280,16 +1298,16 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await page.getByLabelText("Toggle Codex details").click();
-    await page.getByRole("button", { name: "Block MCP tools from using GPT-5.5" }).click();
+    await page.getByRole("button", { name: "Block MCP tools from using GPT-5.5 Custom" }).click();
 
     expect(updateSettings).toHaveBeenCalledWith({
       mcpDisabledModelsByProvider: {
-        codex: ["gpt-5.5"],
+        codex: ["gpt-5.5-custom"],
       },
     });
 
     await expect
-      .element(page.getByRole("button", { name: "Allow MCP tools to use GPT-5.5" }))
+      .element(page.getByRole("button", { name: "Allow MCP tools to use GPT-5.5 Custom" }))
       .toBeInTheDocument();
   });
 

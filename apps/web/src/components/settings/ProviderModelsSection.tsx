@@ -349,43 +349,41 @@ export function ProviderModelsSection({
                   </TooltipTrigger>
                   <TooltipPopup side="top">Move down</TooltipPopup>
                 </Tooltip>
-                {!model.isCustom ? (
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <Button
-                          size="icon-xs"
-                          variant="ghost"
-                          className={cn(
-                            "size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground",
-                            isMcpEnabled && "text-cyan-500 hover:text-cyan-600",
-                          )}
-                          onClick={() =>
-                            onMcpDisabledModelsByProviderChange(
-                              toggleModelMcpDisabled({
-                                mcpDisabledModelsByProvider,
-                                instanceId,
-                                model: model.slug,
-                              }),
-                            )
-                          }
-                          aria-label={
-                            isMcpEnabled
-                              ? `Block MCP tools from using ${model.name}`
-                              : `Allow MCP tools to use ${model.name}`
-                          }
-                        />
-                      }
-                    >
-                      <PlugIcon className="size-3" />
-                    </TooltipTrigger>
-                    <TooltipPopup side="top">
-                      {isMcpEnabled
-                        ? "Block MCP tools from using this model"
-                        : "Allow MCP tools to use this model"}
-                    </TooltipPopup>
-                  </Tooltip>
-                ) : null}
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        size="icon-xs"
+                        variant="ghost"
+                        className={cn(
+                          "size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground",
+                          isMcpEnabled && "text-cyan-500 hover:text-cyan-600",
+                        )}
+                        onClick={() =>
+                          onMcpDisabledModelsByProviderChange(
+                            toggleModelMcpDisabled({
+                              mcpDisabledModelsByProvider,
+                              instanceId,
+                              model: model.slug,
+                            }),
+                          )
+                        }
+                        aria-label={
+                          isMcpEnabled
+                            ? `Block MCP tools from using ${model.name}`
+                            : `Allow MCP tools to use ${model.name}`
+                        }
+                      />
+                    }
+                  >
+                    <PlugIcon className="size-3" />
+                  </TooltipTrigger>
+                  <TooltipPopup side="top">
+                    {isMcpEnabled
+                      ? "Block MCP tools from using this model"
+                      : "Allow MCP tools to use this model"}
+                  </TooltipPopup>
+                </Tooltip>
                 {!model.isCustom ? (
                   <Tooltip>
                     <TooltipTrigger
