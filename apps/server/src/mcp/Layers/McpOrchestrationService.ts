@@ -61,7 +61,7 @@ const requireRead = Effect.fn("McpOrchestrationService.requireRead")(function* (
 function parseHistoryCursor(
   cursor: string | undefined,
 ): Effect.Effect<number, McpOrchestrationError> {
-  if (!cursor) {
+  if (cursor === undefined) {
     return Effect.succeed(0);
   }
 

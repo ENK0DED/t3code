@@ -318,6 +318,29 @@ it.effect("complete history fails for a malformed cursor", () =>
   }).pipe(Effect.provide(makeHistoryHarnessLayer())),
 );
 
+it.effect("complete history fails for an empty cursor", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.getThreadHistory({
+        threadId: ThreadId.make("thread-1"),
+        mode: "complete",
+        cursor: "",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as {
+        readonly _tag: string;
+        readonly code: string;
+      };
+      expect(error._tag).toBe("McpOrchestrationError");
+      expect(error.code).toBe("invalid_cursor");
+    }
+  }).pipe(Effect.provide(makeHistoryHarnessLayer())),
+);
+
 it.effect("complete history fails for a negative cursor", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
