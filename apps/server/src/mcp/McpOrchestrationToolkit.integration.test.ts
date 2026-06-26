@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  CommandId,
   EnvironmentId,
   ProjectId,
   ProviderDriverKind,
@@ -164,7 +165,98 @@ const makeIntegrationLayer = (dispatchedCommands: Array<OrchestrationCommand>) =
       Layer.succeed(
         ThreadTurnStartBootstrapDispatcher,
         ThreadTurnStartBootstrapDispatcher.of({
-          dispatch: () => Effect.die("unused"),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              let createdThread:
+                | {
+                    readonly id: ThreadId;
+                    readonly projectId: ProjectId;
+                    readonly parentThreadId: ThreadId | null;
+                    readonly title: string;
+                    readonly modelSelection: ModelSelection;
+                    readonly runtimeMode: OrchestrationThread["runtimeMode"];
+                    readonly interactionMode: OrchestrationThread["interactionMode"];
+                    readonly branch: string | null;
+                    readonly worktreePath: string | null;
+                    readonly createdAt: string;
+                    readonly updatedAt: string;
+                    readonly archivedAt: null;
+                    readonly latestTurn: null;
+                    readonly session: null;
+                    readonly latestUserMessageAt: null;
+                    readonly hasPendingApprovals: false;
+                    readonly hasPendingUserInput: false;
+                    readonly hasActionableProposedPlan: false;
+                  }
+                | undefined;
+
+              if (command.bootstrap?.createThread) {
+                const createThread = command.bootstrap.createThread;
+                createdThread = {
+                  id: command.threadId,
+                  projectId: createThread.projectId,
+                  parentThreadId: createThread.parentThreadId,
+                  title: createThread.title,
+                  modelSelection: createThread.modelSelection,
+                  runtimeMode: createThread.runtimeMode,
+                  interactionMode: createThread.interactionMode,
+                  branch: createThread.branch,
+                  worktreePath: createThread.worktreePath,
+                  createdAt: createThread.createdAt,
+                  updatedAt: createThread.createdAt,
+                  archivedAt: null,
+                  latestTurn: null,
+                  session: null,
+                  latestUserMessageAt: null,
+                  hasPendingApprovals: false,
+                  hasPendingUserInput: false,
+                  hasActionableProposedPlan: false,
+                };
+                dispatchedCommands.push({
+                  type: "thread.create",
+                  commandId: CommandId.make("test:bootstrap-thread-create"),
+                  threadId: command.threadId,
+                  projectId: createThread.projectId,
+                  parentThreadId: createThread.parentThreadId,
+                  title: createThread.title,
+                  modelSelection: createThread.modelSelection,
+                  runtimeMode: createThread.runtimeMode,
+                  interactionMode: createThread.interactionMode,
+                  branch: createThread.branch,
+                  worktreePath: createThread.worktreePath,
+                  createdAt: createThread.createdAt,
+                });
+              }
+
+              if (command.bootstrap?.prepareWorktree) {
+                const branch =
+                  command.bootstrap.prepareWorktree.branch ??
+                  command.bootstrap.prepareWorktree.baseBranch;
+                const worktreePath = "/work/mcp-test/.worktrees/http-bootstrap";
+                if (createdThread) {
+                  createdThread = {
+                    ...createdThread,
+                    branch,
+                    worktreePath,
+                  };
+                }
+                dispatchedCommands.push({
+                  type: "thread.meta.update",
+                  commandId: CommandId.make("test:bootstrap-thread-meta-update"),
+                  threadId: command.threadId,
+                  branch,
+                  worktreePath,
+                });
+              }
+
+              const { bootstrap: _bootstrap, ...turnStartCommand } = command;
+              dispatchedCommands.push(turnStartCommand);
+
+              return {
+                sequence: dispatchedCommands.length,
+                ...(createdThread ? { createdThread } : {}),
+              };
+            }),
         }),
       ),
     ),
@@ -366,6 +458,52 @@ it.effect("creates a child thread through the MCP transport", () =>
       expect(dispatchedCommands[0]).toMatchObject({
         type: "thread.create",
         parentThreadId: currentThreadId,
+      });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("returns final bootstrap metadata for accepted create_thread responses", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      yield* HttpRouter.serve(makeIntegrationLayer(dispatchedCommands), {
+        disableListenLog: true,
+        disableLogger: true,
+      }).pipe(Layer.build);
+      const issuedToken = yield* issueMcpToken();
+      const initialize = yield* initializeMcpSession(issuedToken);
+      const response = yield* callMcpTool(initialize.sessionId, issuedToken, "create_thread", {
+        placement: "child_of_current",
+        title: "Investigate bootstrap checkout",
+        message: "Start this in a prepared worktree",
+        checkoutMode: "new_worktree",
+        baseBranch: "main",
+        branch: "t3code/mcp-http-bootstrap",
+      });
+
+      expect(response.structuredContent).toMatchObject({
+        status: "accepted",
+        thread: {
+          parentThreadId: currentThreadId,
+          branch: "t3code/mcp-http-bootstrap",
+          worktreePath: "/work/mcp-test/.worktrees/http-bootstrap",
+        },
+      });
+      expect(dispatchedCommands.map((command) => command.type)).toEqual([
+        "thread.create",
+        "thread.meta.update",
+        "thread.turn.start",
+      ]);
+      expect(dispatchedCommands[0]).toMatchObject({
+        type: "thread.create",
+        branch: "t3code/mcp-http-bootstrap",
+        worktreePath: null,
+      });
+      expect(dispatchedCommands[1]).toMatchObject({
+        type: "thread.meta.update",
+        branch: "t3code/mcp-http-bootstrap",
+        worktreePath: "/work/mcp-test/.worktrees/http-bootstrap",
       });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),

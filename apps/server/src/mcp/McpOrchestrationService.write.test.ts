@@ -739,6 +739,10 @@ it.effect(
         expect(result).toMatchObject({
           status: "accepted",
           sequence: 5,
+          thread: {
+            branch: "t3code/mcp-bootstrap",
+            worktreePath: "/work/current/.worktrees/mcp-bootstrap",
+          },
         });
         expect(dispatchedCommands.map((command) => command.type)).toEqual([
           "thread.create",

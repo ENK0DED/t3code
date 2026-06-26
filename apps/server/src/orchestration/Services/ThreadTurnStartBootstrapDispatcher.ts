@@ -3,6 +3,7 @@ import {
   EventId,
   OrchestrationDispatchCommandError,
   type OrchestrationCommand,
+  type OrchestrationThreadShell,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -24,9 +25,13 @@ const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 type ThreadTurnStartCommand = Extract<OrchestrationCommand, { type: "thread.turn.start" }>;
 
 export interface ThreadTurnStartBootstrapDispatcherShape {
-  readonly dispatch: (
-    command: ThreadTurnStartCommand,
-  ) => Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError>;
+  readonly dispatch: (command: ThreadTurnStartCommand) => Effect.Effect<
+    {
+      readonly sequence: number;
+      readonly createdThread?: OrchestrationThreadShell;
+    },
+    OrchestrationDispatchCommandError
+  >;
 }
 
 export class ThreadTurnStartBootstrapDispatcher extends Context.Service<
@@ -111,6 +116,7 @@ export const ThreadTurnStartBootstrapDispatcherLive = Layer.effect(
       const bootstrap = command.bootstrap;
       const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
       let createdThread = false;
+      let createdThreadMetadata: OrchestrationThreadShell | undefined;
       let targetProjectId = bootstrap?.createThread?.projectId;
       let targetProjectCwd = bootstrap?.prepareWorktree?.projectCwd;
       let targetWorktreePath = bootstrap?.createThread?.worktreePath ?? null;
@@ -247,6 +253,26 @@ export const ThreadTurnStartBootstrapDispatcherLive = Layer.effect(
 
       const bootstrapProgram = Effect.gen(function* () {
         if (bootstrap?.createThread) {
+          createdThreadMetadata = {
+            id: command.threadId,
+            projectId: bootstrap.createThread.projectId,
+            parentThreadId: bootstrap.createThread.parentThreadId,
+            title: bootstrap.createThread.title,
+            modelSelection: bootstrap.createThread.modelSelection,
+            runtimeMode: bootstrap.createThread.runtimeMode,
+            interactionMode: bootstrap.createThread.interactionMode,
+            branch: bootstrap.createThread.branch,
+            worktreePath: bootstrap.createThread.worktreePath,
+            createdAt: bootstrap.createThread.createdAt,
+            updatedAt: bootstrap.createThread.createdAt,
+            archivedAt: null,
+            latestTurn: null,
+            latestUserMessageAt: null,
+            session: null,
+            hasPendingApprovals: false,
+            hasPendingUserInput: false,
+            hasActionableProposedPlan: false,
+          };
           yield* orchestrationEngine.dispatch({
             type: "thread.create",
             commandId: yield* serverCommandId("bootstrap-thread-create"),
@@ -272,6 +298,13 @@ export const ThreadTurnStartBootstrapDispatcherLive = Layer.effect(
             path: null,
           });
           targetWorktreePath = worktree.worktree.path;
+          if (createdThreadMetadata) {
+            createdThreadMetadata = {
+              ...createdThreadMetadata,
+              branch: worktree.worktree.refName,
+              worktreePath: targetWorktreePath,
+            };
+          }
           yield* orchestrationEngine.dispatch({
             type: "thread.meta.update",
             commandId: yield* serverCommandId("bootstrap-thread-meta-update"),
@@ -284,7 +317,10 @@ export const ThreadTurnStartBootstrapDispatcherLive = Layer.effect(
 
         yield* runSetupProgram();
 
-        return yield* orchestrationEngine.dispatch(finalTurnStartCommand);
+        const accepted = yield* orchestrationEngine.dispatch(finalTurnStartCommand);
+        return createdThreadMetadata
+          ? { ...accepted, createdThread: createdThreadMetadata }
+          : accepted;
       });
 
       return yield* bootstrapProgram.pipe(

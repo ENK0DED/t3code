@@ -1153,7 +1153,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           return {
             status: "accepted" as const,
             threadId,
-            thread: createdThread,
+            thread: accepted.createdThread ?? createdThread,
             messageId,
             sequence: accepted.sequence,
           };
