@@ -1002,11 +1002,18 @@ export const McpOrchestrationServiceLive = Layer.effect(
 
           const desiredRuntimeMode = input.runtimeMode ?? currentThread.runtimeMode;
           const desiredInteractionMode = input.interactionMode ?? currentThread.interactionMode;
+          const hasExplicitCheckoutMetadata =
+            (input.branch ?? undefined) !== undefined ||
+            (input.worktreePath ?? undefined) !== undefined;
           const desiredCheckoutMode =
             input.checkoutMode ??
-            (currentThread.branch !== null || currentThread.worktreePath !== null
+            (hasExplicitCheckoutMetadata
               ? "new_worktree"
-              : "current_checkout");
+              : currentThread.branch !== null || currentThread.worktreePath !== null
+                ? "new_worktree"
+                : "current_checkout");
+          const shouldPrepareWorktree =
+            input.checkoutMode === "new_worktree" || input.baseBranch !== undefined;
           const desiredBranch =
             desiredCheckoutMode === "current_checkout"
               ? null
@@ -1048,7 +1055,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
             };
           }
 
-          if (desiredCheckoutMode === "new_worktree" && !bootstrapBaseBranch) {
+          if (shouldPrepareWorktree && !bootstrapBaseBranch) {
             return yield* new McpOrchestrationError({
               code: "missing_base_branch",
               message: `Thread '${threadId}' requires a baseBranch when checkoutMode is 'new_worktree' and a first message is supplied.`,
@@ -1083,7 +1090,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
                   worktreePath: desiredWorktreePath,
                   createdAt,
                 },
-                ...(desiredCheckoutMode === "new_worktree"
+                ...(shouldPrepareWorktree
                   ? {
                       prepareWorktree: {
                         projectCwd: targetProject.workspaceRoot,
