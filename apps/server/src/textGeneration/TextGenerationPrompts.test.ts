@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
+import { ProviderInstanceId } from "@t3tools/contracts";
 
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  buildThreadSummaryPrompt,
   buildThreadTitlePrompt,
 } from "./TextGenerationPrompts.ts";
 import { normalizeCliError, sanitizeThreadTitle } from "./TextGenerationUtils.ts";
@@ -133,6 +135,39 @@ describe("buildThreadTitlePrompt", () => {
     expect(result.prompt).toContain("thread.png");
     expect(result.prompt).toContain("image/png");
     expect(result.prompt).toContain("67890 bytes");
+  });
+});
+
+describe("buildThreadSummaryPrompt", () => {
+  it("includes title, transcript, and output budget instructions", () => {
+    const result = buildThreadSummaryPrompt({
+      threadTitle: "Reconnect investigation",
+      maxOutputCharacters: 1200,
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.5-mini",
+      },
+      messages: [
+        {
+          role: "user",
+          text: "Investigate reconnect failures",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          text: "I traced it to session restore timing.",
+          createdAt: "2026-01-01T00:01:00.000Z",
+        },
+      ],
+    });
+
+    expect(result).toContain("Summarize this T3 Code thread for another coding agent.");
+    expect(result).toContain("Keep the summary under 1200 characters.");
+    expect(result).toContain("Thread title: Reconnect investigation");
+    expect(result).toContain("[2026-01-01T00:00:00.000Z] user: Investigate reconnect failures");
+    expect(result).toContain(
+      "[2026-01-01T00:01:00.000Z] assistant: I traced it to session restore timing.",
+    );
   });
 });
 

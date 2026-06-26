@@ -26,6 +26,7 @@ import { ProjectionThreadMessageSearchRepository } from "../persistence/Services
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/providerMaintenance.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { TextGeneration } from "../textGeneration/TextGeneration.ts";
 
 const defaultModelSelection = (overrides?: Partial<ModelSelection>): ModelSelection => ({
   instanceId: ProviderInstanceId.make("codex"),
@@ -244,6 +245,18 @@ const makeReadHarnessLayer = (input?: {
       Layer.succeed(
         ProjectionThreadMessageSearchRepository,
         searchRepositoryMock(input?.searchThreadIds),
+      ),
+    ),
+    Layer.provideMerge(
+      Layer.succeed(
+        TextGeneration,
+        TextGeneration.of({
+          generateCommitMessage: () => Effect.die("unused"),
+          generatePrContent: () => Effect.die("unused"),
+          generateBranchName: () => Effect.die("unused"),
+          generateThreadTitle: () => Effect.die("unused"),
+          generateThreadSummary: () => Effect.die("unused"),
+        }),
       ),
     ),
   );

@@ -234,6 +234,36 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
     ),
   );
 
+  it.effect("generates thread summaries through Cursor ACP text generation", () =>
+    withFakeAcpAgent(
+      {
+        T3_ACP_PROMPT_RESPONSE_TEXT: JSON.stringify({
+          summary: "Thread summary from Cursor.",
+        }),
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateThreadSummary({
+            threadTitle: "Reconnect investigation",
+            maxOutputCharacters: 1200,
+            messages: [
+              {
+                role: "user",
+                text: "Investigate reconnect failures",
+                createdAt: "2026-01-01T00:00:00.000Z",
+              },
+            ],
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("cursor"),
+              model: "composer-2",
+            },
+          });
+
+          expect(generated).toBe("Thread summary from Cursor.");
+        }),
+    ),
+  );
+
   it.effect("closes the ACP child process after text generation completes", () => {
     const exitLogDir = mkdtempSync(path.join(os.tmpdir(), "t3code-cursor-text-exit-log-"));
     const exitLogPath = path.join(exitLogDir, "exit.log");

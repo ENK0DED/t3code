@@ -134,7 +134,7 @@ export interface McpOrchestrationServiceShape {
   >;
   readonly getThreadHistory: (
     input: GetThreadHistoryInput,
-  ) => Effect.Effect<unknown, McpOrchestrationError>;
+  ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
   readonly getCurrentThreadSettings: () => Effect.Effect<
     CurrentThreadSettingsResult,
     McpOrchestrationError,

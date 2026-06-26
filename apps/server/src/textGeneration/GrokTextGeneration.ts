@@ -15,7 +15,9 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  buildThreadSummaryPrompt,
   buildThreadTitlePrompt,
+  ThreadSummaryOutputSchema,
 } from "./TextGenerationPrompts.ts";
 import {
   sanitizeCommitSubject,
@@ -36,7 +38,8 @@ function mapGrokAcpError(
     | "generateCommitMessage"
     | "generatePrContent"
     | "generateBranchName"
-    | "generateThreadTitle",
+    | "generateThreadTitle"
+    | "generateThreadSummary",
   detail: string,
   cause: unknown,
 ): TextGenerationError {
@@ -73,7 +76,8 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateThreadSummary";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -263,10 +267,27 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
     } satisfies ThreadTitleGenerationResult;
   });
 
+  const generateThreadSummary: TextGenerationShape["generateThreadSummary"] = Effect.fn(
+    "GrokTextGeneration.generateThreadSummary",
+  )(function* (input) {
+    const prompt = buildThreadSummaryPrompt(input);
+
+    const generated = yield* runGrokJson({
+      operation: "generateThreadSummary",
+      cwd: process.cwd(),
+      prompt,
+      outputSchemaJson: ThreadSummaryOutputSchema,
+      modelSelection: input.modelSelection,
+    });
+
+    return generated.summary.trim();
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateThreadSummary,
   } satisfies TextGenerationShape;
 });

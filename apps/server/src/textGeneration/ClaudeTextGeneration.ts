@@ -23,7 +23,9 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  buildThreadSummaryPrompt,
   buildThreadTitlePrompt,
+  ThreadSummaryOutputSchema,
 } from "./TextGenerationPrompts.ts";
 import {
   normalizeCliError,
@@ -85,7 +87,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle",
+      | "generateThreadTitle"
+      | "generateThreadSummary",
     value: unknown,
     detail: string,
   ): Effect.Effect<string, TextGenerationError> =>
@@ -115,7 +118,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateThreadSummary";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -357,10 +361,26 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     };
   });
 
+  const generateThreadSummary: TextGenerationShape["generateThreadSummary"] = Effect.fn(
+    "ClaudeTextGeneration.generateThreadSummary",
+  )(function* (input) {
+    const prompt = buildThreadSummaryPrompt(input);
+    const generated = yield* runClaudeJson({
+      operation: "generateThreadSummary",
+      cwd: process.cwd(),
+      prompt,
+      outputSchemaJson: ThreadSummaryOutputSchema,
+      modelSelection: input.modelSelection,
+    });
+
+    return generated.summary.trim();
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateThreadSummary,
   } satisfies TextGenerationShape;
 });

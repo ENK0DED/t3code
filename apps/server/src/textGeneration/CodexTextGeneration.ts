@@ -24,7 +24,9 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  buildThreadSummaryPrompt,
   buildThreadTitlePrompt,
+  ThreadSummaryOutputSchema,
 } from "./TextGenerationPrompts.ts";
 import {
   normalizeCliError,
@@ -101,7 +103,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle",
+      | "generateThreadTitle"
+      | "generateThreadSummary",
     value: unknown,
   ): Effect.Effect<string, TextGenerationError> =>
     encodeJsonString(value).pipe(
@@ -120,7 +123,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle",
+      | "generateThreadTitle"
+      | "generateThreadSummary",
     attachments: BranchNameGenerationInput["attachments"],
   ): Effect.fn.Return<MaterializedImageAttachments, TextGenerationError> {
     if (!attachments || attachments.length === 0) {
@@ -162,7 +166,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateThreadSummary";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -402,10 +407,26 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     } satisfies ThreadTitleGenerationResult;
   });
 
+  const generateThreadSummary: TextGenerationShape["generateThreadSummary"] = Effect.fn(
+    "CodexTextGeneration.generateThreadSummary",
+  )(function* (input) {
+    const prompt = buildThreadSummaryPrompt(input);
+    const generated = yield* runCodexJson({
+      operation: "generateThreadSummary",
+      cwd: process.cwd(),
+      prompt,
+      outputSchemaJson: ThreadSummaryOutputSchema,
+      modelSelection: input.modelSelection,
+    });
+
+    return generated.summary.trim();
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateThreadSummary,
   } satisfies TextGenerationShape;
 });

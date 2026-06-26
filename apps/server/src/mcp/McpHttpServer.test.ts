@@ -19,6 +19,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/providerMaintenance.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { TextGeneration } from "../textGeneration/TextGeneration.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts";
@@ -96,6 +97,18 @@ const TestLayer = McpHttpServer.McpToolkitRegistrationLive.pipe(
         ),
       ),
       Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(
+        Layer.succeed(
+          TextGeneration,
+          TextGeneration.of({
+            generateCommitMessage: () => Effect.die("unused"),
+            generatePrContent: () => Effect.die("unused"),
+            generateBranchName: () => Effect.die("unused"),
+            generateThreadTitle: () => Effect.die("unused"),
+            generateThreadSummary: () => Effect.die("unused"),
+          }),
+        ),
+      ),
     ),
   ),
 );
@@ -299,11 +312,10 @@ it.effect("registers annotated tools and preserves authenticated request context
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.provideService(McpSchema.McpServerClient, client),
         );
-      expect(orchestration.isError).toBe(true);
-      expect(orchestration.content[0]?.type).toBe("text");
-      expect(
-        orchestration.content[0]?.type === "text" ? orchestration.content[0].text : "",
-      ).toContain("registered but not implemented yet");
+      expect(orchestration.isError).toBe(false);
+      expect(orchestration.structuredContent).toMatchObject({
+        providers: {},
+      });
     }),
   ).pipe(Effect.provide(TestLayer)),
 );

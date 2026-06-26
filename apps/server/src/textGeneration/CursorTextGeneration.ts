@@ -14,7 +14,9 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  buildThreadSummaryPrompt,
   buildThreadTitlePrompt,
+  ThreadSummaryOutputSchema,
 } from "./TextGenerationPrompts.ts";
 import {
   sanitizeCommitSubject,
@@ -33,7 +35,8 @@ function mapCursorAcpError(
     | "generateCommitMessage"
     | "generatePrContent"
     | "generateBranchName"
-    | "generateThreadTitle",
+    | "generateThreadTitle"
+    | "generateThreadSummary",
   detail: string,
   cause: unknown,
 ): TextGenerationError {
@@ -75,7 +78,8 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateThreadSummary";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -270,10 +274,27 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
     } satisfies ThreadTitleGenerationResult;
   });
 
+  const generateThreadSummary: TextGenerationShape["generateThreadSummary"] = Effect.fn(
+    "CursorTextGeneration.generateThreadSummary",
+  )(function* (input) {
+    const prompt = buildThreadSummaryPrompt(input);
+
+    const generated = yield* runCursorJson({
+      operation: "generateThreadSummary",
+      cwd: process.cwd(),
+      prompt,
+      outputSchemaJson: ThreadSummaryOutputSchema,
+      modelSelection: input.modelSelection,
+    });
+
+    return generated.summary.trim();
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateThreadSummary,
   } satisfies TextGenerationShape;
 });

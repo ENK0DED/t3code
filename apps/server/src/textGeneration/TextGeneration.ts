@@ -70,6 +70,18 @@ export interface ThreadTitleGenerationResult {
   title: string;
 }
 
+export interface ThreadSummaryGenerationInput {
+  threadTitle: string;
+  messages: ReadonlyArray<{
+    role: "user" | "assistant" | "system";
+    text: string;
+    createdAt: string;
+  }>;
+  maxOutputCharacters: number;
+  /** What model and provider to use for generation. */
+  modelSelection: ModelSelection;
+}
+
 export interface TextGenerationService {
   generateCommitMessage(
     input: CommitMessageGenerationInput,
@@ -77,6 +89,7 @@ export interface TextGenerationService {
   generatePrContent(input: PrContentGenerationInput): Promise<PrContentGenerationResult>;
   generateBranchName(input: BranchNameGenerationInput): Promise<BranchNameGenerationResult>;
   generateThreadTitle(input: ThreadTitleGenerationInput): Promise<ThreadTitleGenerationResult>;
+  generateThreadSummary(input: ThreadSummaryGenerationInput): Promise<string>;
 }
 
 /**
@@ -110,6 +123,13 @@ export interface TextGenerationShape {
   readonly generateThreadTitle: (
     input: ThreadTitleGenerationInput,
   ) => Effect.Effect<ThreadTitleGenerationResult, TextGenerationError>;
+
+  /**
+   * Generate a transferable summary of a thread for another coding agent.
+   */
+  readonly generateThreadSummary: (
+    input: ThreadSummaryGenerationInput,
+  ) => Effect.Effect<string, TextGenerationError>;
 }
 
 /**
@@ -123,7 +143,8 @@ type TextGenerationOp =
   | "generateCommitMessage"
   | "generatePrContent"
   | "generateBranchName"
-  | "generateThreadTitle";
+  | "generateThreadTitle"
+  | "generateThreadSummary";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistryShape,
@@ -161,6 +182,10 @@ export const makeTextGenerationFromRegistry = (
   generateThreadTitle: (input) =>
     resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
       Effect.flatMap((textGeneration) => textGeneration.generateThreadTitle(input)),
+    ),
+  generateThreadSummary: (input) =>
+    resolveInstance(registry, "generateThreadSummary", input.modelSelection.instanceId).pipe(
+      Effect.flatMap((textGeneration) => textGeneration.generateThreadSummary(input)),
     ),
 });
 

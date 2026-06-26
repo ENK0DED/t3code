@@ -1,4 +1,5 @@
 import {
+  type OrchestrationThread,
   PROVIDER_DISPLAY_NAMES,
   type ProviderInstanceId,
   type ProviderOptionDescriptor,
@@ -7,6 +8,8 @@ import {
   type ServerSettings,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentLabel, getProviderOptionDescriptors } from "@t3tools/shared/model";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import {
   insertRankedSearchResult,
   normalizeSearchQuery,
@@ -16,15 +19,20 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import * as McpInvocationContext from "../McpInvocationContext.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import {
   McpOrchestrationError,
   McpOrchestrationService,
 } from "../Services/McpOrchestrationService.ts";
+
+const MCP_STRUCTURED_RESPONSE_MAX_BYTES = 1_000_000;
+const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
 
 const notImplemented = (tool: string) =>
   new McpOrchestrationError({
@@ -49,6 +57,35 @@ const requireRead = Effect.fn("McpOrchestrationService.requireRead")(function* (
     ),
   );
 });
+
+function parseHistoryCursor(cursor: string | undefined): number {
+  if (!cursor) {
+    return 0;
+  }
+
+  const parsed = Number.parseInt(cursor, 10);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function applyHistoryWindow(
+  thread: OrchestrationThread,
+  input: {
+    readonly limit?: number | undefined;
+    readonly cursor?: string | undefined;
+  },
+): OrchestrationThread {
+  const start = parseHistoryCursor(input.cursor);
+  const end = input.limit !== undefined ? start + input.limit : undefined;
+
+  if (start === 0 && end === undefined) {
+    return thread;
+  }
+
+  return {
+    ...thread,
+    messages: thread.messages.slice(start, end),
+  };
+}
 
 function toInternalError(message: string, detail?: unknown): McpOrchestrationError {
   return new McpOrchestrationError({
@@ -138,6 +175,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
     const providerRegistry = yield* ProviderRegistry;
     const serverSettings = yield* ServerSettingsService;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+    const textGeneration = yield* TextGeneration;
 
     return McpOrchestrationService.of({
       listMcpModels: () =>
@@ -331,7 +369,84 @@ export const McpOrchestrationServiceLive = Layer.effect(
               );
           }),
         ),
-      getThreadHistory: () => failNotImplemented("get_thread_history"),
+      getThreadHistory: (input) =>
+        requireRead().pipe(
+          Effect.flatMap(() =>
+            projectionSnapshotQuery.getThreadDetailById(input.threadId).pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to read orchestration thread history.", error),
+              ),
+              Effect.flatMap((detail) =>
+                Option.match(detail, {
+                  onNone: () =>
+                    Effect.fail(
+                      new McpOrchestrationError({
+                        code: "unknown_thread",
+                        message: `Thread '${input.threadId}' does not exist.`,
+                      }),
+                    ),
+                  onSome: Effect.succeed,
+                }),
+              ),
+              Effect.flatMap(
+                (thread): Effect.Effect<unknown, McpOrchestrationError> =>
+                  Effect.gen(function* () {
+                    if (input.mode === "complete") {
+                      const payload = {
+                        mode: "complete" as const,
+                        thread: applyHistoryWindow(thread, input),
+                      };
+                      const encoded = yield* encodeJsonString(payload).pipe(
+                        Effect.mapError((error) =>
+                          toInternalError("Failed to encode MCP thread history payload.", error),
+                        ),
+                      );
+                      const budget = input.maxCharacters ?? MCP_STRUCTURED_RESPONSE_MAX_BYTES;
+                      if (encoded.length > budget) {
+                        return yield* new McpOrchestrationError({
+                          code: "payload_too_large",
+                          message: `Thread '${input.threadId}' history is too large for one MCP response.`,
+                          detail: "Retry with limit, cursor, or maxCharacters.",
+                        });
+                      }
+                      return payload;
+                    }
+
+                    const settings = yield* serverSettings.getSettings.pipe(
+                      Effect.mapError((error) =>
+                        toInternalError("Failed to load server settings.", error),
+                      ),
+                    );
+                    const summary = yield* textGeneration
+                      .generateThreadSummary({
+                        threadTitle: thread.title,
+                        messages: thread.messages.map((message) => ({
+                          role: message.role,
+                          text: message.text,
+                          createdAt: message.createdAt,
+                        })),
+                        maxOutputCharacters: 12_000,
+                        modelSelection: settings.textGenerationModelSelection,
+                      })
+                      .pipe(
+                        Effect.mapError((error) =>
+                          toInternalError("Failed to generate thread history summary.", error),
+                        ),
+                      );
+                    const now = yield* Clock.currentTimeMillis;
+
+                    return {
+                      mode: "summary" as const,
+                      threadId: thread.id,
+                      summary,
+                      modelSelection: settings.textGenerationModelSelection,
+                      generatedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
+                    };
+                  }),
+              ),
+            ),
+          ),
+        ),
       getCurrentThreadSettings: () =>
         requireRead().pipe(
           Effect.flatMap((invocation) =>
