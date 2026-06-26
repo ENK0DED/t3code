@@ -970,8 +970,13 @@ export const McpOrchestrationServiceLive = Layer.effect(
             resultingPreviewUrl: nextPreviewUrl,
           });
 
+          const {
+            previewUrl: _currentPreviewUrl,
+            autoOpenPreview: _currentAutoOpenPreview,
+            ...currentScriptBase
+          } = currentScript;
           const nextScript: ProjectScript = {
-            ...currentScript,
+            ...currentScriptBase,
             ...(input.name !== undefined ? { name: input.name } : {}),
             command: input.command ?? currentScript.command,
             icon: input.icon ?? currentScript.icon,

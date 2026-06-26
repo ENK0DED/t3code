@@ -685,6 +685,86 @@ it.effect("updateProjectAction preserves hidden command when command is omitted"
   })(),
 );
 
+it.effect("updateProjectAction clears preview metadata when previewUrl is null", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.updateProjectAction({
+        projectId: ProjectId.make("project-current"),
+        actionId: "dev",
+        previewUrl: null,
+      });
+
+      expect(result.updatedAction).toEqual({
+        id: "dev",
+        name: "Dev",
+        icon: "play",
+        runOnWorktreeCreate: true,
+      });
+      expect(result.updatedAction).not.toHaveProperty("previewUrl");
+      expect(result.updatedAction).not.toHaveProperty("autoOpenPreview");
+      expect(result.updatedAction).not.toHaveProperty("command");
+      expect(result.actionsAfterChange).toEqual([
+        {
+          id: "dev",
+          name: "Dev",
+          icon: "play",
+          runOnWorktreeCreate: true,
+        },
+      ]);
+      const update = dispatchedCommands.find((command) => command.type === "project.meta.update");
+      expect(update).toMatchObject({
+        scripts: [
+          {
+            id: "dev",
+            name: "Dev",
+            command: "bun dev",
+            icon: "play",
+            runOnWorktreeCreate: true,
+          },
+        ],
+      });
+      expect(update).not.toMatchObject({
+        scripts: [
+          expect.objectContaining({
+            previewUrl: expect.anything(),
+          }),
+        ],
+      });
+      expect(update).not.toMatchObject({
+        scripts: [
+          expect.objectContaining({
+            autoOpenPreview: true,
+          }),
+        ],
+      });
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          projects: [
+            makeProjectShell({
+              id: ProjectId.make("project-current"),
+              scripts: [
+                {
+                  id: "dev",
+                  name: "Dev",
+                  command: "bun dev",
+                  icon: "play",
+                  runOnWorktreeCreate: true,
+                  previewUrl: "http://localhost:5173",
+                  autoOpenPreview: true,
+                },
+              ],
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
+);
+
 it.effect("deleteProjectAction returns sanitized deleted action and actionsAfterChange", () =>
   (() => {
     const dispatchedCommands: Array<OrchestrationCommand> = [];
