@@ -8,7 +8,11 @@ import {
 import { OrchestrationToolkit } from "./tools.ts";
 
 const invokeRead = Effect.fn("OrchestrationToolkit.invokeRead")(function* <A>(
-  operation: Effect.Effect<A, McpOrchestrationError, McpOrchestrationService>,
+  operation: Effect.Effect<
+    A,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext | McpOrchestrationService
+  >,
 ): Effect.fn.Return<
   A,
   McpOrchestrationError,
@@ -27,7 +31,11 @@ const invokeRead = Effect.fn("OrchestrationToolkit.invokeRead")(function* <A>(
 });
 
 const invokeWrite = Effect.fn("OrchestrationToolkit.invokeWrite")(function* <A>(
-  operation: Effect.Effect<A, McpOrchestrationError, McpOrchestrationService>,
+  operation: Effect.Effect<
+    A,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext | McpOrchestrationService
+  >,
 ): Effect.fn.Return<
   A,
   McpOrchestrationError,

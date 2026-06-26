@@ -15,6 +15,10 @@ import {
 } from "effect/unstable/http";
 
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/providerMaintenance.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts";
@@ -53,7 +57,47 @@ const fakeEnvironment = ServerEnvironment.of({
 const TestLayer = McpHttpServer.McpToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(PreviewAutomationBroker.layer),
-  Layer.provide(McpOrchestrationServiceLive),
+  Layer.provide(
+    McpOrchestrationServiceLive.pipe(
+      Layer.provideMerge(
+        Layer.succeed(ProjectionSnapshotQuery, {
+          getCommandReadModel: () => Effect.die("unused"),
+          getSnapshot: () => Effect.die("unused"),
+          getShellSnapshot: () => Effect.die("unused"),
+          getArchivedShellSnapshot: () => Effect.die("unused"),
+          getSnapshotSequence: () => Effect.die("unused"),
+          getCounts: () => Effect.die("unused"),
+          getActiveProjectByWorkspaceRoot: () => Effect.die("unused"),
+          listProjectShells: () => Effect.succeed([]),
+          getProjectShellById: () => Effect.die("unused"),
+          getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
+          listThreadShellsByProject: () => Effect.succeed([]),
+          getThreadCheckpointContext: () => Effect.die("unused"),
+          getFullThreadDiffContext: () => Effect.die("unused"),
+          getThreadShellById: () => Effect.die("unused"),
+          getThreadDetailById: () => Effect.die("unused"),
+          searchThreadMessagesByProject: () => Effect.succeed([]),
+        }),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(
+          ProviderRegistry,
+          ProviderRegistry.of({
+            getProviders: Effect.succeed([]),
+            refresh: () => Effect.succeed([]),
+            refreshInstance: () => Effect.succeed([]),
+            getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
+              Effect.succeed(
+                makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
+              ),
+            setProviderMaintenanceActionState: () => Effect.succeed([]),
+            streamChanges: Stream.empty,
+          }),
+        ),
+      ),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+    ),
+  ),
 );
 const RegistryTestLayer = Layer.effect(
   McpSessionRegistry.McpSessionRegistry,

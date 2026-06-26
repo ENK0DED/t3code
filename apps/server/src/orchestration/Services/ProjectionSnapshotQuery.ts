@@ -119,6 +119,14 @@ export interface ProjectionSnapshotQueryShape {
   ) => Effect.Effect<Option.Option<OrchestrationProject>, ProjectionRepositoryError>;
 
   /**
+   * Read all active project shell rows.
+   */
+  readonly listProjectShells: () => Effect.Effect<
+    ReadonlyArray<OrchestrationProjectShell>,
+    ProjectionRepositoryError
+  >;
+
+  /**
    * Read a single active project shell row by id.
    */
   readonly getProjectShellById: (
@@ -131,6 +139,14 @@ export interface ProjectionSnapshotQueryShape {
   readonly getFirstActiveThreadIdByProjectId: (
     projectId: ProjectId,
   ) => Effect.Effect<Option.Option<ThreadId>, ProjectionRepositoryError>;
+
+  /**
+   * Read thread shell rows for one project using an archive filter.
+   */
+  readonly listThreadShellsByProject: (input: {
+    readonly projectId: ProjectId;
+    readonly archived: "exclude" | "include" | "only";
+  }) => Effect.Effect<ReadonlyArray<OrchestrationThreadShell>, ProjectionRepositoryError>;
 
   /**
    * Read the checkpoint context needed to resolve a single thread diff.

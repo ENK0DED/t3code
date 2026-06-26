@@ -1532,3 +1532,180 @@ it.effect(
     }).pipe(Effect.provide(layer));
   },
 );
+
+projectionSnapshotLayer("ProjectionSnapshotQuery read helpers", (it) => {
+  it.effect("listProjectShells returns only active project shells", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES
+          (
+            'project-active',
+            'Active Project',
+            '/tmp/active',
+            NULL,
+            '[]',
+            '2026-06-01T00:00:00.000Z',
+            '2026-06-01T00:00:00.000Z',
+            NULL
+          ),
+          (
+            'project-deleted',
+            'Deleted Project',
+            '/tmp/deleted',
+            NULL,
+            '[]',
+            '2026-06-01T00:00:00.000Z',
+            '2026-06-01T00:00:00.000Z',
+            '2026-06-02T00:00:00.000Z'
+          )
+      `;
+
+      const projects = yield* snapshotQuery.listProjectShells();
+
+      assert.deepStrictEqual(
+        projects.map((project) => project.id),
+        [ProjectId.make("project-active")],
+      );
+    }),
+  );
+
+  it.effect("listThreadShellsByProject respects archive filters", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_thread_sessions`;
+      yield* sql`DELETE FROM projection_turns`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-threads',
+          'Threads Project',
+          '/tmp/threads',
+          NULL,
+          '[]',
+          '2026-06-01T00:00:00.000Z',
+          '2026-06-01T00:00:00.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          parent_thread_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          archived_at,
+          deleted_at
+        )
+        VALUES
+          (
+            'thread-active',
+            'project-threads',
+            NULL,
+            'Active Thread',
+            '{"instanceId":"codex","model":"gpt-5.5"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-06-01T00:00:00.000Z',
+            '2026-06-01T00:00:00.000Z',
+            NULL,
+            NULL
+          ),
+          (
+            'thread-archived',
+            'project-threads',
+            NULL,
+            'Archived Thread',
+            '{"instanceId":"codex","model":"gpt-5.5"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-06-01T00:00:00.000Z',
+            '2026-06-01T00:00:00.000Z',
+            '2026-06-02T00:00:00.000Z',
+            NULL
+          )
+      `;
+
+      const active = yield* snapshotQuery.listThreadShellsByProject({
+        projectId: ProjectId.make("project-threads"),
+        archived: "exclude",
+      });
+      const included = yield* snapshotQuery.listThreadShellsByProject({
+        projectId: ProjectId.make("project-threads"),
+        archived: "include",
+      });
+      const archived = yield* snapshotQuery.listThreadShellsByProject({
+        projectId: ProjectId.make("project-threads"),
+        archived: "only",
+      });
+
+      assert.deepStrictEqual(
+        active.map((thread) => thread.id),
+        [ThreadId.make("thread-active")],
+      );
+      assert.deepStrictEqual(
+        included.map((thread) => thread.id),
+        [ThreadId.make("thread-active"), ThreadId.make("thread-archived")],
+      );
+      assert.deepStrictEqual(
+        archived.map((thread) => thread.id),
+        [ThreadId.make("thread-archived")],
+      );
+    }),
+  );
+});
