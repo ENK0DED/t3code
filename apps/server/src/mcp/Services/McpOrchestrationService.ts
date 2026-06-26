@@ -140,12 +140,21 @@ export interface McpOrchestrationServiceShape {
     McpOrchestrationError,
     McpInvocationContext.McpInvocationContext
   >;
-  readonly addProject: (input: unknown) => Effect.Effect<unknown, McpOrchestrationError>;
-  readonly createThread: (input: unknown) => Effect.Effect<unknown, McpOrchestrationError>;
-  readonly sendThreadMessage: (input: unknown) => Effect.Effect<unknown, McpOrchestrationError>;
-  readonly updateThreadSettings: (input: unknown) => Effect.Effect<unknown, McpOrchestrationError>;
+  readonly addProject: (
+    input: unknown,
+  ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
+  readonly createThread: (
+    input: unknown,
+  ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
+  readonly sendThreadMessage: (
+    input: unknown,
+  ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
+  readonly updateThreadSettings: (
+    input: unknown,
+  ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
 }
 
+/** @effect-expect-leaking McpInvocationContext */
 export class McpOrchestrationService extends Context.Service<
   McpOrchestrationService,
   McpOrchestrationServiceShape

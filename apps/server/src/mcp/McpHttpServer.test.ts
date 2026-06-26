@@ -15,6 +15,7 @@ import {
 } from "effect/unstable/http";
 
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
+import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/providerMaintenance.ts";
@@ -79,6 +80,16 @@ const TestLayer = McpHttpServer.McpToolkitRegistrationLive.pipe(
           getThreadDetailById: () => Effect.die("unused"),
           searchThreadMessagesByProject: () => Effect.succeed([]),
         }),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(
+          OrchestrationEngineService,
+          OrchestrationEngineService.of({
+            dispatch: () => Effect.die("unused"),
+            readEvents: () => Stream.empty,
+            streamDomainEvents: Stream.empty,
+          }),
+        ),
       ),
       Layer.provideMerge(
         Layer.succeed(

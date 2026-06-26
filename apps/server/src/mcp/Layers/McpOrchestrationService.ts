@@ -1,12 +1,21 @@
 import {
+  CommandId,
+  MessageId,
   type OrchestrationThread,
+  ProjectId,
   PROVIDER_DISPLAY_NAMES,
   type ProviderInstanceId,
   type ProviderOptionDescriptor,
+  type ProviderOptionSelection,
+  type RuntimeMode,
   type ServerProvider,
   type ServerProviderModel,
   type ServerSettings,
+  ThreadId,
 } from "@t3tools/contracts";
+import { buildProjectCreateCommand, resolveAddProjectPath } from "@t3tools/shared/addProject";
+import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { getProviderOptionCurrentLabel, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -17,15 +26,19 @@ import {
   type RankedSearchResult,
 } from "@t3tools/shared/searchRanking";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { randomUUID } from "node:crypto";
 
 import * as McpInvocationContext from "../McpInvocationContext.ts";
+import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
+import { sanitizeThreadTitle } from "../../textGeneration/TextGenerationUtils.ts";
 import {
   McpOrchestrationError,
   McpOrchestrationService,
@@ -33,18 +46,6 @@ import {
 
 const MCP_STRUCTURED_RESPONSE_MAX_BYTES = 1_000_000;
 const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
-
-const notImplemented = (tool: string) =>
-  new McpOrchestrationError({
-    code: "not_implemented",
-    message: `MCP orchestration tool '${tool}' is registered but not implemented yet.`,
-  });
-
-const failNotImplemented = Effect.fn("McpOrchestrationService.failNotImplemented")(function* (
-  tool: string,
-) {
-  return yield* notImplemented(tool);
-});
 
 const requireRead = Effect.fn("McpOrchestrationService.requireRead")(function* () {
   return yield* McpInvocationContext.requireMcpOrchestrationRead().pipe(
@@ -134,6 +135,44 @@ function modelOptionDescriptors(
   return model.capabilities?.optionDescriptors ?? [];
 }
 
+function isThreadIdleReady(thread: {
+  readonly latestTurn?: { readonly state?: string | null } | null;
+  readonly session?: {
+    readonly activeTurnId?: string | null;
+    readonly status?: string | null;
+  } | null;
+}): boolean {
+  const latestRunning = thread.latestTurn?.state === "running";
+  const hasActiveTurn =
+    thread.session?.activeTurnId !== null && thread.session?.activeTurnId !== undefined;
+  const sessionStatus = thread.session?.status ?? "idle";
+  const sessionReady =
+    thread.session === null || sessionStatus === "idle" || sessionStatus === "ready";
+  return !latestRunning && !hasActiveTurn && sessionReady;
+}
+
+function makeCommandId(tag: string): CommandId {
+  return CommandId.make(`mcp:${tag}:${randomUUID()}`);
+}
+
+function makeThreadId(): ThreadId {
+  return ThreadId.make(`thread-${randomUUID()}`);
+}
+
+function makeProjectId(): ProjectId {
+  return ProjectId.make(`project-${randomUUID()}`);
+}
+
+function makeMessageId(): MessageId {
+  return MessageId.make(`message-${randomUUID()}`);
+}
+
+function randomHex(byteLength: number): string {
+  return randomUUID()
+    .replaceAll("-", "")
+    .slice(0, byteLength * 2);
+}
+
 function providerDisplayName(provider: ServerProvider): string {
   return provider.displayName ?? PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver;
 }
@@ -185,10 +224,293 @@ function scoreTermsAgainstValues(
 export const McpOrchestrationServiceLive = Layer.effect(
   McpOrchestrationService,
   Effect.gen(function* () {
+    const orchestrationEngine = yield* OrchestrationEngineService;
     const providerRegistry = yield* ProviderRegistry;
     const serverSettings = yield* ServerSettingsService;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const textGeneration = yield* TextGeneration;
+
+    const currentIsoTimestamp = () =>
+      Clock.currentTimeMillis.pipe(
+        Effect.map((now) => DateTime.formatIso(DateTime.makeUnsafe(now))),
+      );
+
+    const requireProject = Effect.fn("McpOrchestrationService.requireProject")(function* (
+      projectId: ProjectId,
+    ) {
+      const project = yield* projectionSnapshotQuery
+        .getProjectShellById(projectId)
+        .pipe(
+          Effect.mapError((error) =>
+            toInternalError("Failed to read orchestration project.", error),
+          ),
+        );
+      return yield* Option.match(project, {
+        onNone: () =>
+          Effect.fail(
+            new McpOrchestrationError({
+              code: "unknown_project",
+              message: `Project '${projectId}' does not exist.`,
+            }),
+          ),
+        onSome: Effect.succeed,
+      });
+    });
+
+    const requireThreadDetail = Effect.fn("McpOrchestrationService.requireThreadDetail")(function* (
+      threadId: ThreadId,
+    ) {
+      const thread = yield* projectionSnapshotQuery
+        .getThreadDetailById(threadId)
+        .pipe(
+          Effect.mapError((error) =>
+            toInternalError("Failed to read orchestration thread.", error),
+          ),
+        );
+      return yield* Option.match(thread, {
+        onNone: () =>
+          Effect.fail(
+            new McpOrchestrationError({
+              code: "unknown_thread",
+              message: `Thread '${threadId}' does not exist.`,
+            }),
+          ),
+        onSome: (value) =>
+          value.deletedAt === null
+            ? Effect.succeed(value)
+            : Effect.fail(
+                new McpOrchestrationError({
+                  code: "unknown_thread",
+                  message: `Thread '${threadId}' does not exist.`,
+                }),
+              ),
+      });
+    });
+
+    const requireIdleThread = Effect.fn("McpOrchestrationService.requireIdleThread")(function* (
+      threadId: ThreadId,
+    ) {
+      const thread = yield* requireThreadDetail(threadId);
+      if (!isThreadIdleReady(thread)) {
+        return yield* new McpOrchestrationError({
+          code: "non_idle_thread",
+          message: `non_idle_thread: Thread '${threadId}' is not idle and cannot accept MCP write actions.`,
+        });
+      }
+      return thread;
+    });
+
+    const loadProvidersAndSettings = () =>
+      Effect.all({
+        providers: providerRegistry.getProviders.pipe(
+          Effect.mapError((error) =>
+            toInternalError("Failed to load provider registry snapshots.", error),
+          ),
+        ),
+        settings: serverSettings.getSettings.pipe(
+          Effect.mapError((error) => toInternalError("Failed to load server settings.", error)),
+        ),
+      });
+
+    const validateOptionSelections = (input: {
+      readonly model: ServerProviderModel;
+      readonly selection: {
+        readonly instanceId: ProviderInstanceId;
+        readonly model: string;
+        readonly options?: ReadonlyArray<ProviderOptionSelection> | undefined;
+      };
+    }): Effect.Effect<void, McpOrchestrationError> =>
+      Effect.gen(function* () {
+        const descriptorById = new Map(
+          modelOptionDescriptors(input.model).map(
+            (descriptor) => [descriptor.id, descriptor] as const,
+          ),
+        );
+        for (const option of input.selection.options ?? []) {
+          const descriptor = descriptorById.get(option.id);
+          if (!descriptor) {
+            return yield* new McpOrchestrationError({
+              code: "invalid_model_option",
+              message: `invalid_model_option: Option '${option.id}' is not supported by model '${input.selection.model}' on '${input.selection.instanceId}'.`,
+            });
+          }
+          if (descriptor.type === "boolean") {
+            if (typeof option.value !== "boolean") {
+              return yield* new McpOrchestrationError({
+                code: "invalid_model_option",
+                message: `invalid_model_option: Option '${option.id}' requires a boolean value for model '${input.selection.model}'.`,
+              });
+            }
+            continue;
+          }
+          if (
+            typeof option.value !== "string" ||
+            !descriptor.options.some((candidate) => candidate.id === option.value)
+          ) {
+            return yield* new McpOrchestrationError({
+              code: "invalid_model_option",
+              message: `invalid_model_option: Option '${option.id}' value '${String(option.value)}' is invalid for model '${input.selection.model}'.`,
+            });
+          }
+        }
+      });
+
+    const validateMcpModelSelection = (selection: {
+      readonly instanceId: ProviderInstanceId;
+      readonly model: string;
+      readonly options?: ReadonlyArray<ProviderOptionSelection> | undefined;
+    }) =>
+      loadProvidersAndSettings().pipe(
+        Effect.flatMap(({ providers, settings }) =>
+          Effect.gen(function* () {
+            const provider = providers.find(
+              (candidate) => candidate.instanceId === selection.instanceId,
+            );
+            if (!provider || provider.enabled !== true || provider.installed === false) {
+              return yield* new McpOrchestrationError({
+                code: "unknown_provider_instance",
+                message: `Provider instance '${selection.instanceId}' is not available.`,
+              });
+            }
+            const model = provider.models.find((candidate) => candidate.slug === selection.model);
+            if (!model) {
+              return yield* new McpOrchestrationError({
+                code: "unknown_model",
+                message: `Model '${selection.model}' is not available on '${selection.instanceId}'.`,
+              });
+            }
+            if (
+              !isModelMcpEnabled({
+                settings,
+                instanceId: selection.instanceId,
+                model: selection.model,
+              })
+            ) {
+              return yield* new McpOrchestrationError({
+                code: "mcp_disabled_model",
+                message: `mcp_disabled_model: Model '${selection.model}' is disabled for MCP on '${selection.instanceId}'.`,
+              });
+            }
+            yield* validateOptionSelections({ model, selection });
+            return {
+              provider,
+              model,
+            };
+          }),
+        ),
+      );
+
+    const resolveParentThreadId = (input: {
+      readonly placement?: "child_of_current" | "top_level" | "child_of_thread" | undefined;
+      readonly explicitParentThreadId?: ThreadId | undefined;
+      readonly targetProjectId: ProjectId;
+      readonly currentThread: OrchestrationThread;
+    }): Effect.Effect<ThreadId | null, McpOrchestrationError> =>
+      Effect.gen(function* () {
+        const placement =
+          input.placement ??
+          (input.targetProjectId === input.currentThread.projectId
+            ? "child_of_current"
+            : "top_level");
+        switch (placement) {
+          case "top_level":
+            return null;
+          case "child_of_current":
+            return input.currentThread.id;
+          case "child_of_thread":
+            if (!input.explicitParentThreadId) {
+              return yield* new McpOrchestrationError({
+                code: "missing_parent_thread",
+                message: "parentThreadId is required for child_of_thread placement.",
+              });
+            }
+            return input.explicitParentThreadId;
+        }
+      });
+
+    const validateParentThreadProject = Effect.fn(
+      "McpOrchestrationService.validateParentThreadProject",
+    )(function* (input: {
+      readonly parentThreadId: ThreadId | null;
+      readonly targetProjectId: ProjectId;
+    }) {
+      if (input.parentThreadId === null) {
+        return null;
+      }
+      const parentThread = yield* requireThreadDetail(input.parentThreadId);
+      if (parentThread.projectId !== input.targetProjectId) {
+        return yield* new McpOrchestrationError({
+          code: "cross_project_parent",
+          message: `cross_project_parent: Thread '${input.parentThreadId}' belongs to project '${parentThread.projectId}' and cannot parent a thread in project '${input.targetProjectId}'.`,
+        });
+      }
+      return parentThread.id;
+    });
+
+    const validateSessionCompatibility = Effect.fn(
+      "McpOrchestrationService.validateSessionCompatibility",
+    )(function* (input: {
+      readonly thread: OrchestrationThread;
+      readonly desiredModelSelection: {
+        readonly instanceId: ProviderInstanceId;
+        readonly model: string;
+        readonly options?: ReadonlyArray<ProviderOptionSelection> | undefined;
+      };
+    }) {
+      if (input.thread.session === null) {
+        return;
+      }
+      const providers = yield* providerRegistry.getProviders.pipe(
+        Effect.mapError((error) =>
+          toInternalError("Failed to load provider registry snapshots.", error),
+        ),
+      );
+      const currentProvider = providers.find(
+        (candidate) => candidate.instanceId === input.thread.modelSelection.instanceId,
+      );
+      const desiredProvider = providers.find(
+        (candidate) => candidate.instanceId === input.desiredModelSelection.instanceId,
+      );
+      if (!currentProvider || !desiredProvider) {
+        return;
+      }
+
+      const modelChanged =
+        input.thread.modelSelection.instanceId !== input.desiredModelSelection.instanceId ||
+        input.thread.modelSelection.model !== input.desiredModelSelection.model;
+      if (
+        modelChanged &&
+        (currentProvider.requiresNewThreadForModelChange === true ||
+          desiredProvider.requiresNewThreadForModelChange === true)
+      ) {
+        return yield* new McpOrchestrationError({
+          code: "incompatible_model_session_switch",
+          message: `Thread '${input.thread.id}' cannot switch models after the conversation has started. Start a new thread to use '${input.desiredModelSelection.model}'.`,
+        });
+      }
+
+      if (input.desiredModelSelection.instanceId !== input.thread.modelSelection.instanceId) {
+        if (currentProvider.driver !== desiredProvider.driver) {
+          return yield* new McpOrchestrationError({
+            code: "incompatible_model_session_switch",
+            message: `Thread '${input.thread.id}' is bound to driver '${currentProvider.driver}' and cannot switch to '${desiredProvider.driver}'.`,
+          });
+        }
+
+        const currentContinuation = currentProvider.continuation?.groupKey;
+        const desiredContinuation = desiredProvider.continuation?.groupKey;
+        if (
+          currentContinuation &&
+          desiredContinuation &&
+          currentContinuation !== desiredContinuation
+        ) {
+          return yield* new McpOrchestrationError({
+            code: "incompatible_model_session_switch",
+            message: `Thread '${input.thread.id}' cannot switch from instance '${input.thread.modelSelection.instanceId}' to '${input.desiredModelSelection.instanceId}' because their provider resume state is incompatible.`,
+          });
+        }
+      }
+    });
 
     return McpOrchestrationService.of({
       listMcpModels: () =>
@@ -555,10 +877,375 @@ export const McpOrchestrationServiceLive = Layer.effect(
             ),
           ),
         ),
-      addProject: () => failNotImplemented("add_project"),
-      createThread: () => failNotImplemented("create_thread"),
-      sendThreadMessage: () => failNotImplemented("send_thread_message"),
-      updateThreadSettings: () => failNotImplemented("update_thread_settings"),
+      addProject: (rawInput) =>
+        Effect.gen(function* () {
+          const input = rawInput as { readonly path: string };
+          const invocation = yield* McpInvocationContext.McpInvocationContext;
+          const currentThread = yield* requireThreadDetail(invocation.threadId);
+          const currentProject = yield* requireProject(currentThread.projectId);
+          const platform = yield* HostProcessPlatform;
+          const resolved = resolveAddProjectPath({
+            rawPath: input.path,
+            currentProjectCwd: currentProject.workspaceRoot,
+            platform,
+          });
+          if (!resolved.ok) {
+            return yield* new McpOrchestrationError({
+              code: "invalid_project_path",
+              message: resolved.error,
+            });
+          }
+
+          const existing = yield* projectionSnapshotQuery
+            .getActiveProjectByWorkspaceRoot(resolved.path)
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to read orchestration projects.", error),
+              ),
+            );
+          if (Option.isSome(existing)) {
+            return {
+              status: "already_exists" as const,
+              project: existing.value,
+            };
+          }
+
+          const createdAt = yield* currentIsoTimestamp();
+          const projectId = makeProjectId();
+          const accepted = yield* orchestrationEngine
+            .dispatch(
+              buildProjectCreateCommand({
+                commandId: makeCommandId("project-create"),
+                projectId,
+                workspaceRoot: resolved.path,
+                createdAt,
+              }),
+            )
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
+
+          return {
+            status: "created" as const,
+            project: {
+              id: projectId,
+              title: resolved.path.split(/[/\\]/).findLast(Boolean) ?? resolved.path,
+              workspaceRoot: resolved.path,
+              repositoryIdentity: null,
+              defaultModelSelection: null,
+              scripts: [],
+              createdAt,
+              updatedAt: createdAt,
+            },
+            sequence: accepted.sequence,
+          };
+        }),
+      createThread: (rawInput) =>
+        Effect.gen(function* () {
+          const input = rawInput as {
+            readonly projectId?: ProjectId;
+            readonly placement?: "child_of_current" | "top_level" | "child_of_thread";
+            readonly parentThreadId?: ThreadId;
+            readonly title?: string;
+            readonly message?: string;
+            readonly modelSelection?: {
+              readonly instanceId: ProviderInstanceId;
+              readonly model: string;
+              readonly options?: ReadonlyArray<ProviderOptionSelection>;
+            };
+            readonly runtimeMode?: RuntimeMode;
+            readonly interactionMode?: "default" | "plan";
+            readonly checkoutMode?: "current_checkout" | "new_worktree";
+            readonly branch?: string | null;
+            readonly worktreePath?: string | null;
+            readonly baseBranch?: string;
+          };
+          const invocation = yield* McpInvocationContext.McpInvocationContext;
+          const currentThread = yield* requireThreadDetail(invocation.threadId);
+          const targetProjectId = input.projectId ?? currentThread.projectId;
+          const targetProject = yield* requireProject(targetProjectId);
+          const desiredModelSelection = input.modelSelection ?? currentThread.modelSelection;
+          yield* validateMcpModelSelection(desiredModelSelection);
+
+          const parentThreadId = yield* resolveParentThreadId({
+            placement: input.placement,
+            explicitParentThreadId: input.parentThreadId,
+            targetProjectId,
+            currentThread,
+          });
+          yield* validateParentThreadProject({ parentThreadId, targetProjectId });
+
+          const desiredRuntimeMode = input.runtimeMode ?? currentThread.runtimeMode;
+          const desiredInteractionMode = input.interactionMode ?? currentThread.interactionMode;
+          const desiredCheckoutMode =
+            input.checkoutMode ??
+            (currentThread.branch !== null || currentThread.worktreePath !== null
+              ? "new_worktree"
+              : "current_checkout");
+          const desiredBranch =
+            desiredCheckoutMode === "current_checkout"
+              ? null
+              : (input.branch ?? currentThread.branch ?? null);
+          const desiredWorktreePath =
+            desiredCheckoutMode === "current_checkout"
+              ? null
+              : (input.worktreePath ?? currentThread.worktreePath ?? null);
+          const title = sanitizeThreadTitle(input.title ?? input.message ?? "New thread");
+          const createdAt = yield* currentIsoTimestamp();
+          const threadId = makeThreadId();
+          const bootstrapBaseBranch = input.baseBranch;
+
+          if (!input.message) {
+            const accepted = yield* orchestrationEngine
+              .dispatch({
+                type: "thread.create",
+                commandId: makeCommandId("thread-create"),
+                threadId,
+                projectId: targetProjectId,
+                parentThreadId,
+                title,
+                modelSelection: desiredModelSelection,
+                runtimeMode: desiredRuntimeMode,
+                interactionMode: desiredInteractionMode,
+                branch: desiredBranch,
+                worktreePath: desiredWorktreePath,
+                createdAt,
+              })
+              .pipe(
+                Effect.mapError((error) =>
+                  toInternalError("Failed to dispatch orchestration command.", error),
+                ),
+              );
+            return {
+              status: "created" as const,
+              threadId,
+              sequence: accepted.sequence,
+            };
+          }
+
+          if (desiredCheckoutMode === "new_worktree" && !bootstrapBaseBranch) {
+            return yield* new McpOrchestrationError({
+              code: "missing_base_branch",
+              message: `Thread '${threadId}' requires a baseBranch when checkoutMode is 'new_worktree' and a first message is supplied.`,
+            });
+          }
+
+          const messageId = makeMessageId();
+          const accepted = yield* orchestrationEngine
+            .dispatch({
+              type: "thread.turn.start",
+              commandId: makeCommandId("thread-create-turn-start"),
+              threadId,
+              message: {
+                messageId,
+                role: "user",
+                text: input.message,
+                attachments: [],
+              },
+              modelSelection: desiredModelSelection,
+              titleSeed: title,
+              runtimeMode: desiredRuntimeMode,
+              interactionMode: desiredInteractionMode,
+              bootstrap: {
+                createThread: {
+                  projectId: targetProjectId,
+                  parentThreadId,
+                  title,
+                  modelSelection: desiredModelSelection,
+                  runtimeMode: desiredRuntimeMode,
+                  interactionMode: desiredInteractionMode,
+                  branch: desiredBranch,
+                  worktreePath: desiredWorktreePath,
+                  createdAt,
+                },
+                ...(desiredCheckoutMode === "new_worktree"
+                  ? {
+                      prepareWorktree: {
+                        projectCwd: targetProject.workspaceRoot,
+                        baseBranch: bootstrapBaseBranch!,
+                        branch: input.branch ?? buildTemporaryWorktreeBranchName(randomHex),
+                      },
+                      runSetupScript: true,
+                    }
+                  : {}),
+              },
+              createdAt,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
+
+          return {
+            status: "accepted" as const,
+            threadId,
+            messageId,
+            sequence: accepted.sequence,
+          };
+        }),
+      sendThreadMessage: (rawInput) =>
+        Effect.gen(function* () {
+          const input = rawInput as {
+            readonly threadId: ThreadId;
+            readonly message: string;
+            readonly modelSelection?: {
+              readonly instanceId: ProviderInstanceId;
+              readonly model: string;
+              readonly options?: ReadonlyArray<ProviderOptionSelection>;
+            };
+          };
+          const thread = yield* requireIdleThread(input.threadId);
+          const desiredModelSelection = input.modelSelection ?? thread.modelSelection;
+          yield* validateMcpModelSelection(desiredModelSelection);
+          yield* validateSessionCompatibility({
+            thread,
+            desiredModelSelection,
+          });
+
+          const messageId = makeMessageId();
+          const createdAt = yield* currentIsoTimestamp();
+          const accepted = yield* orchestrationEngine
+            .dispatch({
+              type: "thread.turn.start",
+              commandId: makeCommandId("thread-turn-start"),
+              threadId: input.threadId,
+              message: {
+                messageId,
+                role: "user",
+                text: input.message,
+                attachments: [],
+              },
+              modelSelection: desiredModelSelection,
+              titleSeed: thread.title,
+              runtimeMode: thread.runtimeMode,
+              interactionMode: thread.interactionMode,
+              createdAt,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
+
+          return {
+            status: "accepted" as const,
+            threadId: input.threadId,
+            messageId,
+            sequence: accepted.sequence,
+          };
+        }),
+      updateThreadSettings: (rawInput) =>
+        Effect.gen(function* () {
+          const input = rawInput as {
+            readonly threadId: ThreadId;
+            readonly modelSelection?: {
+              readonly instanceId: ProviderInstanceId;
+              readonly model: string;
+              readonly options?: ReadonlyArray<ProviderOptionSelection>;
+            };
+            readonly runtimeMode?: RuntimeMode;
+            readonly interactionMode?: "default" | "plan";
+            readonly checkoutMode?: "current_checkout" | "new_worktree";
+            readonly branch?: string | null;
+            readonly worktreePath?: string | null;
+          };
+          const thread = yield* requireIdleThread(input.threadId);
+          const desiredModelSelection = input.modelSelection ?? thread.modelSelection;
+          yield* validateMcpModelSelection(desiredModelSelection);
+          yield* validateSessionCompatibility({
+            thread,
+            desiredModelSelection,
+          });
+
+          const desiredRuntimeMode = input.runtimeMode ?? thread.runtimeMode;
+          const desiredInteractionMode = input.interactionMode ?? thread.interactionMode;
+          const desiredCheckoutMode =
+            input.checkoutMode ??
+            ((input.branch ?? undefined) !== undefined ||
+            (input.worktreePath ?? undefined) !== undefined
+              ? "new_worktree"
+              : thread.branch !== null || thread.worktreePath !== null
+                ? "new_worktree"
+                : "current_checkout");
+          const desiredBranch =
+            desiredCheckoutMode === "current_checkout"
+              ? null
+              : (input.branch ?? thread.branch ?? null);
+          const desiredWorktreePath =
+            desiredCheckoutMode === "current_checkout"
+              ? null
+              : (input.worktreePath ?? thread.worktreePath ?? null);
+
+          let lastSequence = 0;
+          if (!Equal.equals(thread.modelSelection, desiredModelSelection)) {
+            lastSequence = (yield* orchestrationEngine
+              .dispatch({
+                type: "thread.meta.update",
+                commandId: makeCommandId("thread-meta-model"),
+                threadId: input.threadId,
+                modelSelection: desiredModelSelection,
+              })
+              .pipe(
+                Effect.mapError((error) =>
+                  toInternalError("Failed to dispatch orchestration command.", error),
+                ),
+              )).sequence;
+          }
+          if (thread.runtimeMode !== desiredRuntimeMode) {
+            lastSequence = (yield* orchestrationEngine
+              .dispatch({
+                type: "thread.runtime-mode.set",
+                commandId: makeCommandId("thread-runtime-mode"),
+                threadId: input.threadId,
+                runtimeMode: desiredRuntimeMode,
+                createdAt: yield* currentIsoTimestamp(),
+              })
+              .pipe(
+                Effect.mapError((error) =>
+                  toInternalError("Failed to dispatch orchestration command.", error),
+                ),
+              )).sequence;
+          }
+          if (thread.interactionMode !== desiredInteractionMode) {
+            lastSequence = (yield* orchestrationEngine
+              .dispatch({
+                type: "thread.interaction-mode.set",
+                commandId: makeCommandId("thread-interaction-mode"),
+                threadId: input.threadId,
+                interactionMode: desiredInteractionMode,
+                createdAt: yield* currentIsoTimestamp(),
+              })
+              .pipe(
+                Effect.mapError((error) =>
+                  toInternalError("Failed to dispatch orchestration command.", error),
+                ),
+              )).sequence;
+          }
+          if (thread.branch !== desiredBranch || thread.worktreePath !== desiredWorktreePath) {
+            lastSequence = (yield* orchestrationEngine
+              .dispatch({
+                type: "thread.meta.update",
+                commandId: makeCommandId("thread-meta-workspace"),
+                threadId: input.threadId,
+                branch: desiredBranch,
+                worktreePath: desiredWorktreePath,
+              })
+              .pipe(
+                Effect.mapError((error) =>
+                  toInternalError("Failed to dispatch orchestration command.", error),
+                ),
+              )).sequence;
+          }
+
+          return {
+            status: "updated" as const,
+            threadId: input.threadId,
+            sequence: lastSequence,
+          };
+        }),
     });
   }),
 );

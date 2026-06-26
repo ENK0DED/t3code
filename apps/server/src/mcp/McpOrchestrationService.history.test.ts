@@ -20,6 +20,7 @@ import * as Cause from "effect/Cause";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts";
 import { McpOrchestrationService } from "./Services/McpOrchestrationService.ts";
+import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadMessageSearchRepository } from "../persistence/Services/ProjectionThreadMessageSearch.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
@@ -210,6 +211,16 @@ const makeHistoryHarnessLayer = (input?: {
             ],
           }),
         ]),
+      ),
+    ),
+    Layer.provideMerge(
+      Layer.succeed(
+        OrchestrationEngineService,
+        OrchestrationEngineService.of({
+          dispatch: () => Effect.die("unused"),
+          readEvents: () => Stream.empty,
+          streamDomainEvents: Stream.empty,
+        }),
       ),
     ),
     Layer.provideMerge(
