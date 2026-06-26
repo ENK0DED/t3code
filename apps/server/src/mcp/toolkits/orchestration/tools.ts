@@ -352,6 +352,7 @@ export const UpdateThreadSettingsTool = Tool.make("update_thread_settings", {
     checkoutMode: OptionalCheckoutModeInput,
     branch: OptionalBranchInput,
     worktreePath: OptionalWorktreePathInput,
+    baseBranch: OptionalBaseBranchInput,
   }),
   dependencies,
 });
