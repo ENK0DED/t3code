@@ -408,3 +408,31 @@ it.effect("complete history fails instead of truncating when over budget", () =>
     ),
   ),
 );
+
+it.effect("complete history default budget is enforced using UTF-8 bytes", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.getThreadHistory({
+        threadId: ThreadId.make("thread-large"),
+        mode: "complete",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as {
+        readonly _tag: string;
+        readonly code: string;
+      };
+      expect(error._tag).toBe("McpOrchestrationError");
+      expect(error.code).toBe("payload_too_large");
+    }
+  }).pipe(
+    Effect.provide(
+      makeHistoryHarnessLayer({
+        largeMessageText: "é".repeat(600_000),
+      }),
+    ),
+  ),
+);

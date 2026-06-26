@@ -416,7 +416,11 @@ export const McpOrchestrationServiceLive = Layer.effect(
                         ),
                       );
                       const budget = input.maxCharacters ?? MCP_STRUCTURED_RESPONSE_MAX_BYTES;
-                      if (encoded.length > budget) {
+                      const encodedSize =
+                        input.maxCharacters === undefined
+                          ? Buffer.byteLength(encoded, "utf8")
+                          : encoded.length;
+                      if (encodedSize > budget) {
                         return yield* new McpOrchestrationError({
                           code: "payload_too_large",
                           message: `Thread '${input.threadId}' history is too large for one MCP response.`,
