@@ -27,7 +27,13 @@ import {
   createModelSelection,
   resolvePromptInjectedEffort,
 } from "@t3tools/shared/model";
-import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
+import {
+  createProjectScript,
+  projectScriptCwd,
+  projectScriptRuntimeEnv,
+  removeProjectScript,
+  upsertProjectScript,
+} from "@t3tools/shared/projectScripts";
 import { truncate } from "@t3tools/shared/String";
 import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
 import { Debouncer } from "@tanstack/react-pacer";
@@ -124,11 +130,7 @@ import { cn, randomHex } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
-import {
-  commandForProjectScript,
-  nextProjectScriptId,
-  projectScriptIdFromCommand,
-} from "~/projectScripts";
+import { commandForProjectScript, projectScriptIdFromCommand } from "~/projectScripts";
 import { newCommandId, newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { useSettings } from "../hooks/useSettings";
@@ -2893,27 +2895,16 @@ function ChatViewContent(props: ChatViewProps) {
   const saveProjectScript = useCallback(
     async (input: NewProjectScriptInput) => {
       if (!activeProject) return;
-      const nextId = nextProjectScriptId(
-        input.name,
-        activeProject.scripts.map((script) => script.id),
-      );
-      const nextScript: ProjectScript = {
-        id: nextId,
+      const nextScript = createProjectScript({
         name: input.name,
         command: input.command,
+        existingIds: activeProject.scripts.map((script) => script.id),
         icon: input.icon,
         runOnWorktreeCreate: input.runOnWorktreeCreate,
-        ...(input.previewUrl ? { previewUrl: input.previewUrl } : {}),
-        ...(input.autoOpenPreview ? { autoOpenPreview: input.autoOpenPreview } : {}),
-      };
-      const nextScripts = input.runOnWorktreeCreate
-        ? [
-            ...activeProject.scripts.map((script) =>
-              script.runOnWorktreeCreate ? { ...script, runOnWorktreeCreate: false } : script,
-            ),
-            nextScript,
-          ]
-        : [...activeProject.scripts, nextScript];
+        previewUrl: input.previewUrl,
+        autoOpenPreview: input.autoOpenPreview,
+      });
+      const nextScripts = [...upsertProjectScript(activeProject.scripts, nextScript).scripts];
 
       await persistProjectScripts({
         projectId: activeProject.id,
@@ -2921,7 +2912,7 @@ function ChatViewContent(props: ChatViewProps) {
         previousScripts: activeProject.scripts,
         nextScripts,
         keybinding: input.keybinding,
-        keybindingCommand: commandForProjectScript(nextId),
+        keybindingCommand: commandForProjectScript(nextScript.id),
       });
     },
     [activeProject, persistProjectScripts],
@@ -2945,13 +2936,7 @@ function ChatViewContent(props: ChatViewProps) {
           ? { autoOpenPreview: input.autoOpenPreview }
           : { autoOpenPreview: undefined }),
       };
-      const nextScripts = activeProject.scripts.map((script) =>
-        script.id === scriptId
-          ? updatedScript
-          : input.runOnWorktreeCreate
-            ? { ...script, runOnWorktreeCreate: false }
-            : script,
-      );
+      const nextScripts = [...upsertProjectScript(activeProject.scripts, updatedScript).scripts];
 
       await persistProjectScripts({
         projectId: activeProject.id,
@@ -2967,9 +2952,9 @@ function ChatViewContent(props: ChatViewProps) {
   const deleteProjectScript = useCallback(
     async (scriptId: string) => {
       if (!activeProject) return;
-      const nextScripts = activeProject.scripts.filter((script) => script.id !== scriptId);
-
-      const deletedName = activeProject.scripts.find((s) => s.id === scriptId)?.name;
+      const removed = removeProjectScript(activeProject.scripts, scriptId);
+      const nextScripts = [...removed.scripts];
+      const deletedName = removed.removed ? removed.script.name : undefined;
 
       try {
         await persistProjectScripts({
