@@ -1046,6 +1046,26 @@ export const McpOrchestrationServiceLive = Layer.effect(
           const createdAt = yield* currentIsoTimestamp();
           const threadId = makeThreadId();
           const bootstrapBaseBranch = input.baseBranch;
+          const createdThread = {
+            id: threadId,
+            projectId: targetProjectId,
+            parentThreadId,
+            title,
+            modelSelection: desiredModelSelection,
+            runtimeMode: desiredRuntimeMode,
+            interactionMode: desiredInteractionMode,
+            branch: desiredBranch,
+            worktreePath: desiredWorktreePath,
+            createdAt,
+            updatedAt: createdAt,
+            archivedAt: null,
+            latestTurn: null,
+            session: null,
+            latestUserMessageAt: null,
+            hasPendingApprovals: false,
+            hasPendingUserInput: false,
+            hasActionableProposedPlan: false,
+          };
 
           if (!input.message) {
             const accepted = yield* orchestrationEngine
@@ -1071,6 +1091,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
             return {
               status: "created" as const,
               threadId,
+              thread: createdThread,
               sequence: accepted.sequence,
             };
           }
@@ -1132,6 +1153,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           return {
             status: "accepted" as const,
             threadId,
+            thread: createdThread,
             messageId,
             sequence: accepted.sequence,
           };
