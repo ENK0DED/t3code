@@ -24,6 +24,7 @@ import {
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
 } from "./orchestration.ts";
+import { ProjectId, ThreadId } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
@@ -326,6 +327,59 @@ it.effect("decodes bootstrap createThread parent relationships in thread.turn.st
   }),
 );
 
+it.effect("decodes thread parent relationships on thread.create", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.create",
+      commandId: "cmd-parent-thread",
+      threadId: "thread-child",
+      projectId: "project-1",
+      parentThreadId: "thread-parent",
+      title: "Child",
+      modelSelection: {
+        instanceId: "codex",
+        model: "gpt-5.5",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.type, "thread.create");
+    if (parsed.type === "thread.create") {
+      assert.strictEqual(parsed.parentThreadId, "thread-parent");
+    }
+  }),
+);
+
+it.effect("defaults omitted thread parent relationships to null on thread.create", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.create",
+      commandId: "cmd-top-level-thread",
+      threadId: "thread-top",
+      projectId: "project-1",
+      title: "Top",
+      modelSelection: {
+        instanceId: "codex",
+        model: "gpt-5.5",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.type, "thread.create");
+    if (parsed.type === "thread.create") {
+      assert.strictEqual(parsed.parentThreadId, null);
+    }
+  }),
+);
+
 it.effect("decodes thread.created runtime mode for historical events", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadCreatedPayload({
@@ -388,6 +442,30 @@ it.effect("defaults omitted thread.created parent relationships to null", () =>
     });
 
     assert.strictEqual(parsed.parentThreadId, null);
+  }),
+);
+
+it.effect("encodes thread.created with an explicit null parentThreadId", () =>
+  Effect.gen(function* () {
+    const encoded = yield* encodeThreadCreatedPayload({
+      threadId: ThreadId.make("thread-1"),
+      projectId: ProjectId.make("project-1"),
+      parentThreadId: null,
+      title: "Thread title",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.ok(Object.hasOwn(encoded, "parentThreadId"));
+    assert.strictEqual(encoded.parentThreadId, null);
   }),
 );
 
