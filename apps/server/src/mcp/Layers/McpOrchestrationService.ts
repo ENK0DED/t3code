@@ -36,6 +36,7 @@ import {
 } from "@t3tools/shared/projectScripts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import {
   insertRankedSearchResult,
   normalizeSearchQuery,
@@ -45,10 +46,13 @@ import {
 import { normalizeProjectPathForComparison } from "@t3tools/shared/projectPaths";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import { randomUUID } from "node:crypto";
 
 import * as McpInvocationContext from "../McpInvocationContext.ts";
@@ -87,6 +91,13 @@ const MCP_THREAD_SUMMARY_OMITTED_MARKER = "[earlier messages omitted]";
 // data (a creator always predates its creation) and the visited set already guarantees
 // termination; this cap additionally bounds the work and denies pathologically deep chains.
 const MAX_MCP_CREATOR_CHAIN_DEPTH = 64;
+// Lower bound on a per-turn timeout. Below this, a watcher would race the turn's own
+// dispatch latency and risk cancelling work that never had a chance to start. Callers
+// pass milliseconds; values at/below zero disable the knob (treated as omitted).
+const MIN_PER_TURN_TIMEOUT_MS = 1;
+// Fallback wait ceiling for wait_for_response when neither timeout_ms nor turn_timeout_ms
+// is supplied — wait must always be bounded so the MCP call cannot hang indefinitely.
+const DEFAULT_WAIT_FOR_RESPONSE_TIMEOUT_MS = 120_000;
 const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
 
 const requireRead = Effect.fn("McpOrchestrationService.requireRead")(function* () {
@@ -357,6 +368,94 @@ function serializeMessage(message: OrchestrationMessage) {
     turnId: message.turnId,
     createdAt: message.createdAt,
     updatedAt: message.updatedAt,
+  };
+}
+
+type LatestResponseExtraction = {
+  readonly inProgress: boolean;
+  readonly turnId: string | null;
+  readonly turnState: "completed" | null;
+  readonly completedAt: string | null;
+  readonly answer: ReturnType<typeof serializeMessage> | null;
+};
+
+// A newly-dispatched turn that has reached a terminal state: the ACTUAL terminal state
+// plus the final-answer extraction (which only resolves text for completed turns).
+type TurnTerminalObservation = {
+  readonly state: "completed" | "interrupted" | "error";
+  readonly extraction: LatestResponseExtraction;
+};
+
+// Inline `wait` fragment returned on send_thread_message / create_thread when
+// wait_for_response is set. `state` is the terminal turn state (or "running" on wait
+// timeout); `answer` is the verbatim final assistant message (maxCharacters-bounded) or
+// null for error/interrupted/edits-only/timed-out turns.
+type WaitResult = {
+  readonly threadId: ThreadId;
+  readonly state: string;
+  readonly turnId: string | null;
+  readonly answer: ReturnType<typeof serializeMessage> | null;
+  readonly truncated?: true;
+  readonly truncatedNote?: string;
+  readonly timedOut?: true;
+};
+
+// Shared extraction of a thread's latest completed-turn final answer, used by both
+// `get_thread_messages` mode=latest_response and the `wait_for_response` send paths
+// (Decision 9/10, DRY per AGENTS.md). The text is already the clean answer: only
+// `assistant_text` deltas become message text, so reasoning/tool calls are excluded by
+// construction at ingestion. A turn that is currently running surfaces the *previous*
+// completed answer with `inProgress: true`.
+function extractLatestResponse(thread: OrchestrationThread): LatestResponseExtraction {
+  const inProgress = thread.latestTurn?.state === "running";
+  // The latest completed turn: prefer latestTurn when it has settled as completed, else
+  // the last checkpoint (checkpoints exist only for completed turns). This also covers
+  // the in-progress case, where latestTurn is the running turn and the checkpoint is the
+  // prior completed one.
+  const completedTurn =
+    thread.latestTurn !== null && thread.latestTurn.state === "completed"
+      ? {
+          turnId: thread.latestTurn.turnId,
+          completedAt: thread.latestTurn.completedAt,
+          assistantMessageId: thread.latestTurn.assistantMessageId,
+        }
+      : (() => {
+          const checkpoint = latestCompletedCheckpoint(thread);
+          return checkpoint === null
+            ? null
+            : {
+                turnId: checkpoint.turnId,
+                completedAt: checkpoint.completedAt,
+                assistantMessageId: checkpoint.assistantMessageId,
+              };
+        })();
+
+  if (completedTurn === null) {
+    return {
+      inProgress,
+      turnId: null,
+      turnState: null,
+      completedAt: null,
+      answer: null,
+    };
+  }
+
+  // Resolve the turn's final assistant message: the last assistant message tagged with
+  // the turn id, falling back to the turn's recorded assistantMessageId when
+  // message<->turn tags are absent.
+  const assistantMessage =
+    lastMessageOfTurn(thread, completedTurn.turnId, "assistant") ??
+    (completedTurn.assistantMessageId === null
+      ? null
+      : (thread.messages.find((message) => message.id === completedTurn.assistantMessageId) ??
+        null));
+
+  return {
+    inProgress,
+    turnId: completedTurn.turnId,
+    turnState: "completed",
+    completedAt: completedTurn.completedAt,
+    answer: assistantMessage === null ? null : serializeMessage(assistantMessage),
   };
 }
 
@@ -717,6 +816,286 @@ export const McpOrchestrationServiceLive = Layer.effect(
       Clock.currentTimeMillis.pipe(
         Effect.map((now) => DateTime.formatIso(DateTime.makeUnsafe(now))),
       );
+
+    // Service-lifetime scope for forked per-turn timeout watchers (Decision 3/8). A
+    // watcher must outlive the MCP request that armed it (the request returns immediately
+    // after dispatching the turn) yet must not leak: each watcher is self-limiting — it
+    // sleeps its timeout, re-checks the condition against current projection state ONCE,
+    // conditionally dispatches an interrupt, then exits. Tying it to this scope (closed
+    // when the MCP service layer is torn down on shutdown) bounds its lifetime without
+    // requiring turn-completion bookkeeping to interrupt it. Mirrors the watcher-scope
+    // pattern in serverSettings.ts / keybindings.ts.
+    const turnTimeoutWatcherScope = yield* Scope.make("sequential");
+    yield* Effect.addFinalizer(() => Scope.close(turnTimeoutWatcherScope, Exit.void));
+
+    // Non-failing snapshot read used by wait/watcher loops: a transient projection read
+    // error must not crash a watcher (which would then never dispatch) nor the wait loop.
+    // Treats read failure and a missing thread identically as "no detail available".
+    const readThreadDetailOption = (
+      threadId: ThreadId,
+    ): Effect.Effect<Option.Option<OrchestrationThread>, never> =>
+      projectionSnapshotQuery
+        .getThreadDetailById(threadId)
+        .pipe(Effect.catch(() => Effect.succeed(Option.none<OrchestrationThread>())));
+
+    // True while the thread's latest turn is the *new* turn and still running. Used by the
+    // turn_timeout watcher to confirm there is still live work to cancel.
+    const isNewTurnRunning = (thread: OrchestrationThread, priorTurnId: string | null): boolean => {
+      const turn = thread.latestTurn;
+      return turn !== null && turn.state === "running" && turn.turnId !== priorTurnId;
+    };
+
+    const dispatchTurnInterrupt = (threadId: ThreadId, tag: string) =>
+      Effect.gen(function* () {
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.turn.interrupt",
+            commandId: makeCommandId(tag),
+            threadId,
+            createdAt: yield* currentIsoTimestamp(),
+          })
+          .pipe(Effect.ignoreCause({ log: true }));
+      });
+
+    // Block until the thread's newly-dispatched turn reaches a terminal state, or until
+    // `timeoutMs` elapses (Decision 10). Returns the terminal answer extraction, or null on
+    // timeout (caller reports state: "running", answer: null and does NOT cancel the turn).
+    // Mechanism: subscribe to the engine's hot domain-event stream FIRST, then probe the
+    // current snapshot (covers a turn that already settled), then fold over events for this
+    // thread re-reading the snapshot each time. The projection is committed before an event
+    // is published, so a snapshot read on any event for the thread reflects that event.
+    const waitForTurnTerminal = (input: {
+      readonly threadId: ThreadId;
+      readonly priorTurnId: string | null;
+      readonly timeoutMs: number;
+    }): Effect.Effect<TurnTerminalObservation | null, never> => {
+      // The new turn's terminal observation, carrying the ACTUAL terminal state
+      // (completed/interrupted/error) plus the answer extraction, or null if not yet
+      // terminal. The actual state matters: error/interrupted turns must report their real
+      // state, not the "completed" the answer-extraction would default to.
+      const observeTerminal = (thread: OrchestrationThread): TurnTerminalObservation | null => {
+        const turn = thread.latestTurn;
+        if (turn === null || turn.turnId === input.priorTurnId) {
+          return null;
+        }
+        if (turn.state !== "completed" && turn.state !== "interrupted" && turn.state !== "error") {
+          return null;
+        }
+        return { state: turn.state, extraction: extractLatestResponse(thread) };
+      };
+
+      // Probe the current snapshot for a terminal observation of the new turn, or null.
+      const probe: Effect.Effect<TurnTerminalObservation | null, never> = readThreadDetailOption(
+        input.threadId,
+      ).pipe(
+        Effect.map((option): TurnTerminalObservation | null =>
+          Option.match(option, { onNone: () => null, onSome: observeTerminal }),
+        ),
+      );
+
+      return Effect.gen(function* () {
+        const settle: Effect.Effect<TurnTerminalObservation | null, never, never> =
+          orchestrationEngine.streamDomainEvents.pipe(
+            // Re-read on EVERY event for this thread (aggregateId carries the ThreadId for
+            // thread events); the terminal turn state is derived in the projection from
+            // session-set events, so we check derived state rather than guess the event type.
+            Stream.filter((event) => event.aggregateId === input.threadId),
+            Stream.mapEffect(() => probe),
+            // Keep the first event whose snapshot shows the new turn terminal.
+            Stream.filter(
+              (observation): observation is TurnTerminalObservation => observation !== null,
+            ),
+            Stream.runHead,
+            Effect.map((head): TurnTerminalObservation | null => Option.getOrNull(head)),
+            // streamDomainEvents has no failure channel in practice; defend the loop anyway.
+            Effect.catch(() => Effect.succeed<TurnTerminalObservation | null>(null)),
+          );
+
+        const initial = yield* probe;
+        if (initial !== null) {
+          return initial;
+        }
+
+        // Race the settle stream against the wait timeout. On timeout the stream fiber is
+        // interrupted (it only holds a PubSub subscription) and we return null. We do NOT
+        // cancel the turn here — that is the distinct turn_timeout_ms/response_timeout_ms
+        // behavior. A second probe right before giving up closes the gap where the turn
+        // settled between the initial probe and the timeout firing.
+        const raced = yield* Effect.race(
+          settle,
+          Effect.sleep(Duration.millis(input.timeoutMs)).pipe(
+            Effect.as<TurnTerminalObservation | null>(null),
+          ),
+        );
+        if (raced !== null) {
+          return raced;
+        }
+        return yield* probe;
+      });
+    };
+
+    // Arm a self-limiting watcher that cancels the turn if it is still running after
+    // `turnTimeoutMs` (Decision 8). Forked into the service-lifetime scope so it survives
+    // the MCP request return; it sleeps once, re-checks, conditionally interrupts, exits.
+    const armTurnTimeoutWatcher = (input: {
+      readonly threadId: ThreadId;
+      readonly priorTurnId: string | null;
+      readonly turnTimeoutMs: number;
+    }) =>
+      Effect.gen(function* () {
+        yield* Effect.sleep(Duration.millis(input.turnTimeoutMs));
+        const option = yield* readThreadDetailOption(input.threadId);
+        if (Option.isNone(option)) {
+          return;
+        }
+        // Only cancel if the *new* turn is still running; if it already completed (or a
+        // newer turn replaced it), do nothing — never cancel unrelated work.
+        if (isNewTurnRunning(option.value, input.priorTurnId)) {
+          yield* dispatchTurnInterrupt(input.threadId, "thread-turn-timeout-interrupt");
+        }
+      }).pipe(
+        Effect.ignoreCause({ log: true }),
+        Effect.forkIn(turnTimeoutWatcherScope),
+        Effect.asVoid,
+      );
+
+    // Arm a self-limiting watcher that cancels the turn if it is STILL blocked on the same
+    // pending request after `responseTimeoutMs` (Decision 3). It cancels — never approves.
+    // "Blocked on a pending request" is derived from the thread's activities exactly as
+    // get_thread_settings derives pendingRequests. Forked into the service-lifetime scope.
+    const armResponseTimeoutWatcher = (input: {
+      readonly threadId: ThreadId;
+      readonly priorTurnId: string | null;
+      readonly responseTimeoutMs: number;
+    }) =>
+      Effect.gen(function* () {
+        yield* Effect.sleep(Duration.millis(input.responseTimeoutMs));
+        const option = yield* readThreadDetailOption(input.threadId);
+        if (Option.isNone(option)) {
+          return;
+        }
+        const thread = option.value;
+        // Cancel only when the new turn is still running AND still has an open request.
+        // If the request was answered (or the turn finished) within the window, do nothing.
+        const stillRunning = isNewTurnRunning(thread, input.priorTurnId);
+        const stillBlocked = derivePendingRequestsFromActivities(thread.activities).length > 0;
+        if (stillRunning && stillBlocked) {
+          yield* dispatchTurnInterrupt(input.threadId, "thread-response-timeout-interrupt");
+        }
+      }).pipe(
+        Effect.ignoreCause({ log: true }),
+        Effect.forkIn(turnTimeoutWatcherScope),
+        Effect.asVoid,
+      );
+
+    // Normalize a caller-supplied timeout: undefined/<=0 means the knob is OFF.
+    const normalizeTimeoutMs = (value: number | undefined): number | null =>
+      value !== undefined && value >= MIN_PER_TURN_TIMEOUT_MS ? value : null;
+
+    // Build the inline `wait` result fragment from a terminal observation, applying the
+    // `maxCharacters` answer-text bound (mirrors get_thread_messages truncation semantics).
+    // `error`/`interrupted`/edits-only turns carry their real state and a null answer.
+    const buildWaitResult = (input: {
+      readonly threadId: ThreadId;
+      readonly observation: TurnTerminalObservation;
+      readonly maxCharacters: number | undefined;
+    }): WaitResult => {
+      const answer = input.observation.extraction.answer;
+      const text = answer?.text ?? null;
+      const maxChars = input.maxCharacters;
+      const truncated =
+        text !== null && maxChars !== undefined && maxChars >= 0 && text.length > maxChars;
+      const boundedAnswer =
+        answer === null
+          ? null
+          : {
+              ...answer,
+              ...(truncated ? { text: text!.slice(0, maxChars) } : {}),
+            };
+      return {
+        threadId: input.threadId,
+        // The ACTUAL terminal turn state — "completed" only for completed turns; an
+        // error/interrupted turn reports "error"/"interrupted" with a null answer.
+        state: input.observation.state,
+        turnId: input.observation.extraction.turnId,
+        answer: boundedAnswer,
+        ...(truncated
+          ? {
+              truncated: true as const,
+              truncatedNote:
+                "Answer text was truncated to maxCharacters. Use get_thread_messages mode=latest_response (or mode=message) for the full text.",
+            }
+          : {}),
+      };
+    };
+
+    // Shared post-dispatch control loop for the per-turn options on send_thread_message and
+    // create_thread (Decisions 3, 8, 10). It (1) arms the auto-cancel watchers when
+    // turn_timeout_ms / response_timeout_ms are set, then (2) optionally blocks for
+    // wait_for_response. The three compose: watchers can cancel the turn while the wait
+    // blocks; whichever terminal/timeout condition fires first wins. Returns the `wait`
+    // fragment (or undefined when wait_for_response is off) to merge into the tool response.
+    const applyTurnControlOptions = (input: {
+      readonly threadId: ThreadId;
+      readonly priorTurnId: string | null;
+      readonly options: {
+        readonly turnTimeoutMs?: number | undefined;
+        readonly responseTimeoutMs?: number | undefined;
+        readonly waitForResponse?: boolean | undefined;
+        readonly waitTimeoutMs?: number | undefined;
+        readonly maxCharacters?: number | undefined;
+      };
+    }): Effect.Effect<WaitResult | undefined, never> =>
+      Effect.gen(function* () {
+        const turnTimeoutMs = normalizeTimeoutMs(input.options.turnTimeoutMs);
+        const responseTimeoutMs = normalizeTimeoutMs(input.options.responseTimeoutMs);
+        if (turnTimeoutMs !== null) {
+          yield* armTurnTimeoutWatcher({
+            threadId: input.threadId,
+            priorTurnId: input.priorTurnId,
+            turnTimeoutMs,
+          });
+        }
+        if (responseTimeoutMs !== null) {
+          yield* armResponseTimeoutWatcher({
+            threadId: input.threadId,
+            priorTurnId: input.priorTurnId,
+            responseTimeoutMs,
+          });
+        }
+
+        if (input.options.waitForResponse !== true) {
+          return undefined;
+        }
+
+        const waitTimeoutMs = normalizeTimeoutMs(input.options.waitTimeoutMs);
+        // wait_for_response requires a bound so the MCP call cannot hang indefinitely. When
+        // timeout_ms is omitted, fall back to turn_timeout_ms if set, else a conservative
+        // default ceiling, so the call always returns.
+        const effectiveWaitMs =
+          waitTimeoutMs ?? turnTimeoutMs ?? DEFAULT_WAIT_FOR_RESPONSE_TIMEOUT_MS;
+        const terminal = yield* waitForTurnTerminal({
+          threadId: input.threadId,
+          priorTurnId: input.priorTurnId,
+          timeoutMs: effectiveWaitMs,
+        });
+        if (terminal === null) {
+          // Wait timed out: stop waiting, leave the turn running, return null answer. This
+          // is distinct from turn_timeout_ms/response_timeout_ms, which CANCEL the turn.
+          return {
+            threadId: input.threadId,
+            state: "running",
+            turnId: null,
+            answer: null,
+            timedOut: true as const,
+          };
+        }
+        return buildWaitResult({
+          threadId: input.threadId,
+          observation: terminal,
+          maxCharacters: input.options.maxCharacters,
+        });
+      });
 
     const requireWrite = () =>
       McpInvocationContext.requireMcpOrchestrationWrite().pipe(
@@ -1780,65 +2159,15 @@ export const McpOrchestrationServiceLive = Layer.effect(
                     }
 
                     if (input.mode === "latest_response") {
-                      // A turn is in progress when the most recent turn is still running;
-                      // in that case we report the *previous* completed answer (if any).
-                      const inProgress = thread.latestTurn?.state === "running";
-                      // The latest completed turn: prefer latestTurn when it has settled
-                      // as completed, else the last checkpoint (checkpoints exist only for
-                      // completed turns). This also covers the in-progress case, where
-                      // latestTurn is the running turn and the checkpoint is the prior one.
-                      const completedTurn =
-                        thread.latestTurn !== null && thread.latestTurn.state === "completed"
-                          ? {
-                              turnId: thread.latestTurn.turnId,
-                              state: thread.latestTurn.state,
-                              completedAt: thread.latestTurn.completedAt,
-                              assistantMessageId: thread.latestTurn.assistantMessageId,
-                            }
-                          : (() => {
-                              const checkpoint = latestCompletedCheckpoint(thread);
-                              return checkpoint === null
-                                ? null
-                                : {
-                                    turnId: checkpoint.turnId,
-                                    state: "completed" as const,
-                                    completedAt: checkpoint.completedAt,
-                                    assistantMessageId: checkpoint.assistantMessageId,
-                                  };
-                            })();
-
-                      if (completedTurn === null) {
-                        return yield* guardPayloadSize({
-                          mode: "latest_response" as const,
-                          threadId: thread.id,
-                          inProgress,
-                          turnId: null,
-                          turnState: null,
-                          completedAt: null,
-                          answer: null,
-                        });
-                      }
-
-                      // Resolve the turn's final assistant message: the last assistant
-                      // message tagged with the turn id, falling back to the turn's
-                      // recorded assistantMessageId when message<->turn tags are absent.
-                      const assistantMessage =
-                        lastMessageOfTurn(thread, completedTurn.turnId, "assistant") ??
-                        (completedTurn.assistantMessageId === null
-                          ? null
-                          : (thread.messages.find(
-                              (message) => message.id === completedTurn.assistantMessageId,
-                            ) ?? null));
-
+                      const extracted = extractLatestResponse(thread);
                       return yield* guardPayloadSize({
                         mode: "latest_response" as const,
                         threadId: thread.id,
-                        inProgress,
-                        turnId: completedTurn.turnId,
-                        turnState: completedTurn.state,
-                        completedAt: completedTurn.completedAt,
-                        answer:
-                          assistantMessage === null ? null : serializeMessage(assistantMessage),
+                        inProgress: extracted.inProgress,
+                        turnId: extracted.turnId,
+                        turnState: extracted.turnState,
+                        completedAt: extracted.completedAt,
+                        answer: extracted.answer,
                       });
                     }
 
@@ -2186,6 +2515,11 @@ export const McpOrchestrationServiceLive = Layer.effect(
             readonly branch?: string | null;
             readonly worktreePath?: string | null;
             readonly baseBranch?: string;
+            readonly responseTimeoutMs?: number;
+            readonly turnTimeoutMs?: number;
+            readonly waitForResponse?: boolean;
+            readonly timeoutMs?: number;
+            readonly maxCharacters?: number;
           };
           const invocation = yield* McpInvocationContext.McpInvocationContext;
           const currentThread = yield* requireThreadDetail(invocation.threadId);
@@ -2383,12 +2717,28 @@ export const McpOrchestrationServiceLive = Layer.effect(
               ),
             );
 
+          // Per-turn control options (Decisions 3, 8, 10) on the first turn of the new
+          // thread. priorTurnId is null — the thread was just created, so any terminal
+          // latest turn is the turn this call started. All knobs default OFF.
+          const wait = yield* applyTurnControlOptions({
+            threadId,
+            priorTurnId: null,
+            options: {
+              responseTimeoutMs: input.responseTimeoutMs,
+              turnTimeoutMs: input.turnTimeoutMs,
+              waitForResponse: input.waitForResponse,
+              waitTimeoutMs: input.timeoutMs,
+              maxCharacters: input.maxCharacters,
+            },
+          });
+
           return {
             status: "accepted" as const,
             threadId,
             thread: accepted.createdThread ?? createdThread,
             messageId,
             sequence: accepted.sequence,
+            ...(wait !== undefined ? { wait } : {}),
           };
         }),
       sendThreadMessage: (rawInput) =>
@@ -2401,9 +2751,18 @@ export const McpOrchestrationServiceLive = Layer.effect(
             readonly branch?: string | null;
             readonly worktreePath?: string | null;
             readonly baseBranch?: string;
+            readonly responseTimeoutMs?: number;
+            readonly turnTimeoutMs?: number;
+            readonly waitForResponse?: boolean;
+            readonly timeoutMs?: number;
+            readonly maxCharacters?: number;
           };
           const thread = yield* requireWritableThread(input.threadId);
           yield* requireThreadManageableByMcp(thread);
+          // Capture the turn observed before dispatch so the wait/watchers act only on the
+          // *new* turn this call starts. requireWritableThread already enforced idle, so
+          // latestTurn is null or a prior terminal turn here.
+          const priorTurnId = thread.latestTurn?.turnId ?? null;
           const desiredModelSelection = input.modelSelection ?? thread.modelSelection;
           yield* validateMcpModelSelection(desiredModelSelection);
           yield* validateSessionCompatibility({
@@ -2495,11 +2854,27 @@ export const McpOrchestrationServiceLive = Layer.effect(
                     ),
                   );
 
+          // Per-turn control options (Decisions 3, 8, 10): arm auto-cancel watchers and/or
+          // block for the answer. All default OFF, so an omitting caller gets the exact
+          // prior fire-and-forget behavior (no `wait` field).
+          const wait = yield* applyTurnControlOptions({
+            threadId: input.threadId,
+            priorTurnId,
+            options: {
+              responseTimeoutMs: input.responseTimeoutMs,
+              turnTimeoutMs: input.turnTimeoutMs,
+              waitForResponse: input.waitForResponse,
+              waitTimeoutMs: input.timeoutMs,
+              maxCharacters: input.maxCharacters,
+            },
+          });
+
           return {
             status: "accepted" as const,
             threadId: input.threadId,
             messageId,
             sequence: accepted.sequence,
+            ...(wait !== undefined ? { wait } : {}),
           };
         }),
       updateThreadSettings: (rawInput) =>

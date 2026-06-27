@@ -174,6 +174,48 @@ const OptionalBaseBranchInput = Schema.optional(
   description: "Base git branch used when preparing a new worktree during a first turn.",
 });
 
+// --- Per-turn control options (default OFF; omitted = fire-and-forget) ---
+// These three knobs are independent and COMPOSE; whichever condition fires first wins.
+// CRITICAL distinction the agent must not confuse:
+//   - wait_for_response timeout (timeout_ms) => STOP WAITING and return; the turn KEEPS RUNNING.
+//   - turn_timeout_ms / response_timeout_ms  => CANCEL (interrupt) the turn on breach.
+const WAIT_FOR_RESPONSE_DESCRIPTION =
+  'When true, block after dispatching the turn until it reaches a terminal state (completed/interrupted/error) or timeout_ms elapses, then return a `wait` object containing the terminal `state` and the verbatim final assistant answer inline (reasoning/tool calls excluded; maxCharacters-bounded with a `truncated` flag). On the timeout_ms deadline this STOPS WAITING and returns (state: "running", answer: null, timedOut: true) WITHOUT cancelling — the turn keeps running (use interrupt_thread_turn or turn_timeout_ms to cancel). error/interrupted/edits-only turns return their state with a null answer (use get_thread_diff for code changes). Default OFF (fire-and-forget; no `wait` object).';
+
+const OptionalWaitForResponseInput = Schema.optional(
+  Schema.Boolean.annotate({ description: WAIT_FOR_RESPONSE_DESCRIPTION }),
+).annotate({ description: WAIT_FOR_RESPONSE_DESCRIPTION });
+
+const WAIT_TIMEOUT_MS_DESCRIPTION =
+  'Milliseconds to wait when wait_for_response is true before giving up. On expiry the call STOPS WAITING and returns (state: "running", answer: null, timedOut: true); the turn is NOT cancelled (distinct from turn_timeout_ms). Ignored unless wait_for_response is true. If omitted while waiting, falls back to turn_timeout_ms, then to a default ceiling so the call always returns.';
+
+const OptionalWaitTimeoutMsInput = Schema.optional(
+  NonNegativeInt.annotate({ description: WAIT_TIMEOUT_MS_DESCRIPTION }),
+).annotate({ description: WAIT_TIMEOUT_MS_DESCRIPTION });
+
+const TURN_TIMEOUT_MS_DESCRIPTION =
+  "Total wall-clock budget (milliseconds) for the dispatched turn. On breach the turn is CANCELLED (interrupt dispatched) — never auto-approved — leaving a timed-out activity. Bounds total work; composes with response_timeout_ms (whichever fires first cancels). This CANCELS, unlike a wait_for_response timeout which only stops waiting. Default OFF.";
+
+const OptionalTurnTimeoutMsInput = Schema.optional(
+  NonNegativeInt.annotate({ description: TURN_TIMEOUT_MS_DESCRIPTION }),
+).annotate({ description: TURN_TIMEOUT_MS_DESCRIPTION });
+
+const RESPONSE_TIMEOUT_MS_DESCRIPTION =
+  "Maximum time (milliseconds) the turn may sit blocked on a pending approval/user-input request. On breach the turn is CANCELLED (interrupt dispatched) — NEVER auto-approved. Bounds an abandoned/blocked gate; composes with turn_timeout_ms (whichever fires first cancels). This CANCELS, unlike a wait_for_response timeout which only stops waiting. Default OFF.";
+
+const OptionalResponseTimeoutMsInput = Schema.optional(
+  NonNegativeInt.annotate({ description: RESPONSE_TIMEOUT_MS_DESCRIPTION }),
+).annotate({ description: RESPONSE_TIMEOUT_MS_DESCRIPTION });
+
+const WAIT_MAX_CHARACTERS_DESCRIPTION =
+  "When wait_for_response is true, the maximum number of characters of the inline answer text returned in the `wait` object; longer answers are truncated with truncated: true (fetch the full text via get_thread_messages). Ignored unless wait_for_response is true.";
+
+const OptionalWaitMaxCharactersInput = Schema.optional(
+  Schema.Int.check(Schema.isGreaterThan(0)).annotate({
+    description: WAIT_MAX_CHARACTERS_DESCRIPTION,
+  }),
+).annotate({ description: WAIT_MAX_CHARACTERS_DESCRIPTION });
+
 export const ListMcpModelsTool = Tool.make("list_mcp_models", {
   description: "Return provider instances and MCP-enabled models available to MCP tools.",
   success: Schema.Unknown,
@@ -488,7 +530,7 @@ export const ThreadPlacement = Schema.Literals(["top_level", "child_of_thread"])
 
 export const CreateThreadTool = Tool.make("create_thread", {
   description:
-    "Create a T3Code thread, optionally as a child thread and optionally with a first message.",
+    "Create a T3Code thread, optionally as a child thread and optionally with a first message. When a first message is provided you may also pass the per-turn control options (wait_for_response, turn_timeout_ms, response_timeout_ms) that send_thread_message accepts; they default OFF and apply to that first turn.",
   success: Schema.Unknown,
   failure: McpOrchestrationError,
   parameters: Schema.Struct({
@@ -527,12 +569,18 @@ export const CreateThreadTool = Tool.make("create_thread", {
     checkoutMode: CreateThreadCheckoutModeInput,
     branch: OptionalBootstrapBranchInput,
     baseBranch: OptionalBaseBranchInput,
+    waitForResponse: OptionalWaitForResponseInput,
+    timeoutMs: OptionalWaitTimeoutMsInput,
+    turnTimeoutMs: OptionalTurnTimeoutMsInput,
+    responseTimeoutMs: OptionalResponseTimeoutMsInput,
+    maxCharacters: OptionalWaitMaxCharactersInput,
   }),
   dependencies,
 });
 
 export const SendThreadMessageTool = Tool.make("send_thread_message", {
-  description: "Send a user message to an existing idle thread and return after turn acceptance.",
+  description:
+    "Send a user message to an existing idle thread, starting a turn. By default returns immediately after the turn is accepted (fire-and-forget). Optionally set wait_for_response to block for the turn's final answer, and/or turn_timeout_ms / response_timeout_ms to auto-CANCEL a runaway or blocked turn. These options compose and all default OFF; note wait_for_response's timeout only stops waiting while turn_timeout_ms/response_timeout_ms cancel.",
   success: Schema.Unknown,
   failure: McpOrchestrationError,
   parameters: Schema.Struct({
@@ -544,6 +592,11 @@ export const SendThreadMessageTool = Tool.make("send_thread_message", {
     checkoutMode: OptionalCheckoutModeInput,
     branch: OptionalBootstrapBranchInput,
     baseBranch: OptionalBaseBranchInput,
+    waitForResponse: OptionalWaitForResponseInput,
+    timeoutMs: OptionalWaitTimeoutMsInput,
+    turnTimeoutMs: OptionalTurnTimeoutMsInput,
+    responseTimeoutMs: OptionalResponseTimeoutMsInput,
+    maxCharacters: OptionalWaitMaxCharactersInput,
   }),
   dependencies,
 });
