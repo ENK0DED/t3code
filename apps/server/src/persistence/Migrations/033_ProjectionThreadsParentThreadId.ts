@@ -13,9 +13,4 @@ export default Effect.gen(function* () {
       ADD COLUMN parent_thread_id TEXT
     `;
   }
-
-  yield* sql`
-    CREATE INDEX IF NOT EXISTS idx_projection_threads_parent
-    ON projection_threads(project_id, parent_thread_id, deleted_at, archived_at, updated_at)
-  `;
 });

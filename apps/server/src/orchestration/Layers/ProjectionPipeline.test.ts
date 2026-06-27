@@ -410,6 +410,172 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(
       }),
     );
 
+    it.effect("indexes streaming messages only after the non-streaming finalize event", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const now = "2026-01-01T00:00:00.000Z";
+
+        const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+          Effect.gen(function* () {
+            const persistedEvent = yield* eventStore.append(event);
+            yield* projectionPipeline.projectEvent(persistedEvent);
+          });
+
+        const searchMessageIds = (query: string) =>
+          sql<{ readonly messageId: string }>`
+            SELECT messages.message_id AS "messageId"
+            FROM projection_thread_messages_fts
+            INNER JOIN projection_thread_messages AS messages
+              ON messages.rowid = projection_thread_messages_fts.rowid
+            WHERE projection_thread_messages_fts MATCH ${query}
+            ORDER BY messages.message_id
+          `;
+
+        yield* appendAndProject({
+          type: "project.created",
+          eventId: EventId.make("evt-fts-stream-project"),
+          aggregateKind: "project",
+          aggregateId: ProjectId.make("project-fts-stream"),
+          occurredAt: now,
+          commandId: CommandId.make("cmd-fts-stream-project"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-fts-stream-project"),
+          metadata: {},
+          payload: {
+            projectId: ProjectId.make("project-fts-stream"),
+            title: "Project FTS Stream",
+            workspaceRoot: "/tmp/project-fts-stream",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.created",
+          eventId: EventId.make("evt-fts-stream-thread"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-fts-stream"),
+          occurredAt: now,
+          commandId: CommandId.make("cmd-fts-stream-thread"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-fts-stream-thread"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-fts-stream"),
+            projectId: ProjectId.make("project-fts-stream"),
+            parentThreadId: null,
+            title: "Thread FTS Stream",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-fts-stream-message-1"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-fts-stream"),
+          occurredAt: "2026-01-01T00:00:01.000Z",
+          commandId: CommandId.make("cmd-fts-stream-message-1"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-fts-stream-message-1"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-fts-stream"),
+            messageId: MessageId.make("message-fts-stream"),
+            role: "assistant",
+            text: "Investigate ",
+            turnId: null,
+            streaming: true,
+            createdAt: "2026-01-01T00:00:01.000Z",
+            updatedAt: "2026-01-01T00:00:01.000Z",
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-fts-stream-message-2"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-fts-stream"),
+          occurredAt: "2026-01-01T00:00:02.000Z",
+          commandId: CommandId.make("cmd-fts-stream-message-2"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-fts-stream-message-2"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-fts-stream"),
+            messageId: MessageId.make("message-fts-stream"),
+            role: "assistant",
+            text: "reconnect failures",
+            turnId: null,
+            streaming: true,
+            createdAt: "2026-01-01T00:00:02.000Z",
+            updatedAt: "2026-01-01T00:00:02.000Z",
+          },
+        });
+
+        const storedStreamingRows = yield* sql<{
+          readonly text: string;
+          readonly isStreaming: unknown;
+        }>`
+          SELECT
+            text,
+            is_streaming AS "isStreaming"
+          FROM projection_thread_messages
+          WHERE message_id = 'message-fts-stream'
+        `;
+        assert.deepEqual(storedStreamingRows, [
+          {
+            text: "Investigate reconnect failures",
+            isStreaming: 1,
+          },
+        ]);
+        assert.deepEqual(yield* searchMessageIds("reconnect"), []);
+
+        yield* appendAndProject({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-fts-stream-message-3"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-fts-stream"),
+          occurredAt: "2026-01-01T00:00:03.000Z",
+          commandId: CommandId.make("cmd-fts-stream-message-3"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-fts-stream-message-3"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-fts-stream"),
+            messageId: MessageId.make("message-fts-stream"),
+            role: "assistant",
+            text: "",
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-01-01T00:00:03.000Z",
+            updatedAt: "2026-01-01T00:00:03.000Z",
+          },
+        });
+
+        const finalizedHits = yield* searchMessageIds("reconnect");
+        const indexedRows = yield* sql<{ readonly count: number }>`
+          SELECT COUNT(*) AS "count"
+          FROM projection_thread_messages_fts
+          WHERE projection_thread_messages_fts MATCH 'reconnect'
+        `;
+        assert.deepEqual(finalizedHits, [{ messageId: "message-fts-stream" }]);
+        assert.equal(indexedRows[0]?.count, 1);
+      }),
+    );
+
     it.effect("stores message attachment references without mutating payloads", () =>
       Effect.gen(function* () {
         const projectionPipeline = yield* OrchestrationProjectionPipeline;
