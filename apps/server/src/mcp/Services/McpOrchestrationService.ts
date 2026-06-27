@@ -197,6 +197,35 @@ export interface ListThreadsResult {
   }>;
 }
 
+/**
+ * A currently-open request blocking a thread's turn, discoverable on
+ * `get_thread_settings` so an orchestrator can answer it via the
+ * `respond_to_approval` / `respond_to_user_input` tools using `requestId`.
+ */
+export type PendingRequest =
+  | {
+      readonly kind: "approval";
+      readonly requestId: string;
+      readonly requestKind?: "command" | "file-read" | "file-change" | undefined;
+      readonly requestType?: string | undefined;
+      readonly detail?: string | undefined;
+    }
+  | {
+      readonly kind: "user-input";
+      readonly requestId: string;
+      readonly prompt?: string | undefined;
+      readonly fields: ReadonlyArray<{
+        readonly id: string;
+        readonly header?: string | undefined;
+        readonly question?: string | undefined;
+        readonly options?: ReadonlyArray<{
+          readonly label: string;
+          readonly description?: string | undefined;
+        }>;
+        readonly multiSelect?: boolean | undefined;
+      }>;
+    };
+
 export interface ThreadSettingsResult {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
@@ -217,6 +246,9 @@ export interface ThreadSettingsResult {
   readonly maxThreadDepth: 1;
   readonly canCreateChildThread: boolean;
   readonly session: unknown;
+  readonly hasPendingApprovals: boolean;
+  readonly hasPendingUserInput: boolean;
+  readonly pendingRequests: ReadonlyArray<PendingRequest>;
 }
 
 export interface GetThreadMessagesInput {

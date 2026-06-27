@@ -1,14 +1,17 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
+  EventId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
   type ModelSelection,
   type OrchestrationProjectShell,
   type OrchestrationSession,
   type OrchestrationThread,
+  type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
   type ProviderOptionDescriptor,
   type ServerProvider,
@@ -96,6 +99,23 @@ const makeThreadDetail = (
   activities: input.activities ?? [],
   checkpoints: input.checkpoints ?? [],
   session: input.session ?? null,
+});
+
+const makeActivity = (
+  input: {
+    readonly id: string;
+    readonly kind: string;
+    readonly payload: unknown;
+  } & Partial<Omit<OrchestrationThreadActivity, "id" | "kind" | "payload">>,
+): OrchestrationThreadActivity => ({
+  id: EventId.make(input.id),
+  tone: input.tone ?? "info",
+  kind: input.kind,
+  summary: input.summary ?? input.kind,
+  payload: input.payload,
+  turnId: input.turnId ?? TurnId.make("turn-1"),
+  createdAt: input.createdAt ?? "2026-01-01T00:00:00.000Z",
+  ...(input.sequence !== undefined ? { sequence: input.sequence } : {}),
 });
 
 const makeProvider = (input: {
@@ -786,6 +806,208 @@ it.effect("getThreadSettings returns raw stale model selection with a warning", 
             instanceId: ProviderInstanceId.make("missing"),
             model: "missing-model",
           },
+        }),
+      }),
+    ),
+  ),
+);
+
+it.effect("getThreadSettings reports no pending requests when none are open", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.getThreadSettings({});
+
+    expect(result.hasPendingApprovals).toBe(false);
+    expect(result.hasPendingUserInput).toBe(false);
+    expect(result.pendingRequests).toEqual([]);
+  }).pipe(
+    Effect.provide(
+      makeReadHarnessLayer({
+        providers: [
+          makeProvider({
+            instanceId: "codex",
+            driver: ProviderDriverKind.make("codex"),
+            models: [{ slug: "gpt-5.5", name: "GPT-5.5", isCustom: false, capabilities: null }],
+          }),
+        ],
+        threadDetail: makeThreadDetail({
+          id: ThreadId.make("thread-current"),
+          projectId: ProjectId.make("project-current"),
+          activities: [
+            makeActivity({
+              id: "activity-note",
+              kind: "runtime.note",
+              payload: { stage: "start" },
+            }),
+          ],
+        }),
+      }),
+    ),
+  ),
+);
+
+it.effect("getThreadSettings surfaces an open approval request", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.getThreadSettings({});
+
+    expect(result.hasPendingApprovals).toBe(true);
+    expect(result.hasPendingUserInput).toBe(false);
+    expect(result.pendingRequests).toEqual([
+      {
+        kind: "approval",
+        requestId: "request-1",
+        requestKind: "command",
+        requestType: "command_execution_approval",
+        detail: "rm -rf node_modules",
+      },
+    ]);
+  }).pipe(
+    Effect.provide(
+      makeReadHarnessLayer({
+        providers: [
+          makeProvider({
+            instanceId: "codex",
+            driver: ProviderDriverKind.make("codex"),
+            models: [{ slug: "gpt-5.5", name: "GPT-5.5", isCustom: false, capabilities: null }],
+          }),
+        ],
+        threadDetail: makeThreadDetail({
+          id: ThreadId.make("thread-current"),
+          projectId: ProjectId.make("project-current"),
+          activities: [
+            makeActivity({
+              id: "activity-approval-requested",
+              tone: "approval",
+              kind: "approval.requested",
+              createdAt: "2026-01-01T00:00:01.000Z",
+              payload: {
+                requestId: "request-1",
+                requestKind: "command",
+                requestType: "command_execution_approval",
+                detail: "rm -rf node_modules",
+              },
+            }),
+          ],
+        }),
+      }),
+    ),
+  ),
+);
+
+it.effect("getThreadSettings omits an approval that was later resolved", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.getThreadSettings({});
+
+    expect(result.hasPendingApprovals).toBe(false);
+    expect(result.hasPendingUserInput).toBe(false);
+    expect(result.pendingRequests).toEqual([]);
+  }).pipe(
+    Effect.provide(
+      makeReadHarnessLayer({
+        providers: [
+          makeProvider({
+            instanceId: "codex",
+            driver: ProviderDriverKind.make("codex"),
+            models: [{ slug: "gpt-5.5", name: "GPT-5.5", isCustom: false, capabilities: null }],
+          }),
+        ],
+        threadDetail: makeThreadDetail({
+          id: ThreadId.make("thread-current"),
+          projectId: ProjectId.make("project-current"),
+          activities: [
+            makeActivity({
+              id: "activity-approval-requested",
+              tone: "approval",
+              kind: "approval.requested",
+              createdAt: "2026-01-01T00:00:01.000Z",
+              payload: {
+                requestId: "request-1",
+                requestKind: "command",
+                requestType: "command_execution_approval",
+                detail: "rm -rf node_modules",
+              },
+            }),
+            makeActivity({
+              id: "activity-approval-resolved",
+              tone: "approval",
+              kind: "approval.resolved",
+              createdAt: "2026-01-01T00:00:02.000Z",
+              payload: {
+                requestId: "request-1",
+                requestKind: "command",
+                requestType: "command_execution_approval",
+                decision: "accept",
+              },
+            }),
+          ],
+        }),
+      }),
+    ),
+  ),
+);
+
+it.effect("getThreadSettings surfaces an open user-input request with prompt fields", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.getThreadSettings({});
+
+    expect(result.hasPendingApprovals).toBe(false);
+    expect(result.hasPendingUserInput).toBe(true);
+    expect(result.pendingRequests).toEqual([
+      {
+        kind: "user-input",
+        requestId: "input-1",
+        fields: [
+          {
+            id: "sandbox_mode",
+            header: "Sandbox",
+            question: "Choose a sandbox mode",
+            options: [
+              { label: "Read only", description: "No writes" },
+              { label: "Workspace write", description: "Writes inside the workspace" },
+            ],
+            multiSelect: false,
+          },
+        ],
+      },
+    ]);
+  }).pipe(
+    Effect.provide(
+      makeReadHarnessLayer({
+        providers: [
+          makeProvider({
+            instanceId: "codex",
+            driver: ProviderDriverKind.make("codex"),
+            models: [{ slug: "gpt-5.5", name: "GPT-5.5", isCustom: false, capabilities: null }],
+          }),
+        ],
+        threadDetail: makeThreadDetail({
+          id: ThreadId.make("thread-current"),
+          projectId: ProjectId.make("project-current"),
+          activities: [
+            makeActivity({
+              id: "activity-user-input-requested",
+              kind: "user-input.requested",
+              createdAt: "2026-01-01T00:00:01.000Z",
+              payload: {
+                requestId: "input-1",
+                questions: [
+                  {
+                    id: "sandbox_mode",
+                    header: "Sandbox",
+                    question: "Choose a sandbox mode",
+                    options: [
+                      { label: "Read only", description: "No writes" },
+                      { label: "Workspace write", description: "Writes inside the workspace" },
+                    ],
+                    multiSelect: false,
+                  },
+                ],
+              },
+            }),
+          ],
         }),
       }),
     ),
