@@ -7,6 +7,10 @@
       "types": "./src/model.ts",
       "import": "./src/model.ts"
     },
+    "./mcpModels": {
+      "types": "./src/mcpModels.ts",
+      "import": "./src/mcpModels.ts"
+    },
     "./advertisedEndpoint": {
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"

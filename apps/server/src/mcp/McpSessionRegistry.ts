@@ -55,6 +55,12 @@ export interface McpSessionRegistryOptions {
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1_000;
 const DEFAULT_MAXIMUM_LIFETIME_MS = 8 * 60 * 60 * 1_000;
 
+// Provider-spawned MCP credentials intentionally receive every capability today:
+// agents use one credential for preview automation plus read/write orchestration.
+// Keep this centralized so future issuing contexts can narrow the set in one place.
+export const MCP_PROVIDER_SESSION_CAPABILITIES: ReadonlySet<McpInvocationContext.McpCapability> =
+  new Set(["preview", "orchestration.read", "orchestration.write"]);
+
 const bytesToHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
@@ -103,7 +109,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         threadId: ThreadId.make(request.threadId),
         providerSessionId,
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
-        capabilities: new Set(["preview", "orchestration.read", "orchestration.write"]),
+        capabilities: new Set(MCP_PROVIDER_SESSION_CAPABILITIES),
         issuedAt,
         expiresAt,
       };

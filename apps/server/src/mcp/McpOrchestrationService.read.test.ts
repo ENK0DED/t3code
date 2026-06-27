@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   ProjectId,
@@ -306,6 +307,7 @@ const makeReadHarnessLayer = (input?: {
         }),
       ),
     ),
+    Layer.provideMerge(NodeServices.layer),
   );
 };
 

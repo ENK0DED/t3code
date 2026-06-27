@@ -70,6 +70,7 @@ export function buildProjectCreateCommand(input: {
   readonly projectId: ProjectId;
   readonly workspaceRoot: string;
   readonly createdAt: string;
+  readonly createWorkspaceRootIfMissing?: boolean;
 }): Extract<OrchestrationCommand, { type: "project.create" }> {
   return {
     type: "project.create",
@@ -77,7 +78,7 @@ export function buildProjectCreateCommand(input: {
     projectId: input.projectId,
     title: inferProjectTitleFromPath(input.workspaceRoot),
     workspaceRoot: input.workspaceRoot,
-    createWorkspaceRootIfMissing: true,
+    createWorkspaceRootIfMissing: input.createWorkspaceRootIfMissing ?? true,
     defaultModelSelection: {
       instanceId: ProviderInstanceId.make("codex"),
       model: DEFAULT_MODEL,

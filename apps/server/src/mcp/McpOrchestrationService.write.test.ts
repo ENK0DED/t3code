@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   ProjectId,
@@ -16,8 +17,10 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -456,6 +459,7 @@ const makeWriteHarnessLayer = (input?: {
         }),
       ),
     ),
+    Layer.provideMerge(NodeServices.layer),
   );
 };
 
@@ -537,6 +541,60 @@ it.effect("addProject sanitizes duplicate project responses and hides action com
         }),
       ),
     );
+  })(),
+);
+
+it.effect("addProject rejects missing paths instead of allowing MCP to create them", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const tempRoot = yield* fs.makeTempDirectory({
+        prefix: "t3-mcp-add-project-missing-",
+      });
+      const missingPath = path.join(tempRoot, "missing");
+      yield* fs.remove(tempRoot, { recursive: true, force: true });
+
+      const service = yield* McpOrchestrationService;
+      const exit = yield* Effect.exit(service.addProject({ path: missingPath }));
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(dispatchedCommands).toEqual([]);
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause) as { readonly code: string };
+        expect(error.code).toBe("invalid_project_path");
+      }
+    }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
+  })(),
+);
+
+it.effect("addProject does not request directory creation for MCP-created projects", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const workspaceRoot = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-mcp-add-project-existing-",
+        });
+        const service = yield* McpOrchestrationService;
+        const result = yield* service.addProject({ path: workspaceRoot });
+
+        expect(result).toMatchObject({
+          status: "created",
+          project: {
+            workspaceRoot,
+          },
+        });
+        expect(dispatchedCommands).toHaveLength(1);
+        expect(dispatchedCommands[0]).toMatchObject({
+          type: "project.create",
+          workspaceRoot,
+          createWorkspaceRootIfMissing: false,
+        });
+      }),
+    ).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
   })(),
 );
 
@@ -1539,6 +1597,55 @@ it.effect(
         ),
       );
     })(),
+);
+
+it.effect("createThread child_of_thread inherits checkout metadata from the parent thread", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.createThread({
+        placement: "child_of_thread",
+        parentThreadId: ThreadId.make("thread-parent"),
+        title: "Parent checkout child",
+      });
+
+      expect(result).toMatchObject({
+        status: "created",
+        thread: {
+          parentThreadId: "thread-parent",
+          branch: "feature/parent",
+          worktreePath: "/work/current/.worktrees/parent",
+        },
+      });
+      expect(dispatchedCommands[0]).toMatchObject({
+        type: "thread.create",
+        parentThreadId: "thread-parent",
+        branch: "feature/parent",
+        worktreePath: "/work/current/.worktrees/parent",
+      });
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              projectId: ProjectId.make("project-current"),
+              title: "Current Thread",
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-parent"),
+              projectId: ProjectId.make("project-current"),
+              title: "Parent Thread",
+              branch: "feature/parent",
+              worktreePath: "/work/current/.worktrees/parent",
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
 );
 
 it.effect(

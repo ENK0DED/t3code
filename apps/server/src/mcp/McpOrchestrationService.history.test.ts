@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   ProjectId,
@@ -29,6 +30,7 @@ import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/providerMaintenance.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TextGeneration } from "../textGeneration/TextGeneration.ts";
+import type { ThreadSummaryGenerationInput } from "../textGeneration/TextGeneration.ts";
 
 const defaultModelSelection = (overrides?: Partial<ModelSelection>): ModelSelection => ({
   instanceId: ProviderInstanceId.make("codex"),
@@ -155,24 +157,28 @@ const makeHistoryHarnessLayer = (input?: {
   readonly generatedSummary?: string;
   readonly textGenerationModelSelection?: ModelSelection;
   readonly largeMessageText?: string;
+  readonly threadDetail?: OrchestrationThread;
+  readonly summaryInputs?: Array<ThreadSummaryGenerationInput>;
 }) => {
   const unsupported = (operation: string) => Effect.die(new Error(`${operation} unused`)) as never;
-  const thread = makeThreadDetail({
-    id: ThreadId.make(input?.largeMessageText ? "thread-large" : "thread-1"),
-    projectId: ProjectId.make("project-1"),
-    title: "Reconnect investigation",
-    messages: [
-      {
-        id: "message-1" as never,
-        role: "user",
-        text: input?.largeMessageText ?? "Investigate reconnect failures",
-        turnId: null,
-        streaming: false,
-        createdAt: "2026-01-01T00:00:00.000Z",
-        updatedAt: "2026-01-01T00:00:00.000Z",
-      },
-    ],
-  });
+  const thread =
+    input?.threadDetail ??
+    makeThreadDetail({
+      id: ThreadId.make(input?.largeMessageText ? "thread-large" : "thread-1"),
+      projectId: ProjectId.make("project-1"),
+      title: "Reconnect investigation",
+      messages: [
+        {
+          id: "message-1" as never,
+          role: "user",
+          text: input?.largeMessageText ?? "Investigate reconnect failures",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
 
   return McpOrchestrationServiceLive.pipe(
     Layer.provideMerge(
@@ -274,11 +280,15 @@ const makeHistoryHarnessLayer = (input?: {
           generatePrContent: () => Effect.die("unused"),
           generateBranchName: () => Effect.die("unused"),
           generateThreadTitle: () => Effect.die("unused"),
-          generateThreadSummary: () =>
-            Effect.succeed(input?.generatedSummary ?? "summary stub not configured"),
+          generateThreadSummary: (summaryInput) =>
+            Effect.sync(() => {
+              input?.summaryInputs?.push(summaryInput);
+              return input?.generatedSummary ?? "summary stub not configured";
+            }),
         }),
       ),
     ),
+    Layer.provideMerge(NodeServices.layer),
   );
 };
 
@@ -333,6 +343,124 @@ it.effect("summary history uses the configured text generation model", () =>
       }),
     ),
   ),
+);
+
+it.effect("history rejects soft-deleted threads as unknown", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.getThreadHistory({
+        threadId: ThreadId.make("thread-deleted"),
+        mode: "complete",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as {
+        readonly _tag: string;
+        readonly code: string;
+      };
+      expect(error._tag).toBe("McpOrchestrationError");
+      expect(error.code).toBe("unknown_thread");
+    }
+  }).pipe(
+    Effect.provide(
+      makeHistoryHarnessLayer({
+        threadDetail: makeThreadDetail({
+          id: ThreadId.make("thread-deleted"),
+          projectId: ProjectId.make("project-1"),
+          deletedAt: "2026-01-02T00:00:00.000Z",
+          messages: [
+            {
+              id: "message-deleted" as never,
+              role: "user",
+              text: "deleted secret",
+              turnId: null,
+              streaming: false,
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+            },
+          ],
+        }),
+      }),
+    ),
+  ),
+);
+
+it.effect("summary history caps input before text generation and keeps recent messages", () =>
+  (() => {
+    const summaryInputs: Array<ThreadSummaryGenerationInput> = [];
+    const oldText = "old".repeat(400_000);
+    const recentText = "recent context";
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* service.getThreadHistory({
+        threadId: ThreadId.make("thread-long"),
+        mode: "summary",
+      });
+
+      expect(summaryInputs).toHaveLength(1);
+      const messages = summaryInputs[0]?.messages ?? [];
+      expect(messages[0]).toMatchObject({
+        role: "system",
+        text: "[earlier messages omitted]",
+      });
+      expect(messages.some((message) => message.text === recentText)).toBe(true);
+      expect(messages.some((message) => message.text === oldText)).toBe(false);
+      const totalInputCharacters = messages.reduce((sum, message) => sum + message.text.length, 0);
+      expect(totalInputCharacters).toBeLessThanOrEqual(1_000_000);
+    }).pipe(
+      Effect.provide(
+        makeHistoryHarnessLayer({
+          generatedSummary: "summary",
+          summaryInputs,
+          threadDetail: makeThreadDetail({
+            id: ThreadId.make("thread-long"),
+            projectId: ProjectId.make("project-1"),
+            messages: [
+              {
+                id: "message-old-1" as never,
+                role: "user",
+                text: oldText,
+                turnId: null,
+                streaming: false,
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              },
+              {
+                id: "message-old-2" as never,
+                role: "assistant",
+                text: oldText,
+                turnId: null,
+                streaming: false,
+                createdAt: "2026-01-01T00:01:00.000Z",
+                updatedAt: "2026-01-01T00:01:00.000Z",
+              },
+              {
+                id: "message-old-3" as never,
+                role: "user",
+                text: oldText,
+                turnId: null,
+                streaming: false,
+                createdAt: "2026-01-01T00:02:00.000Z",
+                updatedAt: "2026-01-01T00:02:00.000Z",
+              },
+              {
+                id: "message-recent" as never,
+                role: "assistant",
+                text: recentText,
+                turnId: null,
+                streaming: false,
+                createdAt: "2026-01-01T00:03:00.000Z",
+                updatedAt: "2026-01-01T00:03:00.000Z",
+              },
+            ],
+          }),
+        }),
+      ),
+    );
+  })(),
 );
 
 it.effect("complete history fails for a malformed cursor", () =>
@@ -444,6 +572,35 @@ it.effect("complete history fails instead of truncating when over budget", () =>
     Effect.provide(
       makeHistoryHarnessLayer({
         largeMessageText: "x".repeat(10_000),
+      }),
+    ),
+  ),
+);
+
+it.effect("complete history caller budget is enforced using UTF-8 bytes", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.getThreadHistory({
+        threadId: ThreadId.make("thread-large"),
+        mode: "complete",
+        maxCharacters: 15_000,
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as {
+        readonly _tag: string;
+        readonly code: string;
+      };
+      expect(error._tag).toBe("McpOrchestrationError");
+      expect(error.code).toBe("payload_too_large");
+    }
+  }).pipe(
+    Effect.provide(
+      makeHistoryHarnessLayer({
+        largeMessageText: "é".repeat(10_000),
       }),
     ),
   ),
