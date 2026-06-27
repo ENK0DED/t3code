@@ -1,5 +1,6 @@
 import {
   ModelSelection,
+  NonNegativeInt,
   ProjectScriptIcon,
   ProviderInteractionMode,
   RuntimeMode,
@@ -203,15 +204,16 @@ export const ListThreadsTool = Tool.make("list_threads", {
   dependencies,
 });
 
-export const GetThreadHistoryTool = Tool.make("get_thread_history", {
-  description: "Return a thread summary or complete projected thread history.",
+export const GetThreadMessagesTool = Tool.make("get_thread_messages", {
+  description:
+    "Read a thread's messages in one of five modes. summary: an LLM-distilled summary of the whole thread. complete: the full projected message history (pageable via limit/cursor). latest_response: the verbatim text of the last assistant message of the latest COMPLETED turn (reasoning/tool calls already excluded), plus that turn's id and state; if a turn is currently running it returns the previous completed answer with inProgress: true (or a null answer when nothing has completed yet). turn: the user message and assistant response of one turn identified by turnCount, plus that turn's state. message: a single message identified by messageId.",
   success: Schema.Unknown,
   failure: McpOrchestrationError,
   parameters: Schema.Struct({
     threadId: ThreadIdInput,
-    mode: Schema.Literals(["summary", "complete"]).annotate({
+    mode: Schema.Literals(["summary", "complete", "latest_response", "turn", "message"]).annotate({
       description:
-        "History response mode. Use summary for a compact generated summary or complete for raw projected history.",
+        "Message read mode. summary = a compact generated summary of the whole thread. complete = raw projected message history (use limit/cursor/maxCharacters). latest_response = the latest completed turn's final assistant message text verbatim, with the turn id/state and an inProgress flag. turn = one turn's user message + assistant response + state (requires turnCount). message = a single message (requires messageId).",
     }),
     limit: Schema.optional(
       Schema.Int.check(Schema.isGreaterThan(0)).annotate({
@@ -228,6 +230,27 @@ export const GetThreadHistoryTool = Tool.make("get_thread_history", {
     ).annotate({
       description:
         "Zero-based message offset cursor returned by the caller. Use with limit to page complete history.",
+    }),
+    turnCount: Schema.optional(
+      NonNegativeInt.annotate({
+        description:
+          "Required when mode is turn: the zero-based ordinal of the turn to read (the checkpointTurnCount reported by checkpoints and get_thread_diff). Returns that turn's user message and assistant response.",
+      }),
+    ).annotate({
+      description:
+        "Required when mode is turn: the zero-based ordinal of the turn to read (the checkpointTurnCount reported by checkpoints and get_thread_diff). Returns that turn's user message and assistant response.",
+    }),
+    messageId: Schema.optional(
+      Schema.String.annotate({
+        description:
+          "Required when mode is message: the id of the single message to return (from list_threads, complete history, or another get_thread_messages response).",
+      })
+        .check(Schema.isTrimmed())
+        .check(Schema.isNonEmpty())
+        .pipe(Schema.brand("MessageId")),
+    ).annotate({
+      description:
+        "Required when mode is message: the id of the single message to return (from list_threads, complete history, or another get_thread_messages response).",
     }),
     maxCharacters: Schema.optional(
       Schema.Int.check(Schema.isGreaterThan(0)).annotate({
@@ -483,7 +506,7 @@ export const UpdateThreadSettingsTool = Tool.make("update_thread_settings", {
 
 const RequestIdInput = Schema.String.annotate({
   description:
-    "Open request id to answer. Discover open requests via get_thread_settings (pendingRequests) or get_thread_history activities.",
+    "Open request id to answer. Discover open requests via get_thread_settings (pendingRequests) or get_thread_messages activities.",
 })
   .check(Schema.isTrimmed())
   .check(Schema.isNonEmpty())
@@ -573,7 +596,7 @@ export const OrchestrationToolkit = Toolkit.make(
   UpdateProjectSettingsTool,
   ListThreadsTool,
   GetThreadSettingsTool,
-  GetThreadHistoryTool,
+  GetThreadMessagesTool,
   ListProjectActionsTool,
   CreateProjectActionTool,
   UpdateProjectActionTool,

@@ -296,7 +296,7 @@ const makeHistoryHarnessLayer = (input?: {
 it.effect("complete history returns projected thread detail by default", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
-    const result = yield* service.getThreadHistory({
+    const result = yield* service.getThreadMessages({
       threadId: ThreadId.make("thread-1"),
       mode: "complete",
     });
@@ -319,7 +319,7 @@ it.effect("complete history returns projected thread detail by default", () =>
 it.effect("summary history uses the configured text generation model", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
-    const result = yield* service.getThreadHistory({
+    const result = yield* service.getThreadMessages({
       threadId: ThreadId.make("thread-1"),
       mode: "summary",
     });
@@ -350,7 +350,7 @@ it.effect("history rejects soft-deleted threads as unknown", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
     const exit = yield* Effect.exit(
-      service.getThreadHistory({
+      service.getThreadMessages({
         threadId: ThreadId.make("thread-deleted"),
         mode: "complete",
       }),
@@ -396,7 +396,7 @@ it.effect("summary history caps input before text generation and keeps recent me
     const recentText = "recent context";
     return Effect.gen(function* () {
       const service = yield* McpOrchestrationService;
-      yield* service.getThreadHistory({
+      yield* service.getThreadMessages({
         threadId: ThreadId.make("thread-long"),
         mode: "summary",
       });
@@ -468,7 +468,7 @@ it.effect("complete history fails for a malformed cursor", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
     const exit = yield* Effect.exit(
-      service.getThreadHistory({
+      service.getThreadMessages({
         threadId: ThreadId.make("thread-1"),
         mode: "complete",
         cursor: "not-a-number",
@@ -491,7 +491,7 @@ it.effect("complete history fails for an empty cursor", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
     const exit = yield* Effect.exit(
-      service.getThreadHistory({
+      service.getThreadMessages({
         threadId: ThreadId.make("thread-1"),
         mode: "complete",
         cursor: "",
@@ -514,7 +514,7 @@ it.effect("complete history fails for a negative cursor", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
     const exit = yield* Effect.exit(
-      service.getThreadHistory({
+      service.getThreadMessages({
         threadId: ThreadId.make("thread-1"),
         mode: "complete",
         cursor: "-1",
@@ -536,7 +536,7 @@ it.effect("complete history fails for a negative cursor", () =>
 it.effect("complete history accepts a valid cursor", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
-    const result = yield* service.getThreadHistory({
+    const result = yield* service.getThreadMessages({
       threadId: ThreadId.make("thread-1"),
       mode: "complete",
       cursor: "0",
@@ -561,7 +561,7 @@ it.effect("complete history fails instead of truncating when over budget", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
     const exit = yield* Effect.exit(
-      service.getThreadHistory({
+      service.getThreadMessages({
         threadId: ThreadId.make("thread-large"),
         mode: "complete",
         maxCharacters: 20,
@@ -582,7 +582,7 @@ it.effect("complete history caller budget is enforced using UTF-8 bytes", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
     const exit = yield* Effect.exit(
-      service.getThreadHistory({
+      service.getThreadMessages({
         threadId: ThreadId.make("thread-large"),
         mode: "complete",
         maxCharacters: 15_000,
@@ -611,7 +611,7 @@ it.effect("complete history default budget is enforced using UTF-8 bytes", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
     const exit = yield* Effect.exit(
-      service.getThreadHistory({
+      service.getThreadMessages({
         threadId: ThreadId.make("thread-large"),
         mode: "complete",
       }),
@@ -633,4 +633,295 @@ it.effect("complete history default budget is enforced using UTF-8 bytes", () =>
       }),
     ),
   ),
+);
+
+const makeMultiTurnThread = (overrides?: Partial<OrchestrationThread>): OrchestrationThread =>
+  makeThreadDetail({
+    id: ThreadId.make("thread-turns"),
+    projectId: ProjectId.make("project-1"),
+    title: "Multi-turn thread",
+    messages: [
+      {
+        id: "message-u0" as never,
+        role: "user",
+        text: "First question",
+        turnId: "turn-0" as never,
+        streaming: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "message-a0" as never,
+        role: "assistant",
+        text: "First answer",
+        turnId: "turn-0" as never,
+        streaming: false,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        updatedAt: "2026-01-01T00:00:01.000Z",
+      },
+      {
+        id: "message-u1" as never,
+        role: "user",
+        text: "Second question",
+        turnId: "turn-1" as never,
+        streaming: false,
+        createdAt: "2026-01-01T00:01:00.000Z",
+        updatedAt: "2026-01-01T00:01:00.000Z",
+      },
+      {
+        id: "message-a1-text" as never,
+        role: "assistant",
+        text: "Intermediate text before a tool call",
+        turnId: "turn-1" as never,
+        streaming: false,
+        createdAt: "2026-01-01T00:01:01.000Z",
+        updatedAt: "2026-01-01T00:01:01.000Z",
+      },
+      {
+        id: "message-a1-final" as never,
+        role: "assistant",
+        text: "Final answer for turn one",
+        turnId: "turn-1" as never,
+        streaming: false,
+        createdAt: "2026-01-01T00:01:02.000Z",
+        updatedAt: "2026-01-01T00:01:02.000Z",
+      },
+    ],
+    checkpoints: [
+      {
+        turnId: "turn-0" as never,
+        checkpointTurnCount: 0 as never,
+        checkpointRef: "checkpoint-0" as never,
+        status: "ready",
+        files: [],
+        assistantMessageId: "message-a0" as never,
+        completedAt: "2026-01-01T00:00:02.000Z",
+      },
+      {
+        turnId: "turn-1" as never,
+        checkpointTurnCount: 1 as never,
+        checkpointRef: "checkpoint-1" as never,
+        status: "ready",
+        files: [],
+        assistantMessageId: "message-a1-final" as never,
+        completedAt: "2026-01-01T00:01:03.000Z",
+      },
+    ],
+    latestTurn: {
+      turnId: "turn-1" as never,
+      state: "completed",
+      requestedAt: "2026-01-01T00:01:00.000Z",
+      startedAt: "2026-01-01T00:01:00.500Z",
+      completedAt: "2026-01-01T00:01:03.000Z",
+      assistantMessageId: "message-a1-final" as never,
+    },
+    ...overrides,
+  });
+
+it.effect("latest_response returns the final assistant message of the latest completed turn", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.getThreadMessages({
+      threadId: ThreadId.make("thread-turns"),
+      mode: "latest_response",
+    });
+
+    expect(result).toMatchObject({
+      mode: "latest_response",
+      threadId: "thread-turns",
+      inProgress: false,
+      turnId: "turn-1",
+      turnState: "completed",
+      answer: {
+        id: "message-a1-final",
+        role: "assistant",
+        text: "Final answer for turn one",
+      },
+    });
+  }).pipe(Effect.provide(makeHistoryHarnessLayer({ threadDetail: makeMultiTurnThread() }))),
+);
+
+it.effect("latest_response flags an in-progress turn and returns the prior completed answer", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = (yield* service.getThreadMessages({
+      threadId: ThreadId.make("thread-turns"),
+      mode: "latest_response",
+    })) as {
+      readonly inProgress: boolean;
+      readonly turnId: string | null;
+      readonly answer: { readonly text: string } | null;
+    };
+
+    expect(result.inProgress).toBe(true);
+    // The running turn (turn-1) has no checkpoint yet, so the latest completed answer
+    // is turn-0's checkpoint answer.
+    expect(result.turnId).toBe("turn-0");
+    expect(result.answer?.text).toBe("First answer");
+  }).pipe(
+    Effect.provide(
+      makeHistoryHarnessLayer({
+        threadDetail: makeMultiTurnThread({
+          checkpoints: [
+            {
+              turnId: "turn-0" as never,
+              checkpointTurnCount: 0 as never,
+              checkpointRef: "checkpoint-0" as never,
+              status: "ready",
+              files: [],
+              assistantMessageId: "message-a0" as never,
+              completedAt: "2026-01-01T00:00:02.000Z",
+            },
+          ],
+          latestTurn: {
+            turnId: "turn-1" as never,
+            state: "running",
+            requestedAt: "2026-01-01T00:01:00.000Z",
+            startedAt: "2026-01-01T00:01:00.500Z",
+            completedAt: null,
+            assistantMessageId: null,
+          },
+        }),
+      }),
+    ),
+  ),
+);
+
+it.effect("latest_response returns a null answer when nothing has completed yet", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = (yield* service.getThreadMessages({
+      threadId: ThreadId.make("thread-turns"),
+      mode: "latest_response",
+    })) as {
+      readonly inProgress: boolean;
+      readonly turnId: string | null;
+      readonly answer: unknown;
+    };
+
+    expect(result.inProgress).toBe(true);
+    expect(result.turnId).toBe(null);
+    expect(result.answer).toBe(null);
+  }).pipe(
+    Effect.provide(
+      makeHistoryHarnessLayer({
+        threadDetail: makeMultiTurnThread({
+          messages: [
+            {
+              id: "message-u1" as never,
+              role: "user",
+              text: "Only question",
+              turnId: "turn-1" as never,
+              streaming: false,
+              createdAt: "2026-01-01T00:01:00.000Z",
+              updatedAt: "2026-01-01T00:01:00.000Z",
+            },
+          ],
+          checkpoints: [],
+          latestTurn: {
+            turnId: "turn-1" as never,
+            state: "running",
+            requestedAt: "2026-01-01T00:01:00.000Z",
+            startedAt: "2026-01-01T00:01:00.500Z",
+            completedAt: null,
+            assistantMessageId: null,
+          },
+        }),
+      }),
+    ),
+  ),
+);
+
+it.effect("turn mode returns the user message and final assistant response for a turnCount", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.getThreadMessages({
+      threadId: ThreadId.make("thread-turns"),
+      mode: "turn",
+      turnCount: 1,
+    });
+
+    expect(result).toMatchObject({
+      mode: "turn",
+      threadId: "thread-turns",
+      turnCount: 1,
+      turnId: "turn-1",
+      turnState: "completed",
+      userMessage: { id: "message-u1", text: "Second question" },
+      assistantMessage: { id: "message-a1-final", text: "Final answer for turn one" },
+    });
+  }).pipe(Effect.provide(makeHistoryHarnessLayer({ threadDetail: makeMultiTurnThread() }))),
+);
+
+it.effect("turn mode requires turnCount", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.getThreadMessages({
+        threadId: ThreadId.make("thread-turns"),
+        mode: "turn",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("invalid_input");
+    }
+  }).pipe(Effect.provide(makeHistoryHarnessLayer({ threadDetail: makeMultiTurnThread() }))),
+);
+
+it.effect("turn mode fails for an unknown turnCount", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.getThreadMessages({
+        threadId: ThreadId.make("thread-turns"),
+        mode: "turn",
+        turnCount: 99,
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("unknown_turn");
+    }
+  }).pipe(Effect.provide(makeHistoryHarnessLayer({ threadDetail: makeMultiTurnThread() }))),
+);
+
+it.effect("message mode returns a single message by id", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.getThreadMessages({
+      threadId: ThreadId.make("thread-turns"),
+      mode: "message",
+      messageId: "message-a0" as never,
+    });
+
+    expect(result).toMatchObject({
+      mode: "message",
+      threadId: "thread-turns",
+      message: { id: "message-a0", role: "assistant", text: "First answer" },
+    });
+  }).pipe(Effect.provide(makeHistoryHarnessLayer({ threadDetail: makeMultiTurnThread() }))),
+);
+
+it.effect("message mode fails for an unknown messageId", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.getThreadMessages({
+        threadId: ThreadId.make("thread-turns"),
+        mode: "message",
+        messageId: "message-missing" as never,
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("unknown_message");
+    }
+  }).pipe(Effect.provide(makeHistoryHarnessLayer({ threadDetail: makeMultiTurnThread() }))),
 );

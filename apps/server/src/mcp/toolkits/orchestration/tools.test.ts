@@ -14,7 +14,7 @@ const expectedToolNames = [
   "update_project_settings",
   "list_threads",
   "get_thread_settings",
-  "get_thread_history",
+  "get_thread_messages",
   "list_project_actions",
   "create_project_action",
   "update_project_action",

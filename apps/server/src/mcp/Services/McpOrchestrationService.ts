@@ -1,4 +1,5 @@
 import type {
+  MessageId,
   ModelSelection,
   ProjectId,
   ProjectScriptIcon,
@@ -218,11 +219,13 @@ export interface ThreadSettingsResult {
   readonly session: unknown;
 }
 
-export interface GetThreadHistoryInput {
+export interface GetThreadMessagesInput {
   readonly threadId: ThreadId;
-  readonly mode: "summary" | "complete";
+  readonly mode: "summary" | "complete" | "latest_response" | "turn" | "message";
   readonly limit?: number | undefined;
   readonly cursor?: string | undefined;
+  readonly turnCount?: number | undefined;
+  readonly messageId?: MessageId | undefined;
   readonly maxCharacters?: number | undefined;
 }
 
@@ -295,8 +298,8 @@ export interface McpOrchestrationServiceShape {
     McpOrchestrationError,
     McpInvocationContext.McpInvocationContext
   >;
-  readonly getThreadHistory: (
-    input: GetThreadHistoryInput,
+  readonly getThreadMessages: (
+    input: GetThreadMessagesInput,
   ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
   readonly getThreadSettings: (input: {
     readonly threadId?: ThreadId | undefined;

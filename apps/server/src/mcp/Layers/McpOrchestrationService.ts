@@ -2,6 +2,8 @@ import {
   CommandId,
   MessageId,
   type ModelSelection,
+  type OrchestrationCheckpointSummary,
+  type OrchestrationMessage,
   type OrchestrationThread,
   ProjectId,
   type ProjectScript,
@@ -133,6 +135,57 @@ function applyHistoryWindow(
       messages: thread.messages.slice(start, end),
     };
   });
+}
+
+// `messages` arrives ordered by (createdAt ASC, messageId ASC) from the projection
+// query, so the LAST matching entry is the most recent message for a turn/role. A turn
+// may emit several assistant messages (text -> tool -> text); per Decision 9 we return
+// the turn's *last* assistant message — that is the final answer, with reasoning/tool
+// calls already excluded at ingestion (only `assistant_text` deltas become message text).
+function lastMessageOfTurn(
+  thread: OrchestrationThread,
+  turnId: string,
+  role: OrchestrationMessage["role"],
+): OrchestrationMessage | null {
+  let found: OrchestrationMessage | null = null;
+  for (const message of thread.messages) {
+    if (message.turnId === turnId && message.role === role) {
+      found = message;
+    }
+  }
+  return found;
+}
+
+function firstMessageOfTurn(
+  thread: OrchestrationThread,
+  turnId: string,
+  role: OrchestrationMessage["role"],
+): OrchestrationMessage | null {
+  for (const message of thread.messages) {
+    if (message.turnId === turnId && message.role === role) {
+      return message;
+    }
+  }
+  return null;
+}
+
+// Checkpoints are recorded only when a turn completes and arrive ordered by
+// checkpointTurnCount ASC, so the last checkpoint is the latest completed turn.
+function latestCompletedCheckpoint(
+  thread: OrchestrationThread,
+): OrchestrationCheckpointSummary | null {
+  return thread.checkpoints.length > 0 ? thread.checkpoints[thread.checkpoints.length - 1]! : null;
+}
+
+function serializeMessage(message: OrchestrationMessage) {
+  return {
+    id: message.id,
+    role: message.role,
+    text: message.text,
+    turnId: message.turnId,
+    createdAt: message.createdAt,
+    updatedAt: message.updatedAt,
+  };
 }
 
 function toInternalError(message: string, detail?: unknown): McpOrchestrationError {
@@ -1503,13 +1556,34 @@ export const McpOrchestrationServiceLive = Layer.effect(
               );
           }),
         ),
-      getThreadHistory: (input) =>
+      getThreadMessages: (input) =>
         requireRead().pipe(
           Effect.flatMap(() =>
             requireThreadDetail(input.threadId).pipe(
               Effect.flatMap(
                 (thread): Effect.Effect<unknown, McpOrchestrationError> =>
                   Effect.gen(function* () {
+                    // Shared maxCharacters -> payload_too_large guard (mirrors the
+                    // complete-mode budget). A single message/turn is normally small, but
+                    // an oversized assistant answer must not exceed one MCP response.
+                    const guardPayloadSize = <P>(payload: P) =>
+                      Effect.gen(function* () {
+                        const encoded = yield* encodeJsonString(payload).pipe(
+                          Effect.mapError((error) =>
+                            toInternalError("Failed to encode MCP thread messages payload.", error),
+                          ),
+                        );
+                        const budget = input.maxCharacters ?? MCP_STRUCTURED_RESPONSE_MAX_BYTES;
+                        if (Buffer.byteLength(encoded, "utf8") > budget) {
+                          return yield* new McpOrchestrationError({
+                            code: "payload_too_large",
+                            message: `Thread '${input.threadId}' messages payload is too large for one MCP response.`,
+                            detail: "Retry with a different mode or a larger maxCharacters.",
+                          });
+                        }
+                        return payload;
+                      });
+
                     if (input.mode === "complete") {
                       const history = yield* applyHistoryWindow(thread, input);
                       const payload = {
@@ -1530,6 +1604,135 @@ export const McpOrchestrationServiceLive = Layer.effect(
                         });
                       }
                       return payload;
+                    }
+
+                    if (input.mode === "latest_response") {
+                      // A turn is in progress when the most recent turn is still running;
+                      // in that case we report the *previous* completed answer (if any).
+                      const inProgress = thread.latestTurn?.state === "running";
+                      // The latest completed turn: prefer latestTurn when it has settled
+                      // as completed, else the last checkpoint (checkpoints exist only for
+                      // completed turns). This also covers the in-progress case, where
+                      // latestTurn is the running turn and the checkpoint is the prior one.
+                      const completedTurn =
+                        thread.latestTurn !== null && thread.latestTurn.state === "completed"
+                          ? {
+                              turnId: thread.latestTurn.turnId,
+                              state: thread.latestTurn.state,
+                              completedAt: thread.latestTurn.completedAt,
+                              assistantMessageId: thread.latestTurn.assistantMessageId,
+                            }
+                          : (() => {
+                              const checkpoint = latestCompletedCheckpoint(thread);
+                              return checkpoint === null
+                                ? null
+                                : {
+                                    turnId: checkpoint.turnId,
+                                    state: "completed" as const,
+                                    completedAt: checkpoint.completedAt,
+                                    assistantMessageId: checkpoint.assistantMessageId,
+                                  };
+                            })();
+
+                      if (completedTurn === null) {
+                        return yield* guardPayloadSize({
+                          mode: "latest_response" as const,
+                          threadId: thread.id,
+                          inProgress,
+                          turnId: null,
+                          turnState: null,
+                          completedAt: null,
+                          answer: null,
+                        });
+                      }
+
+                      // Resolve the turn's final assistant message: the last assistant
+                      // message tagged with the turn id, falling back to the turn's
+                      // recorded assistantMessageId when message<->turn tags are absent.
+                      const assistantMessage =
+                        lastMessageOfTurn(thread, completedTurn.turnId, "assistant") ??
+                        (completedTurn.assistantMessageId === null
+                          ? null
+                          : (thread.messages.find(
+                              (message) => message.id === completedTurn.assistantMessageId,
+                            ) ?? null));
+
+                      return yield* guardPayloadSize({
+                        mode: "latest_response" as const,
+                        threadId: thread.id,
+                        inProgress,
+                        turnId: completedTurn.turnId,
+                        turnState: completedTurn.state,
+                        completedAt: completedTurn.completedAt,
+                        answer:
+                          assistantMessage === null ? null : serializeMessage(assistantMessage),
+                      });
+                    }
+
+                    if (input.mode === "turn") {
+                      if (input.turnCount === undefined) {
+                        return yield* new McpOrchestrationError({
+                          code: "invalid_input",
+                          message: "turn mode requires turnCount.",
+                        });
+                      }
+                      // turnCount is the per-turn ordinal carried by checkpoints as
+                      // checkpointTurnCount; resolve it to the turn id, then collect that
+                      // turn's user message + final assistant response.
+                      const checkpoint =
+                        thread.checkpoints.find(
+                          (entry) => entry.checkpointTurnCount === input.turnCount,
+                        ) ?? null;
+                      if (checkpoint === null) {
+                        return yield* new McpOrchestrationError({
+                          code: "unknown_turn",
+                          message: `Thread '${input.threadId}' has no turn with turnCount ${input.turnCount}.`,
+                        });
+                      }
+                      const isLatestTurn = thread.latestTurn?.turnId === checkpoint.turnId;
+                      const turnState = isLatestTurn
+                        ? (thread.latestTurn?.state ?? "completed")
+                        : ("completed" as const);
+                      const userMessage = firstMessageOfTurn(thread, checkpoint.turnId, "user");
+                      const assistantMessage = lastMessageOfTurn(
+                        thread,
+                        checkpoint.turnId,
+                        "assistant",
+                      );
+
+                      return yield* guardPayloadSize({
+                        mode: "turn" as const,
+                        threadId: thread.id,
+                        turnCount: checkpoint.checkpointTurnCount,
+                        turnId: checkpoint.turnId,
+                        turnState,
+                        completedAt: checkpoint.completedAt,
+                        userMessage: userMessage === null ? null : serializeMessage(userMessage),
+                        assistantMessage:
+                          assistantMessage === null ? null : serializeMessage(assistantMessage),
+                      });
+                    }
+
+                    if (input.mode === "message") {
+                      if (input.messageId === undefined) {
+                        return yield* new McpOrchestrationError({
+                          code: "invalid_input",
+                          message: "message mode requires messageId.",
+                        });
+                      }
+                      const message =
+                        thread.messages.find((entry) => entry.id === input.messageId) ?? null;
+                      if (message === null) {
+                        return yield* new McpOrchestrationError({
+                          code: "unknown_message",
+                          message: `Thread '${input.threadId}' has no message '${input.messageId}'.`,
+                        });
+                      }
+                      return yield* guardPayloadSize({
+                        mode: "message" as const,
+                        threadId: thread.id,
+                        message: serializeMessage(message),
+                      });
                     }
 
                     const settings = yield* serverSettings.getSettings.pipe(
