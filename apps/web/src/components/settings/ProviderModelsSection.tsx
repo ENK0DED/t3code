@@ -7,7 +7,6 @@ import {
   EyeOffIcon,
   InfoIcon,
   PlusIcon,
-  PlugIcon,
   StarIcon,
   XIcon,
 } from "lucide-react";
@@ -26,6 +25,7 @@ import {
   MAX_CUSTOM_MODEL_LENGTH,
   toggleModelMcpDisabled,
 } from "../../modelSelection";
+import { McpIcon } from "../Icons";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -299,8 +299,8 @@ export function ProviderModelsSection({
                         size="icon-xs"
                         variant="ghost"
                         className={cn(
-                          "size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground",
-                          isFavorite && "text-yellow-500 hover:text-yellow-600",
+                          "size-5 rounded-sm p-0",
+                          isFavorite && "bg-yellow-500/15 [:hover,[data-pressed]]:bg-yellow-500/24",
                         )}
                         onClick={() => handleToggleFavorite(model.slug)}
                         aria-label={`${isFavorite ? "Remove" : "Add"} ${model.name} ${
@@ -309,7 +309,12 @@ export function ProviderModelsSection({
                       />
                     }
                   >
-                    <StarIcon className={cn("size-3", isFavorite && "fill-current")} />
+                    <StarIcon
+                      className={cn(
+                        "size-3",
+                        isFavorite ? "fill-current text-yellow-500" : "text-muted-foreground",
+                      )}
+                    />
                   </TooltipTrigger>
                   <TooltipPopup side="top">
                     {isFavorite ? "Remove from favorites" : "Add to favorites"}
@@ -356,8 +361,8 @@ export function ProviderModelsSection({
                         size="icon-xs"
                         variant="ghost"
                         className={cn(
-                          "size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground",
-                          isMcpEnabled && "text-cyan-500 hover:text-cyan-600",
+                          "size-5 rounded-sm p-0",
+                          isMcpEnabled && "bg-primary/15 [:hover,[data-pressed]]:bg-primary/24",
                         )}
                         onClick={() =>
                           onMcpDisabledModelsByProviderChange(
@@ -376,7 +381,12 @@ export function ProviderModelsSection({
                       />
                     }
                   >
-                    <PlugIcon className="size-3" />
+                    <McpIcon
+                      className={cn(
+                        "size-3",
+                        isMcpEnabled ? "text-primary" : "text-muted-foreground",
+                      )}
+                    />
                   </TooltipTrigger>
                   <TooltipPopup side="top">
                     {isMcpEnabled
