@@ -96,6 +96,16 @@ const OptionalRuntimeModeInput = Schema.optional(
     "Runtime permission mode for the thread: approval-required, auto-accept-edits, or full-access.",
 });
 
+const CreateThreadRuntimeModeInput = Schema.optional(
+  RuntimeMode.annotate({
+    description:
+      "Runtime permission mode for the new thread: approval-required, auto-accept-edits, or full-access. Omitted default (this field only): auto-accept-edits (workspace-write sandbox — commands run sandboxed and escalations are gated). Pass an explicit value to override; full-access removes the sandbox.",
+  }),
+).annotate({
+  description:
+    "Runtime permission mode for the new thread: approval-required, auto-accept-edits, or full-access. Omitted default (this field only): auto-accept-edits (workspace-write sandbox — commands run sandboxed and escalations are gated). Pass an explicit value to override; full-access removes the sandbox.",
+});
+
 const OptionalInteractionModeInput = Schema.optional(
   ProviderInteractionMode.annotate({
     description: "Provider interaction mode. Use plan for planning-only turns.",
@@ -112,6 +122,16 @@ const OptionalCheckoutModeInput = Schema.optional(
 ).annotate({
   description:
     "Checkout handling for the thread. Use current_checkout for the project workspace or new_worktree for branch/worktree metadata and first-turn worktree preparation.",
+});
+
+const CreateThreadCheckoutModeInput = Schema.optional(
+  Schema.Literals(["current_checkout", "new_worktree"]).annotate({
+    description:
+      "Checkout handling for the new thread. Use current_checkout for the project workspace or new_worktree for branch/worktree metadata and first-turn worktree preparation. Omitted default (this field only): top_level threads default to new_worktree (isolated checkout); child_of_thread threads inherit the parent thread's checkout. Pass an explicit value to override.",
+  }),
+).annotate({
+  description:
+    "Checkout handling for the new thread. Use current_checkout for the project workspace or new_worktree for branch/worktree metadata and first-turn worktree preparation. Omitted default (this field only): top_level threads default to new_worktree (isolated checkout); child_of_thread threads inherit the parent thread's checkout. Pass an explicit value to override.",
 });
 
 const OptionalBootstrapBranchInput = Schema.optional(
@@ -455,9 +475,9 @@ export const CreateThreadTool = Tool.make("create_thread", {
         "Optional first user message. When present, the new thread is created and the turn is started.",
     }),
     modelSelection: OptionalModelSelectionInput,
-    runtimeMode: OptionalRuntimeModeInput,
+    runtimeMode: CreateThreadRuntimeModeInput,
     interactionMode: OptionalInteractionModeInput,
-    checkoutMode: OptionalCheckoutModeInput,
+    checkoutMode: CreateThreadCheckoutModeInput,
     branch: OptionalBootstrapBranchInput,
     baseBranch: OptionalBaseBranchInput,
   }),

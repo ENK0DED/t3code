@@ -1909,22 +1909,33 @@ export const McpOrchestrationServiceLive = Layer.effect(
             targetProjectId,
           });
 
-          const desiredRuntimeMode = input.runtimeMode ?? currentThread.runtimeMode;
+          // MCP-layer safe spawn default (Decision 4): when the caller omits runtimeMode,
+          // a spawned thread runs sandboxed (`auto-accept-edits` = workspace-write sandbox,
+          // escalations gated) rather than inheriting the orchestrator's mode (which could be
+          // `full-access` = no sandbox). An explicit runtimeMode is always respected. Scoped to
+          // this MCP create path only; the global DEFAULT_RUNTIME_MODE / human UI is unchanged.
+          const desiredRuntimeMode = input.runtimeMode ?? "auto-accept-edits";
           const desiredInteractionMode = input.interactionMode ?? currentThread.interactionMode;
           const checkoutInheritanceThread = parentThread ?? currentThread;
           const isSameProjectTarget = targetProjectId === checkoutInheritanceThread.projectId;
           const hasExplicitCheckoutMetadata =
             (input.branch ?? undefined) !== undefined ||
             (input.worktreePath ?? undefined) !== undefined;
+          // MCP-layer safe spawn default (Decision 4): when checkout is fully omitted, a
+          // `top_level` spawn (no parent) defaults to an isolated `new_worktree`, while a
+          // `child_of_thread` spawn keeps inheriting the parent's checkout. An explicit
+          // checkoutMode or explicit branch/worktree metadata is always respected.
           const desiredCheckoutMode =
             input.checkoutMode ??
             (hasExplicitCheckoutMetadata
               ? "new_worktree"
-              : isSameProjectTarget &&
-                  (checkoutInheritanceThread.branch !== null ||
-                    checkoutInheritanceThread.worktreePath !== null)
+              : parentThread === null
                 ? "new_worktree"
-                : "current_checkout");
+                : isSameProjectTarget &&
+                    (checkoutInheritanceThread.branch !== null ||
+                      checkoutInheritanceThread.worktreePath !== null)
+                  ? "new_worktree"
+                  : "current_checkout");
           const hasDeferredEmptyNewWorktree =
             !input.message &&
             input.checkoutMode === "new_worktree" &&
