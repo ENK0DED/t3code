@@ -24,6 +24,7 @@ import { HttpBody, HttpClient, HttpRouter } from "effect/unstable/http";
 
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { CheckpointDiffQuery } from "../checkpointing/Services/CheckpointDiffQuery.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadTurnStartBootstrapDispatcher } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import { ProjectionThreadMessageSearchRepository } from "../persistence/Services/ProjectionThreadMessageSearch.ts";
@@ -145,6 +146,15 @@ const makeIntegrationLayer = (dispatchedCommands: Array<OrchestrationCommand>) =
               threadId === currentThreadId ? Option.some(currentThread) : Option.none(),
             ),
           searchThreadMessagesByProject: () => Effect.succeed([]),
+        }),
+      ),
+    ),
+    Layer.provideMerge(
+      Layer.succeed(
+        CheckpointDiffQuery,
+        CheckpointDiffQuery.of({
+          getTurnDiff: () => Effect.die("unused"),
+          getFullThreadDiff: () => Effect.die("unused"),
         }),
       ),
     ),

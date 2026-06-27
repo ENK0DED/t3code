@@ -52,6 +52,7 @@ import * as Schema from "effect/Schema";
 import { randomUUID } from "node:crypto";
 
 import * as McpInvocationContext from "../McpInvocationContext.ts";
+import { CheckpointDiffQuery } from "../../checkpointing/Services/CheckpointDiffQuery.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadTurnStartBootstrapDispatcher } from "../../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
@@ -67,8 +68,11 @@ import { sanitizeThreadTitle } from "../../textGeneration/TextGenerationUtils.ts
 import {
   McpOrchestrationError,
   McpOrchestrationService,
+  type GetThreadDiffInput,
+  type GetThreadDiffResult,
   type PendingRequest,
   type ProjectActionSummary,
+  type ThreadDiffFileSummary,
 } from "../Services/McpOrchestrationService.ts";
 
 const MCP_STRUCTURED_RESPONSE_MAX_BYTES = 1_000_000;
@@ -705,6 +709,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
     const providerService = yield* ProviderService;
     const serverSettings = yield* ServerSettingsService;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+    const checkpointDiffQuery = yield* CheckpointDiffQuery;
     const textGeneration = yield* TextGeneration;
     const fileSystem = yield* FileSystem.FileSystem;
 
@@ -1938,6 +1943,133 @@ export const McpOrchestrationServiceLive = Layer.effect(
                   }),
               ),
             ),
+          ),
+        ),
+      getThreadDiff: (input: GetThreadDiffInput) =>
+        requireRead().pipe(
+          Effect.flatMap(
+            (): Effect.Effect<GetThreadDiffResult, McpOrchestrationError> =>
+              Effect.gen(function* () {
+                // A range is either fully specified or fully omitted: a half-open range
+                // (only one bound) is ambiguous, so reject it rather than guess the other.
+                const hasFrom = input.fromTurnCount !== undefined;
+                const hasTo = input.toTurnCount !== undefined;
+                if (hasFrom !== hasTo) {
+                  return yield* new McpOrchestrationError({
+                    code: "invalid_input",
+                    message:
+                      "Provide both fromTurnCount and toTurnCount for a range, or omit both to diff the whole thread to its latest turn.",
+                  });
+                }
+                if (
+                  input.fromTurnCount !== undefined &&
+                  input.toTurnCount !== undefined &&
+                  input.fromTurnCount > input.toTurnCount
+                ) {
+                  return yield* new McpOrchestrationError({
+                    code: "invalid_input",
+                    message: "fromTurnCount must be less than or equal to toTurnCount.",
+                  });
+                }
+
+                // Resolve checkpoint context for the thread: it carries each completed
+                // turn's checkpointTurnCount and per-file change summary. This is the same
+                // read the RPC diff path uses, and it lets us resolve "latest" server-side.
+                const context = yield* projectionSnapshotQuery
+                  .getThreadCheckpointContext(input.threadId)
+                  .pipe(
+                    Effect.mapError((error) =>
+                      toInternalError("Failed to read thread checkpoint context.", error),
+                    ),
+                  );
+                if (Option.isNone(context)) {
+                  return yield* new McpOrchestrationError({
+                    code: "unknown_thread",
+                    message: `Thread '${input.threadId}' does not exist.`,
+                  });
+                }
+                const checkpoints = context.value.checkpoints;
+                // Checkpoints exist only for completed turns; the latest completed turn is
+                // the maximum checkpointTurnCount (rows arrive ASC, so this is the last one).
+                const latestTurnCount = checkpoints.reduce(
+                  (max, checkpoint) => Math.max(max, checkpoint.checkpointTurnCount),
+                  0,
+                );
+                if (checkpoints.length === 0) {
+                  return yield* new McpOrchestrationError({
+                    code: "no_thread_checkpoints",
+                    message: `Thread '${input.threadId}' has no completed turns to diff yet.`,
+                  });
+                }
+
+                const ignoreWhitespace = input.ignoreWhitespace ?? true;
+                // Omitted range => full diff from the first checkpoint (turn 0) to the
+                // latest completed turn. Explicit range => turn-range diff.
+                const fromTurnCount = input.fromTurnCount ?? 0;
+                const toTurnCount = input.toTurnCount ?? latestTurnCount;
+
+                const diffResult = yield* (
+                  hasFrom
+                    ? checkpointDiffQuery.getTurnDiff({
+                        threadId: input.threadId,
+                        fromTurnCount,
+                        toTurnCount,
+                        ignoreWhitespace,
+                      })
+                    : checkpointDiffQuery.getFullThreadDiff({
+                        threadId: input.threadId,
+                        toTurnCount,
+                        ignoreWhitespace,
+                      })
+                ).pipe(
+                  Effect.mapError((error) =>
+                    toInternalError("Failed to compute thread diff.", error),
+                  ),
+                );
+
+                // Triage summary from the destination turn's checkpoint files, so the agent
+                // can see what changed even when the unified patch is truncated/omitted.
+                const destinationCheckpoint =
+                  checkpoints.find(
+                    (checkpoint) => checkpoint.checkpointTurnCount === diffResult.toTurnCount,
+                  ) ?? null;
+                const files: ReadonlyArray<ThreadDiffFileSummary> =
+                  destinationCheckpoint === null
+                    ? []
+                    : destinationCheckpoint.files.map((file) => ({
+                        path: file.path,
+                        kind: file.kind,
+                        additions: file.additions,
+                        deletions: file.deletions,
+                      }));
+
+                const payload: GetThreadDiffResult = {
+                  threadId: diffResult.threadId,
+                  fromTurnCount: diffResult.fromTurnCount,
+                  toTurnCount: diffResult.toTurnCount,
+                  diff: diffResult.diff,
+                  files,
+                };
+
+                // Shared maxCharacters -> payload_too_large guard (mirrors get_thread_messages):
+                // a large diff must not exceed one MCP response. The per-file summary still
+                // tells the agent what changed, so it can re-request with a tighter range.
+                const encoded = yield* encodeJsonString(payload).pipe(
+                  Effect.mapError((error) =>
+                    toInternalError("Failed to encode MCP thread diff payload.", error),
+                  ),
+                );
+                const budget = input.maxCharacters ?? MCP_STRUCTURED_RESPONSE_MAX_BYTES;
+                if (Buffer.byteLength(encoded, "utf8") > budget) {
+                  return yield* new McpOrchestrationError({
+                    code: "payload_too_large",
+                    message: `Thread '${input.threadId}' diff is too large for one MCP response.`,
+                    detail:
+                      "Retry with a narrower turn range or a larger maxCharacters; the file summary lists what changed.",
+                  });
+                }
+                return payload;
+              }),
           ),
         ),
       getThreadSettings: (input) =>

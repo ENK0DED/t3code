@@ -25,6 +25,7 @@ import * as Stream from "effect/Stream";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts";
 import { McpOrchestrationService } from "./Services/McpOrchestrationService.ts";
+import { CheckpointDiffQuery } from "../checkpointing/Services/CheckpointDiffQuery.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadTurnStartBootstrapDispatcher } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
@@ -291,6 +292,15 @@ const makeReadHarnessLayer = (input?: {
       ),
     ),
     Layer.provideMerge(ServerSettingsService.layerTest(input?.settings ?? {})),
+    Layer.provideMerge(
+      Layer.succeed(
+        CheckpointDiffQuery,
+        CheckpointDiffQuery.of({
+          getTurnDiff: () => unsupported("getTurnDiff"),
+          getFullThreadDiff: () => unsupported("getFullThreadDiff"),
+        }),
+      ),
+    ),
     Layer.provideMerge(
       Layer.succeed(
         ProjectionSnapshotQuery,

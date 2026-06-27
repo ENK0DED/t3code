@@ -6,6 +6,10 @@ import {
   ProviderInstanceId,
   ThreadId,
   type ModelSelection,
+  type OrchestrationCheckpointSummary,
+  type OrchestrationGetFullThreadDiffInput,
+  type OrchestrationGetTurnDiffInput,
+  type OrchestrationGetTurnDiffResult,
   type OrchestrationProjectShell,
   type OrchestrationThread,
   type OrchestrationThreadShell,
@@ -21,8 +25,12 @@ import * as Cause from "effect/Cause";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts";
 import { McpOrchestrationService } from "./Services/McpOrchestrationService.ts";
+import { CheckpointDiffQuery } from "../checkpointing/Services/CheckpointDiffQuery.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import {
+  ProjectionSnapshotQuery,
+  type ProjectionThreadCheckpointContext,
+} from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadTurnStartBootstrapDispatcher } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import { ProjectionThreadMessageSearchRepository } from "../persistence/Services/ProjectionThreadMessageSearch.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
@@ -85,6 +93,30 @@ const makeThreadDetail = (
   session: input.session ?? null,
 });
 
+const makeCheckpointSummary = (
+  input: Partial<OrchestrationCheckpointSummary> &
+    Pick<OrchestrationCheckpointSummary, "checkpointTurnCount">,
+): OrchestrationCheckpointSummary => ({
+  turnId: input.turnId ?? (`turn-${input.checkpointTurnCount}` as never),
+  checkpointTurnCount: input.checkpointTurnCount,
+  checkpointRef: input.checkpointRef ?? (`ref-${input.checkpointTurnCount}` as never),
+  status: input.status ?? "ready",
+  files: input.files ?? [],
+  assistantMessageId: input.assistantMessageId ?? null,
+  completedAt: input.completedAt ?? "2026-01-01T00:00:00.000Z",
+});
+
+const makeCheckpointContext = (
+  input: Partial<ProjectionThreadCheckpointContext> &
+    Pick<ProjectionThreadCheckpointContext, "threadId" | "checkpoints">,
+): ProjectionThreadCheckpointContext => ({
+  threadId: input.threadId,
+  projectId: input.projectId ?? ProjectId.make("project-1"),
+  workspaceRoot: input.workspaceRoot ?? "/work/project-1",
+  worktreePath: input.worktreePath ?? null,
+  checkpoints: input.checkpoints,
+});
+
 const makeProvider = (input: {
   instanceId: string;
   driver: ServerProvider["driver"];
@@ -109,6 +141,7 @@ const makeProvider = (input: {
 const projectionQueryMock = (input: {
   readonly threadDetail: OrchestrationThread | null;
   readonly threadShells?: ReadonlyArray<OrchestrationThreadShell>;
+  readonly checkpointContext?: ProjectionThreadCheckpointContext | null;
 }) =>
   ProjectionSnapshotQuery.of({
     getCommandReadModel: () => Effect.die("unused"),
@@ -120,7 +153,12 @@ const projectionQueryMock = (input: {
     getActiveProjectByWorkspaceRoot: () => Effect.die("unused"),
     getProjectShellById: () => Effect.die("unused"),
     getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
-    getThreadCheckpointContext: () => Effect.die("unused"),
+    getThreadCheckpointContext: (threadId) =>
+      Effect.succeed(
+        input.checkpointContext && input.checkpointContext.threadId === threadId
+          ? Option.some(input.checkpointContext)
+          : Option.none(),
+      ),
     getFullThreadDiffContext: () => Effect.die("unused"),
     getThreadShellById: (threadId) =>
       Effect.succeed(
@@ -154,12 +192,21 @@ const providerRegistryMock = (providers: ReadonlyArray<ServerProvider>) =>
     streamChanges: Stream.empty,
   });
 
+interface DiffStub {
+  readonly turnDiff?: OrchestrationGetTurnDiffResult;
+  readonly fullThreadDiff?: OrchestrationGetTurnDiffResult;
+  readonly turnDiffCalls?: Array<OrchestrationGetTurnDiffInput>;
+  readonly fullThreadDiffCalls?: Array<OrchestrationGetFullThreadDiffInput>;
+}
+
 const makeHistoryHarnessLayer = (input?: {
   readonly generatedSummary?: string;
   readonly textGenerationModelSelection?: ModelSelection;
   readonly largeMessageText?: string;
   readonly threadDetail?: OrchestrationThread;
   readonly summaryInputs?: Array<ThreadSummaryGenerationInput>;
+  readonly checkpointContext?: ProjectionThreadCheckpointContext | null;
+  readonly diff?: DiffStub;
 }) => {
   const unsupported = (operation: string) => Effect.die(new Error(`${operation} unused`)) as never;
   const thread =
@@ -206,6 +253,7 @@ const makeHistoryHarnessLayer = (input?: {
         ProjectionSnapshotQuery,
         projectionQueryMock({
           threadDetail: thread,
+          checkpointContext: input?.checkpointContext ?? null,
           threadShells: [
             makeThreadShell({
               id: thread.id,
@@ -214,6 +262,29 @@ const makeHistoryHarnessLayer = (input?: {
               modelSelection: thread.modelSelection,
             }),
           ],
+        }),
+      ),
+    ),
+    Layer.provideMerge(
+      Layer.succeed(
+        CheckpointDiffQuery,
+        CheckpointDiffQuery.of({
+          getTurnDiff: (turnInput) =>
+            Effect.sync(() => {
+              input?.diff?.turnDiffCalls?.push(turnInput);
+              if (input?.diff?.turnDiff === undefined) {
+                throw new Error("getTurnDiff stub not configured");
+              }
+              return input.diff.turnDiff;
+            }),
+          getFullThreadDiff: (fullInput) =>
+            Effect.sync(() => {
+              input?.diff?.fullThreadDiffCalls?.push(fullInput);
+              if (input?.diff?.fullThreadDiff === undefined) {
+                throw new Error("getFullThreadDiff stub not configured");
+              }
+              return input.diff.fullThreadDiff;
+            }),
         }),
       ),
     ),
@@ -924,4 +995,251 @@ it.effect("message mode fails for an unknown messageId", () =>
       expect(error.code).toBe("unknown_message");
     }
   }).pipe(Effect.provide(makeHistoryHarnessLayer({ threadDetail: makeMultiTurnThread() }))),
+);
+
+const diffThreadId = ThreadId.make("thread-diff");
+
+const diffThreadDetail = makeThreadDetail({
+  id: diffThreadId,
+  projectId: ProjectId.make("project-1"),
+  title: "Worktree change",
+});
+
+it.effect(
+  "get_thread_diff resolves the latest turn and returns a full thread diff when the range is omitted",
+  () =>
+    (() => {
+      const fullThreadDiffCalls: Array<OrchestrationGetFullThreadDiffInput> = [];
+      const turnDiffCalls: Array<OrchestrationGetTurnDiffInput> = [];
+      return Effect.gen(function* () {
+        const service = yield* McpOrchestrationService;
+        const result = (yield* service.getThreadDiff({
+          threadId: diffThreadId,
+        })) as {
+          readonly threadId: string;
+          readonly fromTurnCount: number;
+          readonly toTurnCount: number;
+          readonly diff: string;
+          readonly files: ReadonlyArray<{
+            readonly path: string;
+            readonly kind: string;
+            readonly additions: number;
+            readonly deletions: number;
+          }>;
+        };
+
+        // The full-thread RPC is invoked (not the turn-range one), with the latest
+        // completed checkpointTurnCount (2) resolved server-side as the destination.
+        expect(turnDiffCalls).toHaveLength(0);
+        expect(fullThreadDiffCalls).toEqual([
+          { threadId: diffThreadId, toTurnCount: 2, ignoreWhitespace: true },
+        ]);
+        expect(result.threadId).toBe("thread-diff");
+        expect(result.fromTurnCount).toBe(0);
+        expect(result.toTurnCount).toBe(2);
+        expect(result.diff).toBe("--- full diff body ---");
+        // File summary is shaped from the destination turn's checkpoint files.
+        expect(result.files).toEqual([
+          { path: "src/a.ts", kind: "modified", additions: 4, deletions: 1 },
+          { path: "src/b.ts", kind: "added", additions: 9, deletions: 0 },
+        ]);
+      }).pipe(
+        Effect.provide(
+          makeHistoryHarnessLayer({
+            threadDetail: diffThreadDetail,
+            checkpointContext: makeCheckpointContext({
+              threadId: diffThreadId,
+              checkpoints: [
+                makeCheckpointSummary({ checkpointTurnCount: 1 }),
+                makeCheckpointSummary({
+                  checkpointTurnCount: 2,
+                  files: [
+                    { path: "src/a.ts", kind: "modified", additions: 4, deletions: 1 } as never,
+                    { path: "src/b.ts", kind: "added", additions: 9, deletions: 0 } as never,
+                  ],
+                }),
+              ],
+            }),
+            diff: {
+              fullThreadDiff: {
+                threadId: diffThreadId,
+                fromTurnCount: 0,
+                toTurnCount: 2,
+                diff: "--- full diff body ---",
+              },
+              fullThreadDiffCalls,
+              turnDiffCalls,
+            },
+          }),
+        ),
+      );
+    })(),
+);
+
+it.effect("get_thread_diff passes an explicit turn range through to the turn-range RPC", () =>
+  (() => {
+    const fullThreadDiffCalls: Array<OrchestrationGetFullThreadDiffInput> = [];
+    const turnDiffCalls: Array<OrchestrationGetTurnDiffInput> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = (yield* service.getThreadDiff({
+        threadId: diffThreadId,
+        fromTurnCount: 1,
+        toTurnCount: 2,
+        ignoreWhitespace: false,
+      })) as {
+        readonly fromTurnCount: number;
+        readonly toTurnCount: number;
+        readonly diff: string;
+        readonly files: ReadonlyArray<{ readonly path: string }>;
+      };
+
+      // The turn-range RPC is invoked with the exact range and ignoreWhitespace passthrough.
+      expect(fullThreadDiffCalls).toHaveLength(0);
+      expect(turnDiffCalls).toEqual([
+        { threadId: diffThreadId, fromTurnCount: 1, toTurnCount: 2, ignoreWhitespace: false },
+      ]);
+      expect(result.fromTurnCount).toBe(1);
+      expect(result.toTurnCount).toBe(2);
+      expect(result.diff).toBe("--- range diff body ---");
+      expect(result.files).toEqual([
+        { path: "src/b.ts", kind: "added", additions: 9, deletions: 0 },
+      ]);
+    }).pipe(
+      Effect.provide(
+        makeHistoryHarnessLayer({
+          threadDetail: diffThreadDetail,
+          checkpointContext: makeCheckpointContext({
+            threadId: diffThreadId,
+            checkpoints: [
+              makeCheckpointSummary({ checkpointTurnCount: 1 }),
+              makeCheckpointSummary({
+                checkpointTurnCount: 2,
+                files: [{ path: "src/b.ts", kind: "added", additions: 9, deletions: 0 } as never],
+              }),
+            ],
+          }),
+          diff: {
+            turnDiff: {
+              threadId: diffThreadId,
+              fromTurnCount: 1,
+              toTurnCount: 2,
+              diff: "--- range diff body ---",
+            },
+            fullThreadDiffCalls,
+            turnDiffCalls,
+          },
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("get_thread_diff enforces maxCharacters with a payload_too_large error", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.getThreadDiff({
+        threadId: diffThreadId,
+        maxCharacters: 16,
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("payload_too_large");
+    }
+  }).pipe(
+    Effect.provide(
+      makeHistoryHarnessLayer({
+        threadDetail: diffThreadDetail,
+        checkpointContext: makeCheckpointContext({
+          threadId: diffThreadId,
+          checkpoints: [makeCheckpointSummary({ checkpointTurnCount: 1 })],
+        }),
+        diff: {
+          fullThreadDiff: {
+            threadId: diffThreadId,
+            fromTurnCount: 0,
+            toTurnCount: 1,
+            diff: "x".repeat(5_000),
+          },
+        },
+      }),
+    ),
+  ),
+);
+
+it.effect("get_thread_diff rejects a half-specified turn range", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.getThreadDiff({
+        threadId: diffThreadId,
+        toTurnCount: 2,
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("invalid_input");
+    }
+  }).pipe(
+    Effect.provide(
+      makeHistoryHarnessLayer({
+        threadDetail: diffThreadDetail,
+        checkpointContext: makeCheckpointContext({
+          threadId: diffThreadId,
+          checkpoints: [makeCheckpointSummary({ checkpointTurnCount: 2 })],
+        }),
+      }),
+    ),
+  ),
+);
+
+it.effect(
+  "get_thread_diff reports no_thread_checkpoints when the thread has no completed turns",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const exit = yield* Effect.exit(service.getThreadDiff({ threadId: diffThreadId }));
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause) as { readonly code: string };
+        expect(error.code).toBe("no_thread_checkpoints");
+      }
+    }).pipe(
+      Effect.provide(
+        makeHistoryHarnessLayer({
+          threadDetail: diffThreadDetail,
+          checkpointContext: makeCheckpointContext({
+            threadId: diffThreadId,
+            checkpoints: [],
+          }),
+        }),
+      ),
+    ),
+);
+
+it.effect("get_thread_diff fails with unknown_thread when no checkpoint context exists", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(service.getThreadDiff({ threadId: diffThreadId }));
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("unknown_thread");
+    }
+  }).pipe(
+    Effect.provide(
+      makeHistoryHarnessLayer({
+        threadDetail: diffThreadDetail,
+        checkpointContext: null,
+      }),
+    ),
+  ),
 );

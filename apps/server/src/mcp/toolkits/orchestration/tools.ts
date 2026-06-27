@@ -285,6 +285,53 @@ export const GetThreadMessagesTool = Tool.make("get_thread_messages", {
   dependencies,
 });
 
+export const GetThreadDiffTool = Tool.make("get_thread_diff", {
+  description:
+    "Return the code changes an MCP-managed sub-thread produced, as a unified git diff plus a structured per-file summary (path, change kind, added/removed line counts) so you can triage what changed without parsing the patch. Omit BOTH fromTurnCount and toTurnCount to get the full diff from the thread's first checkpoint to its latest completed turn (resolved server-side) — the single-call way to collect everything a child changed. Provide a turn range for a narrower diff. Turn counts are the zero-based checkpointTurnCount ordinals reported by checkpoints and get_thread_messages (mode=turn).",
+  success: Schema.Unknown,
+  failure: McpOrchestrationError,
+  parameters: Schema.Struct({
+    threadId: ThreadIdInput,
+    fromTurnCount: Schema.optional(
+      NonNegativeInt.annotate({
+        description:
+          "Start of the turn range (exclusive lower checkpoint), as a zero-based checkpointTurnCount. Omit together with toTurnCount to diff the whole thread to its latest completed turn. If provided, toTurnCount must also be provided and be >= fromTurnCount.",
+      }),
+    ).annotate({
+      description:
+        "Start of the turn range (exclusive lower checkpoint), as a zero-based checkpointTurnCount. Omit together with toTurnCount to diff the whole thread to its latest completed turn. If provided, toTurnCount must also be provided and be >= fromTurnCount.",
+    }),
+    toTurnCount: Schema.optional(
+      NonNegativeInt.annotate({
+        description:
+          "End of the turn range (inclusive upper checkpoint), as a zero-based checkpointTurnCount. Omit together with fromTurnCount to diff the whole thread to its latest completed turn. If provided, fromTurnCount must also be provided and be <= toTurnCount.",
+      }),
+    ).annotate({
+      description:
+        "End of the turn range (inclusive upper checkpoint), as a zero-based checkpointTurnCount. Omit together with fromTurnCount to diff the whole thread to its latest completed turn. If provided, fromTurnCount must also be provided and be <= toTurnCount.",
+    }),
+    ignoreWhitespace: Schema.optional(
+      Schema.Boolean.annotate({
+        description:
+          "Whether to ignore whitespace-only changes when computing the diff. Defaults to true.",
+      }),
+    ).annotate({
+      description:
+        "Whether to ignore whitespace-only changes when computing the diff. Defaults to true.",
+    }),
+    maxCharacters: Schema.optional(
+      Schema.Int.check(Schema.isGreaterThan(0)).annotate({
+        description:
+          "Maximum serialized response size allowed before returning payload_too_large. Use to bound a large diff; the per-file summary still tells you what changed when the patch is too big.",
+      }),
+    ).annotate({
+      description:
+        "Maximum serialized response size allowed before returning payload_too_large. Use to bound a large diff; the per-file summary still tells you what changed when the patch is too big.",
+    }),
+  }),
+  dependencies,
+});
+
 export const GetThreadSettingsTool = Tool.make("get_thread_settings", {
   description:
     "Return thread settings and resolved model details. Omit threadId to inspect the current MCP credential thread.",
@@ -631,4 +678,5 @@ export const OrchestrationToolkit = Toolkit.make(
   DeleteThreadTool,
   ArchiveThreadTool,
   UnarchiveThreadTool,
+  GetThreadDiffTool,
 );

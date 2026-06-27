@@ -27,6 +27,7 @@ import * as Stream from "effect/Stream";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts";
 import { McpOrchestrationService } from "./Services/McpOrchestrationService.ts";
+import { CheckpointDiffQuery } from "../checkpointing/Services/CheckpointDiffQuery.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadTurnStartBootstrapDispatcherLive } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
@@ -338,6 +339,15 @@ const makeWriteHarnessLayer = (input?: {
           projects,
           threadDetailById,
           threadShellById,
+        }),
+      ),
+    ),
+    Layer.provideMerge(
+      Layer.succeed(
+        CheckpointDiffQuery,
+        CheckpointDiffQuery.of({
+          getTurnDiff: () => unsupported("getTurnDiff"),
+          getFullThreadDiff: () => unsupported("getFullThreadDiff"),
         }),
       ),
     ),

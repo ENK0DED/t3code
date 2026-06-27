@@ -29,6 +29,7 @@ const expectedToolNames = [
   "delete_thread",
   "archive_thread",
   "unarchive_thread",
+  "get_thread_diff",
 ] as const;
 
 const schemaHasDescription = (schema: unknown): boolean => {

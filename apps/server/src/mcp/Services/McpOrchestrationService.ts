@@ -261,6 +261,34 @@ export interface GetThreadMessagesInput {
   readonly maxCharacters?: number | undefined;
 }
 
+export interface GetThreadDiffInput {
+  readonly threadId: ThreadId;
+  readonly fromTurnCount?: number | undefined;
+  readonly toTurnCount?: number | undefined;
+  readonly ignoreWhitespace?: boolean | undefined;
+  readonly maxCharacters?: number | undefined;
+}
+
+/**
+ * One changed file in a thread diff, summarized from the destination turn's
+ * checkpoint `files` array so an orchestrator can triage what changed without
+ * parsing the unified patch. `additions`/`deletions` are line counts.
+ */
+export interface ThreadDiffFileSummary {
+  readonly path: string;
+  readonly kind: string;
+  readonly additions: number;
+  readonly deletions: number;
+}
+
+export interface GetThreadDiffResult {
+  readonly threadId: ThreadId;
+  readonly fromTurnCount: number;
+  readonly toTurnCount: number;
+  readonly diff: string;
+  readonly files: ReadonlyArray<ThreadDiffFileSummary>;
+}
+
 export interface McpOrchestrationServiceShape {
   readonly listMcpModels: () => Effect.Effect<
     ListMcpModelsResult,
@@ -333,6 +361,13 @@ export interface McpOrchestrationServiceShape {
   readonly getThreadMessages: (
     input: GetThreadMessagesInput,
   ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
+  readonly getThreadDiff: (
+    input: GetThreadDiffInput,
+  ) => Effect.Effect<
+    GetThreadDiffResult,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext
+  >;
   readonly getThreadSettings: (input: {
     readonly threadId?: ThreadId | undefined;
   }) => Effect.Effect<
