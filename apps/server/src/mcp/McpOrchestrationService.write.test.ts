@@ -574,6 +574,58 @@ it.effect("updateProjectSettings dispatches project metadata updates", () =>
   })(),
 );
 
+it.effect("updateProjectSettings trims title before dispatch", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* service.updateProjectSettings({
+        projectId: ProjectId.make("project-current"),
+        title: "  Renamed Project  ",
+      });
+
+      expect(dispatchedCommands).toContainEqual(
+        expect.objectContaining({
+          type: "project.meta.update",
+          projectId: ProjectId.make("project-current"),
+          title: "Renamed Project",
+        }),
+      );
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          projects: [makeProjectShell({ id: ProjectId.make("project-current") })],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("updateProjectSettings rejects whitespace-only titles", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.updateProjectSettings({
+        projectId: ProjectId.make("project-current"),
+        title: "   ",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("project_settings_invalid_title");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        projects: [makeProjectShell({ id: ProjectId.make("project-current") })],
+      }),
+    ),
+  ),
+);
+
 it.effect("updateProjectSettings rejects empty updates", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
@@ -912,6 +964,70 @@ it.effect("updateProjectAction clears preview metadata when previewUrl is null",
       ),
     );
   })(),
+);
+
+it.effect("createProjectAction rejects whitespace-only previewUrl values", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.createProjectAction({
+        projectId: ProjectId.make("project-current"),
+        name: "Dev",
+        command: "bun dev",
+        previewUrl: "   ",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("project_action_invalid_preview");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        projects: [makeProjectShell({ id: ProjectId.make("project-current"), scripts: [] })],
+      }),
+    ),
+  ),
+);
+
+it.effect("updateProjectAction rejects whitespace-only previewUrl values", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.updateProjectAction({
+        projectId: ProjectId.make("project-current"),
+        actionId: "dev",
+        previewUrl: "   ",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("project_action_invalid_preview");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        projects: [
+          makeProjectShell({
+            id: ProjectId.make("project-current"),
+            scripts: [
+              {
+                id: "dev",
+                name: "Dev",
+                command: "bun dev",
+                icon: "play",
+                runOnWorktreeCreate: false,
+              },
+            ],
+          }),
+        ],
+      }),
+    ),
+  ),
 );
 
 it.effect("deleteProjectAction returns sanitized deleted action and actionsAfterChange", () =>
@@ -1675,6 +1791,51 @@ it.effect("createThread stores branch metadata on empty new_worktree threads", (
   })(),
 );
 
+it.effect(
+  "createThread with explicit empty new_worktree does not inherit the current worktree metadata",
+  () =>
+    (() => {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      return Effect.gen(function* () {
+        const service = yield* McpOrchestrationService;
+        const result = yield* service.createThread({
+          title: "Metadata-only thread",
+          checkoutMode: "new_worktree",
+        });
+
+        expect(result).toMatchObject({
+          status: "created",
+          thread: {
+            branch: null,
+            worktreePath: null,
+          },
+        });
+        expect(dispatchedCommands).toContainEqual(
+          expect.objectContaining({
+            type: "thread.create",
+            title: "Metadata-only thread",
+            branch: null,
+            worktreePath: null,
+          }),
+        );
+      }).pipe(
+        Effect.provide(
+          makeWriteHarnessLayer({
+            dispatchedCommands,
+            threadDetails: [
+              threadDetail({
+                id: ThreadId.make("thread-current"),
+                projectId: ProjectId.make("project-current"),
+                branch: "feature/current",
+                worktreePath: "/work/current/.worktrees/current",
+              }),
+            ],
+          }),
+        ),
+      );
+    })(),
+);
+
 it.effect("createThread rejects branch without explicit new_worktree checkout mode", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
@@ -1901,6 +2062,97 @@ it.effect(
     })(),
 );
 
+it.effect("sendThreadMessage persists a modelSelection change before starting the turn", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.sendThreadMessage({
+        threadId: ThreadId.make("thread-current"),
+        message: "Continue",
+        modelSelection: defaultModelSelection({
+          options: [{ id: "reasoningEffort", value: "high" }],
+        }),
+      });
+
+      expect(result).toMatchObject({
+        status: "accepted",
+        threadId: "thread-current",
+        sequence: 2,
+      });
+      expect(dispatchedCommands.map((command) => command.type)).toEqual([
+        "thread.meta.update",
+        "thread.turn.start",
+      ]);
+      expect(dispatchedCommands[0]).toMatchObject({
+        type: "thread.meta.update",
+        threadId: "thread-current",
+        modelSelection: defaultModelSelection({
+          options: [{ id: "reasoningEffort", value: "high" }],
+        }),
+      });
+      expect(dispatchedCommands[1]).toMatchObject({
+        type: "thread.turn.start",
+        threadId: "thread-current",
+        modelSelection: defaultModelSelection({
+          options: [{ id: "reasoningEffort", value: "high" }],
+        }),
+      });
+    }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
+  })(),
+);
+
+it.effect(
+  "sendThreadMessage new_worktree bootstrap reuses stored branch metadata for empty threads",
+  () =>
+    (() => {
+      const createWorktreeCalls: Array<{
+        readonly cwd: string;
+        readonly refName: string;
+        readonly newRefName?: string | undefined;
+        readonly path: string | null;
+      }> = [];
+      return Effect.gen(function* () {
+        const service = yield* McpOrchestrationService;
+        const result = yield* service.sendThreadMessage({
+          threadId: ThreadId.make("thread-current"),
+          message: "Bootstrap this thread",
+          checkoutMode: "new_worktree",
+          baseBranch: "main",
+        });
+
+        expect(result).toMatchObject({
+          status: "accepted",
+          threadId: "thread-current",
+        });
+        expect(createWorktreeCalls).toEqual([
+          {
+            cwd: "/work/current",
+            refName: "main",
+            newRefName: "feature/persisted",
+            path: null,
+          },
+        ]);
+      }).pipe(
+        Effect.provide(
+          makeWriteHarnessLayer({
+            createWorktreeCalls,
+            threadDetails: [
+              threadDetail({
+                id: ThreadId.make("thread-current"),
+                projectId: ProjectId.make("project-current"),
+                title: "Current Thread",
+                branch: "feature/persisted",
+                worktreePath: null,
+                messages: [],
+              }),
+            ],
+          }),
+        ),
+      );
+    })(),
+);
+
 it.effect("updateThreadSettings rejects invalid option values", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
@@ -1967,6 +2219,58 @@ it.effect("updateThreadSettings can rename an idle active thread", () =>
       ),
     );
   })(),
+);
+
+it.effect("updateThreadSettings trims title before dispatch", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* service.updateThreadSettings({
+        threadId: ThreadId.make("thread-current"),
+        title: "  Renamed thread  ",
+      });
+
+      expect(dispatchedCommands).toContainEqual(
+        expect.objectContaining({
+          type: "thread.meta.update",
+          threadId: ThreadId.make("thread-current"),
+          title: "Renamed thread",
+        }),
+      );
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          threadDetails: [threadDetail({ id: ThreadId.make("thread-current") })],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("updateThreadSettings rejects whitespace-only titles", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.updateThreadSettings({
+        threadId: ThreadId.make("thread-current"),
+        title: "   ",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("thread_settings_invalid_title");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        threadDetails: [threadDetail({ id: ThreadId.make("thread-current") })],
+      }),
+    ),
+  ),
 );
 
 it.effect("updateThreadSettings rejects current checkout with non-null worktreePath", () =>

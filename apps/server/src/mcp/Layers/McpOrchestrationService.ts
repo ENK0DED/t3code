@@ -293,6 +293,14 @@ function validateProjectActionPreview(input: {
 }): Effect.Effect<void, McpOrchestrationError> {
   const providedPreviewUrl =
     typeof input.previewUrl === "string" ? input.previewUrl.trim() : input.previewUrl;
+  if (typeof input.previewUrl === "string" && input.previewUrl.trim().length === 0) {
+    return Effect.fail(
+      new McpOrchestrationError({
+        code: "project_action_invalid_preview",
+        message: "previewUrl must be non-empty after trimming.",
+      }),
+    );
+  }
   if (input.autoOpenPreview === true && !providedPreviewUrl && !input.resultingPreviewUrl) {
     return Effect.fail(
       new McpOrchestrationError({
@@ -328,6 +336,24 @@ function trimProjectActionCommand(command: string): Effect.Effect<string, McpOrc
     new McpOrchestrationError({
       code: "project_action_invalid_command",
       message: "Project Action command must be non-empty after trimming.",
+    }),
+  );
+}
+
+function trimSettingsTitle(input: {
+  readonly title: string;
+  readonly code: string;
+  readonly subject: "Project" | "Thread";
+}): Effect.Effect<string, McpOrchestrationError> {
+  const trimmed = input.title.trim();
+  if (trimmed.length > 0) {
+    return Effect.succeed(trimmed);
+  }
+
+  return Effect.fail(
+    new McpOrchestrationError({
+      code: input.code,
+      message: `${input.subject} title must be non-empty after trimming.`,
     }),
   );
 }
@@ -1053,13 +1079,21 @@ export const McpOrchestrationServiceLive = Layer.effect(
           if (input.defaultModelSelection !== undefined && input.defaultModelSelection !== null) {
             yield* validateMcpModelSelection(input.defaultModelSelection);
           }
+          const nextTitle =
+            input.title === undefined
+              ? undefined
+              : yield* trimSettingsTitle({
+                  title: input.title,
+                  code: "project_settings_invalid_title",
+                  subject: "Project",
+                });
 
           const accepted = yield* orchestrationEngine
             .dispatch({
               type: "project.meta.update",
               commandId: makeCommandId("project-meta-update"),
               projectId: project.id,
-              ...(input.title !== undefined ? { title: input.title } : {}),
+              ...(nextTitle !== undefined ? { title: nextTitle } : {}),
               ...(input.defaultModelSelection !== undefined
                 ? { defaultModelSelection: input.defaultModelSelection }
                 : {}),
@@ -1539,18 +1573,27 @@ export const McpOrchestrationServiceLive = Layer.effect(
                   (currentThread.branch !== null || currentThread.worktreePath !== null)
                 ? "new_worktree"
                 : "current_checkout");
+          const hasDeferredEmptyNewWorktree =
+            !input.message &&
+            input.checkoutMode === "new_worktree" &&
+            input.baseBranch === undefined;
           const shouldPrepareWorktree =
-            input.checkoutMode === "new_worktree" || input.baseBranch !== undefined;
+            input.message !== undefined &&
+            (input.checkoutMode === "new_worktree" || input.baseBranch !== undefined);
           const desiredBranch =
             desiredCheckoutMode === "current_checkout"
               ? null
-              : (input.branch ?? (isSameProjectTarget ? currentThread.branch : null) ?? null);
+              : hasDeferredEmptyNewWorktree
+                ? (input.branch ?? null)
+                : (input.branch ?? (isSameProjectTarget ? currentThread.branch : null) ?? null);
           const desiredWorktreePath =
             desiredCheckoutMode === "current_checkout"
               ? null
-              : (input.worktreePath ??
-                (isSameProjectTarget ? currentThread.worktreePath : null) ??
-                null);
+              : hasDeferredEmptyNewWorktree
+                ? null
+                : (input.worktreePath ??
+                  (isSameProjectTarget ? currentThread.worktreePath : null) ??
+                  null);
           const title = sanitizeThreadTitle(input.title ?? input.message ?? "New thread");
           const createdAt = yield* currentIsoTimestamp();
           const threadId = makeThreadId();
@@ -1689,6 +1732,23 @@ export const McpOrchestrationServiceLive = Layer.effect(
 
           const messageId = makeMessageId();
           const createdAt = yield* currentIsoTimestamp();
+          if (
+            input.modelSelection !== undefined &&
+            !Equal.equals(thread.modelSelection, desiredModelSelection)
+          ) {
+            yield* orchestrationEngine
+              .dispatch({
+                type: "thread.meta.update",
+                commandId: makeCommandId("thread-meta-model"),
+                threadId: input.threadId,
+                modelSelection: desiredModelSelection,
+              })
+              .pipe(
+                Effect.mapError((error) =>
+                  toInternalError("Failed to dispatch orchestration command.", error),
+                ),
+              );
+          }
           const accepted =
             input.checkoutMode === "new_worktree"
               ? yield* requireProject(thread.projectId).pipe(
@@ -1711,7 +1771,10 @@ export const McpOrchestrationServiceLive = Layer.effect(
                         prepareWorktree: {
                           projectCwd: project.workspaceRoot,
                           baseBranch: input.baseBranch!,
-                          branch: input.branch ?? buildTemporaryWorktreeBranchName(randomHex),
+                          branch:
+                            input.branch ??
+                            thread.branch ??
+                            buildTemporaryWorktreeBranchName(randomHex),
                         },
                         runSetupScript: true,
                       },
@@ -1788,7 +1851,13 @@ export const McpOrchestrationServiceLive = Layer.effect(
           });
 
           const desiredTitle =
-            input.title === undefined ? thread.title : sanitizeThreadTitle(input.title);
+            input.title === undefined
+              ? thread.title
+              : yield* trimSettingsTitle({
+                  title: input.title,
+                  code: "thread_settings_invalid_title",
+                  subject: "Thread",
+                });
           const desiredRuntimeMode = input.runtimeMode ?? thread.runtimeMode;
           const hasBranchInput = hasProvidedKey(input, "branch");
           const hasWorktreePathInput = hasProvidedKey(input, "worktreePath");
