@@ -150,6 +150,7 @@ const TestLayer = McpHttpServer.McpToolkitRegistrationLive.pipe(
           }),
         ),
       ),
+      Layer.provideMerge(NodeServices.layer),
     ),
   ),
 );

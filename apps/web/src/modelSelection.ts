@@ -12,6 +12,7 @@ import {
   normalizeModelSlug,
   resolveSelectableModel,
 } from "@t3tools/shared/model";
+export { isModelEnabledForMcp } from "@t3tools/shared/mcpModels";
 import { getComposerProviderState } from "./components/chat/composerProviderState";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
@@ -326,14 +327,6 @@ export function resolveAppModelSelectionState(
   });
 
   return createModelSelection(defaultInstanceIdForDriver(provider), model, modelOptionsForDispatch);
-}
-
-export function isModelEnabledForMcp(input: {
-  readonly mcpDisabledModelsByProvider: Record<string, readonly string[]>;
-  readonly instanceId: string;
-  readonly model: string;
-}): boolean {
-  return !(input.mcpDisabledModelsByProvider[input.instanceId] ?? []).includes(input.model);
 }
 
 export function toggleModelMcpDisabled(input: {

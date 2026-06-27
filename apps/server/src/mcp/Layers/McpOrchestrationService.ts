@@ -12,12 +12,12 @@ import {
   type RuntimeMode,
   type ServerProvider,
   type ServerProviderModel,
-  type ServerSettings,
   ThreadId,
 } from "@t3tools/contracts";
 import { buildProjectCreateCommand, resolveAddProjectPath } from "@t3tools/shared/addProject";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { isModelEnabledForMcp } from "@t3tools/shared/mcpModels";
 import { getProviderOptionCurrentLabel, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import {
   canThreadCreateChild,
@@ -40,6 +40,7 @@ import {
 import { normalizeProjectPathForComparison } from "@t3tools/shared/projectPaths";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -65,6 +66,13 @@ import {
 } from "../Services/McpOrchestrationService.ts";
 
 const MCP_STRUCTURED_RESPONSE_MAX_BYTES = 1_000_000;
+/**
+ * Summary mode sends transcript text to a model instead of returning encoded JSON.
+ * Keep its input cap aligned with the complete-history response ceiling so summary
+ * mode cannot process more transcript text than complete mode can return at once.
+ */
+const MCP_THREAD_SUMMARY_INPUT_MAX_CHARACTERS = MCP_STRUCTURED_RESPONSE_MAX_BYTES;
+const MCP_THREAD_SUMMARY_OMITTED_MARKER = "[earlier messages omitted]";
 const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
 
 const requireRead = Effect.fn("McpOrchestrationService.requireRead")(function* () {
@@ -140,19 +148,78 @@ function toNotFoundError(message: string): McpOrchestrationError {
   });
 }
 
-function isModelMcpEnabled(input: {
-  readonly settings: ServerSettings;
-  readonly instanceId: ProviderInstanceId;
-  readonly model: string;
-}): boolean {
-  const disabled = input.settings.mcpDisabledModelsByProvider[input.instanceId] ?? [];
-  return !disabled.includes(input.model);
+function invalidProjectPath(message: string): McpOrchestrationError {
+  return new McpOrchestrationError({
+    code: "invalid_project_path",
+    message,
+  });
 }
+
+const requireExistingMcpProjectDirectory = Effect.fn(
+  "McpOrchestrationService.requireExistingMcpProjectDirectory",
+)(function* (fileSystem: FileSystem.FileSystem, path: string) {
+  const stats = yield* fileSystem
+    .stat(path)
+    .pipe(
+      Effect.mapError(() =>
+        invalidProjectPath(
+          `Project path '${path}' must already exist for MCP add_project; MCP cannot create directories.`,
+        ),
+      ),
+    );
+  if (stats.type !== "Directory") {
+    return yield* invalidProjectPath(`Project path '${path}' must be an existing directory.`);
+  }
+});
 
 function modelOptionDescriptors(
   model: ServerProviderModel,
 ): ReadonlyArray<ProviderOptionDescriptor> {
   return model.capabilities?.optionDescriptors ?? [];
+}
+
+type ThreadSummaryMessage = {
+  readonly role: "user" | "assistant" | "system";
+  readonly text: string;
+  readonly createdAt: string;
+};
+
+function applyThreadSummaryInputBudget(
+  messages: ReadonlyArray<ThreadSummaryMessage>,
+): ReadonlyArray<ThreadSummaryMessage> {
+  const totalCharacters = messages.reduce((sum, message) => sum + message.text.length, 0);
+  if (totalCharacters <= MCP_THREAD_SUMMARY_INPUT_MAX_CHARACTERS) {
+    return messages;
+  }
+
+  const retainedReversed: Array<ThreadSummaryMessage> = [];
+  let remaining =
+    MCP_THREAD_SUMMARY_INPUT_MAX_CHARACTERS - MCP_THREAD_SUMMARY_OMITTED_MARKER.length;
+
+  for (let index = messages.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.text.length <= remaining) {
+      retainedReversed.push(message);
+      remaining -= message.text.length;
+      continue;
+    }
+
+    retainedReversed.push({
+      ...message,
+      text: message.text.slice(message.text.length - remaining),
+    });
+    remaining = 0;
+  }
+
+  const retained = retainedReversed.toReversed();
+  return [
+    {
+      role: "system",
+      text: MCP_THREAD_SUMMARY_OMITTED_MARKER,
+      createdAt: retained[0]?.createdAt ?? messages[0]?.createdAt ?? "",
+    },
+    ...retained,
+  ];
 }
 
 function isThreadIdleReady(thread: {
@@ -412,6 +479,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
     const serverSettings = yield* ServerSettingsService;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const textGeneration = yield* TextGeneration;
+    const fileSystem = yield* FileSystem.FileSystem;
 
     const currentIsoTimestamp = () =>
       Clock.currentTimeMillis.pipe(
@@ -738,8 +806,8 @@ export const McpOrchestrationServiceLive = Layer.effect(
               });
             }
             if (
-              !isModelMcpEnabled({
-                settings,
+              !isModelEnabledForMcp({
+                mcpDisabledModelsByProvider: settings.mcpDisabledModelsByProvider,
                 instanceId: selection.instanceId,
                 model: selection.model,
               })
@@ -851,7 +919,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           message: `max_thread_depth_exceeded: Thread '${input.parentThreadId}' is already at the maximum thread depth of ${MAX_THREAD_TREE_DEPTH}.`,
         });
       }
-      return parentThread.id;
+      return parentThread;
     });
 
     const validateSessionCompatibility = Effect.fn(
@@ -959,8 +1027,8 @@ export const McpOrchestrationServiceLive = Layer.effect(
                     models: Object.fromEntries(
                       provider.models
                         .filter((model) =>
-                          isModelMcpEnabled({
-                            settings,
+                          isModelEnabledForMcp({
+                            mcpDisabledModelsByProvider: settings.mcpDisabledModelsByProvider,
                             instanceId: provider.instanceId,
                             model: model.slug,
                           }),
@@ -1345,22 +1413,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
       getThreadHistory: (input) =>
         requireRead().pipe(
           Effect.flatMap(() =>
-            projectionSnapshotQuery.getThreadDetailById(input.threadId).pipe(
-              Effect.mapError((error) =>
-                toInternalError("Failed to read orchestration thread history.", error),
-              ),
-              Effect.flatMap((detail) =>
-                Option.match(detail, {
-                  onNone: () =>
-                    Effect.fail(
-                      new McpOrchestrationError({
-                        code: "unknown_thread",
-                        message: `Thread '${input.threadId}' does not exist.`,
-                      }),
-                    ),
-                  onSome: Effect.succeed,
-                }),
-              ),
+            requireThreadDetail(input.threadId).pipe(
               Effect.flatMap(
                 (thread): Effect.Effect<unknown, McpOrchestrationError> =>
                   Effect.gen(function* () {
@@ -1376,11 +1429,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
                         ),
                       );
                       const budget = input.maxCharacters ?? MCP_STRUCTURED_RESPONSE_MAX_BYTES;
-                      const encodedSize =
-                        input.maxCharacters === undefined
-                          ? Buffer.byteLength(encoded, "utf8")
-                          : encoded.length;
-                      if (encodedSize > budget) {
+                      if (Buffer.byteLength(encoded, "utf8") > budget) {
                         return yield* new McpOrchestrationError({
                           code: "payload_too_large",
                           message: `Thread '${input.threadId}' history is too large for one MCP response.`,
@@ -1398,11 +1447,13 @@ export const McpOrchestrationServiceLive = Layer.effect(
                     const summary = yield* textGeneration
                       .generateThreadSummary({
                         threadTitle: thread.title,
-                        messages: thread.messages.map((message) => ({
-                          role: message.role,
-                          text: message.text,
-                          createdAt: message.createdAt,
-                        })),
+                        messages: applyThreadSummaryInputBudget(
+                          thread.messages.map((message) => ({
+                            role: message.role,
+                            text: message.text,
+                            createdAt: message.createdAt,
+                          })),
+                        ),
                         maxOutputCharacters: 12_000,
                         modelSelection: settings.textGenerationModelSelection,
                       })
@@ -1474,10 +1525,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
             platform,
           });
           if (!resolved.ok) {
-            return yield* new McpOrchestrationError({
-              code: "invalid_project_path",
-              message: resolved.error,
-            });
+            return yield* invalidProjectPath(resolved.error);
           }
 
           const existing = yield* findExistingProjectByWorkspaceRoot(resolved.path);
@@ -1488,6 +1536,8 @@ export const McpOrchestrationServiceLive = Layer.effect(
             };
           }
 
+          yield* requireExistingMcpProjectDirectory(fileSystem, resolved.path);
+
           const createdAt = yield* currentIsoTimestamp();
           const projectId = makeProjectId();
           const createCommand = buildProjectCreateCommand({
@@ -1495,6 +1545,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
             projectId,
             workspaceRoot: resolved.path,
             createdAt,
+            createWorkspaceRootIfMissing: false,
           });
           const accepted = yield* orchestrationEngine
             .dispatch(createCommand)
@@ -1557,11 +1608,15 @@ export const McpOrchestrationServiceLive = Layer.effect(
             placement: input.placement,
             explicitParentThreadId: input.parentThreadId,
           });
-          yield* validateParentThreadProject({ parentThreadId, targetProjectId });
+          const parentThread = yield* validateParentThreadProject({
+            parentThreadId,
+            targetProjectId,
+          });
 
           const desiredRuntimeMode = input.runtimeMode ?? currentThread.runtimeMode;
           const desiredInteractionMode = input.interactionMode ?? currentThread.interactionMode;
-          const isSameProjectTarget = targetProjectId === currentThread.projectId;
+          const checkoutInheritanceThread = parentThread ?? currentThread;
+          const isSameProjectTarget = targetProjectId === checkoutInheritanceThread.projectId;
           const hasExplicitCheckoutMetadata =
             (input.branch ?? undefined) !== undefined ||
             (input.worktreePath ?? undefined) !== undefined;
@@ -1570,7 +1625,8 @@ export const McpOrchestrationServiceLive = Layer.effect(
             (hasExplicitCheckoutMetadata
               ? "new_worktree"
               : isSameProjectTarget &&
-                  (currentThread.branch !== null || currentThread.worktreePath !== null)
+                  (checkoutInheritanceThread.branch !== null ||
+                    checkoutInheritanceThread.worktreePath !== null)
                 ? "new_worktree"
                 : "current_checkout");
           const hasDeferredEmptyNewWorktree =
@@ -1590,7 +1646,9 @@ export const McpOrchestrationServiceLive = Layer.effect(
                 ? (input.branch ?? null)
                 : shouldPrepareWorktree
                   ? bootstrapBranch
-                  : (input.branch ?? (isSameProjectTarget ? currentThread.branch : null) ?? null);
+                  : (input.branch ??
+                    (isSameProjectTarget ? checkoutInheritanceThread.branch : null) ??
+                    null);
           const desiredWorktreePath =
             desiredCheckoutMode === "current_checkout"
               ? null
@@ -1599,7 +1657,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
                 : shouldPrepareWorktree
                   ? null
                   : (input.worktreePath ??
-                    (isSameProjectTarget ? currentThread.worktreePath : null) ??
+                    (isSameProjectTarget ? checkoutInheritanceThread.worktreePath : null) ??
                     null);
           const title = sanitizeThreadTitle(input.title ?? input.message ?? "New thread");
           const createdAt = yield* currentIsoTimestamp();
