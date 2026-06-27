@@ -23,6 +23,7 @@ import { sortModelsForProviderInstance } from "../../modelOrdering";
 import {
   isModelEnabledForMcp,
   MAX_CUSTOM_MODEL_LENGTH,
+  removeModelFromMcpDisabled,
   toggleModelMcpDisabled,
 } from "../../modelSelection";
 import { McpIcon } from "../Icons";
@@ -162,6 +163,13 @@ export function ProviderModelsSection({
     onChange(customModels.filter((model) => model !== slug));
     onModelOrderChange(modelOrder.filter((model) => model !== slug));
     onFavoriteModelsChange(favoriteModels.filter((model) => model !== slug));
+    onMcpDisabledModelsByProviderChange(
+      removeModelFromMcpDisabled({
+        mcpDisabledModelsByProvider,
+        instanceId,
+        model: slug,
+      }),
+    );
     setError(null);
   };
 

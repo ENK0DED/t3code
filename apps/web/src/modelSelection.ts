@@ -355,3 +355,31 @@ export function toggleModelMcpDisabled(input: {
   }
   return next;
 }
+
+/**
+ * Drop a model slug from a provider instance's MCP-disabled list. Used when a
+ * custom model is removed so its blocked state doesn't linger and silently
+ * re-apply if the same slug is re-added later. Returns a fresh copy unchanged
+ * when the slug wasn't disabled, and prunes the instance key once its list
+ * empties (mirroring {@link toggleModelMcpDisabled}).
+ */
+export function removeModelFromMcpDisabled(input: {
+  readonly mcpDisabledModelsByProvider: Record<string, readonly string[]>;
+  readonly instanceId: string;
+  readonly model: string;
+}): Record<string, string[]> {
+  const current = input.mcpDisabledModelsByProvider[input.instanceId] ?? [];
+  const next = Object.fromEntries(
+    Object.entries(input.mcpDisabledModelsByProvider).map(([key, value]) => [key, [...value]]),
+  );
+  if (!current.includes(input.model)) {
+    return next;
+  }
+  const disabled = current.filter((model) => model !== input.model);
+  if (disabled.length === 0) {
+    delete next[input.instanceId];
+  } else {
+    next[input.instanceId] = disabled;
+  }
+  return next;
+}

@@ -639,6 +639,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
     <SidebarMenuSubItem
       className="w-full"
       data-thread-item
+      aria-level={depth + 1}
       onMouseLeave={handleMouseLeave}
       onBlurCapture={handleBlurCapture}
     >
@@ -672,6 +673,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
             <button
               type="button"
               aria-label={expanded ? "Collapse child threads" : "Expand child threads"}
+              aria-expanded={expanded}
               data-thread-selection-safe
               className={SIDEBAR_ICON_ACTION_BUTTON_CLASS}
               onClick={handleToggleThreadExpanded}

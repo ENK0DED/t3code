@@ -4,6 +4,8 @@ import { ProviderDriverKind } from "@t3tools/contracts";
 import {
   buildThreadTreeRows,
   createThreadJumpHintVisibilityController,
+  hasThreadDescendant,
+  resolveDescendantThreadStatus,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
   resolveAdjacentThreadId,
@@ -802,6 +804,50 @@ describe("buildThreadTreeRows", () => {
       ["thread-parent", 0],
       ["thread-child", 1],
     ]);
+  });
+
+  it("terminates on a cyclic parentThreadId chain instead of recursing forever", () => {
+    // A malformed server payload where a→b→a form a cycle. The tree builder
+    // skips cyclic components (they have no root), but the build must still
+    // return rather than hang.
+    const rows = buildThreadTreeRows({
+      threads: [
+        sidebarThread({ id: "thread-root", parentThreadId: null }),
+        sidebarThread({ id: "thread-a", parentThreadId: "thread-b" }),
+        sidebarThread({ id: "thread-b", parentThreadId: "thread-a" }),
+      ],
+      expandedThreadIds: new Set(),
+      activeThreadId: "thread-a",
+      sortOrder: "updated_at",
+    });
+
+    expect(rows.map((row) => row.thread.id)).toEqual(["thread-root"]);
+  });
+});
+
+describe("descendant traversal cycle guards", () => {
+  it("hasThreadDescendant terminates when children form a cycle", () => {
+    const childrenByParentId = new Map<string, readonly { id: string }[]>([
+      ["a", [{ id: "b" }]],
+      ["b", [{ id: "a" }]],
+    ]);
+
+    // No "c" anywhere in the cycle, so the search exhausts the (looping)
+    // graph and returns false rather than spinning forever.
+    expect(hasThreadDescendant("a", "c", childrenByParentId)).toBe(false);
+    // A real descendant inside the cycle is still found.
+    expect(hasThreadDescendant("a", "b", childrenByParentId)).toBe(true);
+  });
+
+  it("resolveDescendantThreadStatus terminates when children form a cycle", () => {
+    const threadA = sidebarThread({ id: "a", parentThreadId: "b" });
+    const threadB = sidebarThread({ id: "b", parentThreadId: "a" });
+    const childrenByParentId = new Map<string, readonly SidebarThreadTestSummary[]>([
+      ["a", [threadB]],
+      ["b", [threadA]],
+    ]);
+
+    expect(resolveDescendantThreadStatus([threadA], childrenByParentId)).toBeNull();
   });
 });
 

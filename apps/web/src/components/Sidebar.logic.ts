@@ -434,35 +434,55 @@ type ThreadTreeInput = ThreadStatusInput &
     parentThreadId: string | null;
   };
 
-function hasThreadDescendant(
+// `visited` guards against cyclic `parentThreadId` chains. The client trusts
+// server event data and `store.ts` maps `parentThreadId` without validating
+// acyclicity, so a malformed chain must terminate here rather than freeze the
+// tab. Mirrors the `ancestors` guard in `buildThreadTreeRows`'s `visit`.
+export function hasThreadDescendant(
   threadId: string,
   targetThreadId: string | undefined,
   childrenByParentId: ReadonlyMap<string, readonly { id: string }[]>,
+  visited: Set<string> = new Set(),
 ): boolean {
   if (!targetThreadId) {
     return false;
   }
+  if (visited.has(threadId)) {
+    return false;
+  }
+  visited.add(threadId);
   const children = childrenByParentId.get(threadId) ?? [];
   for (const child of children) {
     if (child.id === targetThreadId) {
       return true;
     }
-    if (hasThreadDescendant(child.id, targetThreadId, childrenByParentId)) {
+    if (hasThreadDescendant(child.id, targetThreadId, childrenByParentId, visited)) {
       return true;
     }
   }
   return false;
 }
 
-function resolveDescendantThreadStatus<TThread extends ThreadTreeInput>(
+export function resolveDescendantThreadStatus<TThread extends ThreadTreeInput>(
   threads: readonly TThread[],
   childrenByParentId: ReadonlyMap<string, readonly TThread[]>,
+  visited: Set<string> = new Set(),
 ): ThreadStatusPill | null {
   return resolveProjectStatusIndicator(
-    threads.flatMap((thread) => [
-      resolveThreadStatusPill({ thread }),
-      resolveDescendantThreadStatus(childrenByParentId.get(thread.id) ?? [], childrenByParentId),
-    ]),
+    threads.flatMap((thread) => {
+      if (visited.has(thread.id)) {
+        return [];
+      }
+      visited.add(thread.id);
+      return [
+        resolveThreadStatusPill({ thread }),
+        resolveDescendantThreadStatus(
+          childrenByParentId.get(thread.id) ?? [],
+          childrenByParentId,
+          visited,
+        ),
+      ];
+    }),
   );
 }
 

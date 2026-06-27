@@ -5,6 +5,7 @@ import { deriveProviderInstanceEntries } from "./providerInstances";
 import {
   getAppModelOptionsForInstance,
   isModelEnabledForMcp,
+  removeModelFromMcpDisabled,
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
   toggleModelMcpDisabled,
@@ -306,6 +307,49 @@ describe("MCP model enablement preferences", () => {
       }),
     ).toEqual({
       claudeAgent: ["claude-opus-4-6"],
+    });
+  });
+
+  it("drops a removed model from its provider's disabled list and prunes empty keys", () => {
+    expect(
+      removeModelFromMcpDisabled({
+        mcpDisabledModelsByProvider: {
+          codex: ["gpt-5.5", "gpt-5.6"],
+          claudeAgent: ["claude-opus-4-6"],
+        },
+        instanceId: "codex",
+        model: "gpt-5.5",
+      }),
+    ).toEqual({
+      codex: ["gpt-5.6"],
+      claudeAgent: ["claude-opus-4-6"],
+    });
+
+    expect(
+      removeModelFromMcpDisabled({
+        mcpDisabledModelsByProvider: {
+          codex: ["gpt-5.5"],
+          claudeAgent: ["claude-opus-4-6"],
+        },
+        instanceId: "codex",
+        model: "gpt-5.5",
+      }),
+    ).toEqual({
+      claudeAgent: ["claude-opus-4-6"],
+    });
+  });
+
+  it("leaves the map unchanged when the removed model was not disabled", () => {
+    expect(
+      removeModelFromMcpDisabled({
+        mcpDisabledModelsByProvider: {
+          codex: ["gpt-5.5"],
+        },
+        instanceId: "codex",
+        model: "gpt-9.9",
+      }),
+    ).toEqual({
+      codex: ["gpt-5.5"],
     });
   });
 });
