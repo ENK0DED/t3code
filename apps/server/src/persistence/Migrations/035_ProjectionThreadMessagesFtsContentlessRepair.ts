@@ -27,7 +27,18 @@ const backfillContentlessFtsTable = (sql: SqlClient.SqlClient) =>
       rowid,
       text
     FROM projection_thread_messages
+    WHERE is_streaming = 0
   `;
+
+// This repair is load-bearing for branch-local databases that ran the
+// intermediate regular-FTS version of migration 034 before 034 was rewritten to
+// contentless FTS. Keep migration 035 immediately after 034; do not remove or
+// reorder it.
+//
+// The detector assumes only the two historical table shapes exist:
+// 1. regular FTS without a content option;
+// 2. contentless FTS with content=''.
+const contentlessFtsOptionPattern = /\bcontent\s*=\s*''(?:\s|,|\))/i;
 
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -40,7 +51,9 @@ export default Effect.gen(function* () {
   `;
 
   const existingDefinition = rows[0]?.sql ?? null;
-  const isContentless = existingDefinition?.includes("content=''") ?? false;
+  const isContentless = existingDefinition
+    ? contentlessFtsOptionPattern.test(existingDefinition)
+    : false;
 
   if (existingDefinition === null) {
     yield* createContentlessFtsTable(sql);

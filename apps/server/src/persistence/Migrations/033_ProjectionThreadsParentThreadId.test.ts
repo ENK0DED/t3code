@@ -9,7 +9,7 @@ import Migration033 from "./033_ProjectionThreadsParentThreadId.ts";
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
 layer("033_ProjectionThreadsParentThreadId", (it) => {
-  it.effect("adds nullable parent_thread_id column and index", () =>
+  it.effect("adds nullable parent_thread_id column without creating an unused parent index", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
@@ -44,7 +44,7 @@ layer("033_ProjectionThreadsParentThreadId", (it) => {
       const indexes = yield* sql<{ readonly name: string }>`
         PRAGMA index_list(projection_threads)
       `;
-      assert.isTrue(indexes.some((index) => index.name === "idx_projection_threads_parent"));
+      assert.isFalse(indexes.some((index) => index.name === "idx_projection_threads_parent"));
     }),
   );
 });

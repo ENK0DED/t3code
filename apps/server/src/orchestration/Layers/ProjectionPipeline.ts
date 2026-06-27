@@ -496,6 +496,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           text
         FROM projection_thread_messages
         WHERE message_id = ${messageId}
+          AND is_streaming = 0
       `.pipe(
         Effect.asVoid,
         Effect.mapError(toPersistenceSqlError("ProjectionPipeline.threadMessages.upsertFts:query")),
@@ -512,8 +513,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           'delete',
           rowid,
           text
-        FROM projection_thread_messages
+        FROM projection_thread_messages AS messages
         WHERE message_id = ${messageId}
+          AND EXISTS (
+            SELECT 1
+            FROM projection_thread_messages_fts AS fts
+            WHERE fts.rowid = messages.rowid
+          )
       `.pipe(
         Effect.asVoid,
         Effect.mapError(
@@ -532,8 +538,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           'delete',
           rowid,
           text
-        FROM projection_thread_messages
+        FROM projection_thread_messages AS messages
         WHERE thread_id = ${threadId}
+          AND EXISTS (
+            SELECT 1
+            FROM projection_thread_messages_fts AS fts
+            WHERE fts.rowid = messages.rowid
+          )
       `.pipe(
         Effect.asVoid,
         Effect.mapError(
@@ -552,6 +563,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           text
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
+          AND is_streaming = 0
       `.pipe(
         Effect.asVoid,
         Effect.mapError(
@@ -891,7 +903,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             messageId: event.payload.messageId,
           });
           const previousMessage = Option.getOrUndefined(existingMessage);
-          if (Option.isSome(existingMessage)) {
+          const shouldDeleteExistingFts =
+            Option.isSome(existingMessage) &&
+            (!event.payload.streaming || !existingMessage.value.isStreaming);
+          if (shouldDeleteExistingFts) {
             yield* deleteMessageFtsByMessageId(event.payload.messageId);
           }
           const nextText = Option.match(existingMessage, {
@@ -924,7 +939,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             updatedAt: event.payload.updatedAt,
           } satisfies ProjectionThreadMessage;
           yield* projectionThreadMessageRepository.upsert(nextMessage);
-          yield* upsertMessageFtsByMessageId(event.payload.messageId);
+          if (!event.payload.streaming) {
+            yield* upsertMessageFtsByMessageId(event.payload.messageId);
+          }
           return;
         }
 
