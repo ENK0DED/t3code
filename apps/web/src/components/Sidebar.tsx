@@ -228,6 +228,26 @@ const PROJECT_GROUPING_MODE_LABELS: Record<SidebarProjectGroupingMode, string> =
 const SIDEBAR_ICON_ACTION_BUTTON_CLASS =
   "inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring";
 
+// Sub-thread tree indentation. Each level steps the row in by STEP px, capped at
+// MAX_INDENT_DEPTH so deep trees stay readable. The disclosure chevron is an
+// `h-6 min-w-6` (24px) button followed by a `gap-1.5` (6px) to the title, with
+// its glyph centered at 12px. Childless rows reserve that full column so their
+// title lines up under sibling rows that show a chevron (otherwise they collapse
+// leftward and stop reading as nested); guide lines drop through the chevron's
+// center.
+const SIDEBAR_THREAD_INDENT_BASE_PX = 8;
+const SIDEBAR_THREAD_INDENT_STEP_PX = 12;
+const SIDEBAR_THREAD_MAX_INDENT_DEPTH = 4;
+const SIDEBAR_THREAD_CHEVRON_COLUMN_PX = 30;
+const SIDEBAR_THREAD_CHEVRON_CENTER_PX = 12;
+
+function threadRowIndentPx(depth: number): number {
+  return (
+    SIDEBAR_THREAD_INDENT_BASE_PX +
+    Math.min(depth, SIDEBAR_THREAD_MAX_INDENT_DEPTH) * SIDEBAR_THREAD_INDENT_STEP_PX
+  );
+}
+
 function clampSidebarThreadPreviewCount(value: number): SidebarThreadPreviewCount {
   return Math.min(
     MAX_SIDEBAR_THREAD_PREVIEW_COUNT,
@@ -607,6 +627,14 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
   );
   const rowButtonRender = useMemo(() => <div role="button" tabIndex={0} />, []);
 
+  // Childless sub-thread rows reserve the chevron column so their title aligns
+  // under a parent/sibling that has a disclosure chevron. Top-level rows stay
+  // compact and unchanged.
+  const paddingInlineStartPx =
+    depth > 0 && !hasChildren
+      ? threadRowIndentPx(depth) + SIDEBAR_THREAD_CHEVRON_COLUMN_PX
+      : threadRowIndentPx(depth);
+
   return (
     <SidebarMenuSubItem
       className="w-full"
@@ -614,6 +642,16 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
       onMouseLeave={handleMouseLeave}
       onBlurCapture={handleBlurCapture}
     >
+      {Array.from({ length: Math.min(depth, SIDEBAR_THREAD_MAX_INDENT_DEPTH + 1) }, (_, level) => (
+        <span
+          key={level}
+          aria-hidden
+          className="pointer-events-none absolute -top-px -bottom-px z-10 w-px bg-sidebar-border"
+          style={{
+            insetInlineStart: `${threadRowIndentPx(level) + SIDEBAR_THREAD_CHEVRON_CENTER_PX}px`,
+          }}
+        />
+      ))}
       <SidebarMenuSubButton
         render={rowButtonRender}
         size="sm"
@@ -623,7 +661,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
           isActive,
           isSelected,
         })} relative isolate`}
-        style={{ paddingInlineStart: `${8 + Math.min(depth, 4) * 12}px` }}
+        style={{ paddingInlineStart: `${paddingInlineStartPx}px` }}
         onClick={handleRowClick}
         onDoubleClick={handleRowDoubleClick}
         onKeyDown={handleRowKeyDown}
