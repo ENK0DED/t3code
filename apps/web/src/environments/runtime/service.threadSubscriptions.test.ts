@@ -222,6 +222,8 @@ function makeThreadShellSnapshot(params: {
         interactionMode: "default",
         branch: null,
         worktreePath: null,
+        createdVia: "user",
+        createdByThreadId: null,
         latestTurn:
           params.sessionStatus === "running"
             ? {

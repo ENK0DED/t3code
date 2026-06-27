@@ -307,6 +307,7 @@ function mapThreadShell(
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
+    createdVia: thread.createdVia,
   };
   return {
     shell,
@@ -1292,6 +1293,8 @@ function applyEnvironmentOrchestrationEvent(
           interactionMode: event.payload.interactionMode,
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
+          createdVia: event.payload.createdVia,
+          createdByThreadId: event.payload.createdByThreadId,
           latestTurn: null,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,

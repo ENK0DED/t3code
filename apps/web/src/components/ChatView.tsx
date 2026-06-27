@@ -3967,6 +3967,8 @@ function ChatViewContent(props: ChatViewProps) {
                       interactionMode,
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
+                      createdVia: "user" as const,
+                      createdByThreadId: null,
                       createdAt: activeThread.createdAt,
                     },
                   }
@@ -4434,6 +4436,8 @@ function ChatViewContent(props: ChatViewProps) {
         interactionMode: "default",
         branch: activeThreadBranch,
         worktreePath: activeThread.worktreePath,
+        createdVia: "user",
+        createdByThreadId: null,
         createdAt,
       })
       .then(() => {

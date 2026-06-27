@@ -124,6 +124,12 @@ export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
 export type ProviderInteractionMode = typeof ProviderInteractionMode.Type;
 export const DEFAULT_PROVIDER_INTERACTION_MODE: ProviderInteractionMode = "default";
+// How a thread was created. Drives MCP management authorization: `mcp` threads are
+// manageable by their creating orchestration subtree; `user` threads are never
+// MCP-manageable. Authoritative value is set server-side at the dispatch boundary.
+export const ThreadCreatedVia = Schema.Literals(["user", "mcp"]);
+export type ThreadCreatedVia = typeof ThreadCreatedVia.Type;
+export const DEFAULT_THREAD_CREATED_VIA: ThreadCreatedVia = "user";
 export const ProviderRequestKind = Schema.Literals(["command", "file-read", "file-change"]);
 export type ProviderRequestKind = typeof ProviderRequestKind.Type;
 export const AssistantDeliveryMode = Schema.Literals(["buffered", "streaming"]);
@@ -357,6 +363,8 @@ export const OrchestrationThread = Schema.Struct({
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  createdVia: Schema.optional(ThreadCreatedVia),
+  createdByThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
@@ -406,6 +414,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
+  createdVia: Schema.optional(ThreadCreatedVia),
+  createdByThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
@@ -506,6 +516,8 @@ const ThreadCreateCommand = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  createdVia: Schema.optional(ThreadCreatedVia),
+  createdByThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   createdAt: IsoDateTime,
 });
 
@@ -562,6 +574,8 @@ const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  createdVia: Schema.optional(ThreadCreatedVia),
+  createdByThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   createdAt: IsoDateTime,
 });
 
@@ -851,6 +865,8 @@ export const ThreadCreatedPayload = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  createdVia: Schema.optional(ThreadCreatedVia),
+  createdByThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

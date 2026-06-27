@@ -212,6 +212,7 @@ describe("ProviderSessionReaper", () => {
                 ? Option.some(input.readModel.threads.find((thread) => thread.id === threadId)!)
                 : Option.none(),
             ),
+          getThreadCreatorById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.die("unused"),
           searchThreadMessagesByProject: () => Effect.die("unused"),
         }),

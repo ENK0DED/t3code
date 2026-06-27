@@ -47,6 +47,8 @@ const BASE_THREAD: OrchestrationThread = {
   interactionMode: "default",
   branch: null,
   worktreePath: null,
+  createdVia: "user",
+  createdByThreadId: null,
   latestTurn: null,
   createdAt: "2026-04-01T00:00:00.000Z",
   updatedAt: "2026-04-01T00:00:00.000Z",

@@ -204,6 +204,8 @@ function createMinimalSnapshot(): OrchestrationReadModel {
         runtimeMode: "full-access",
         branch: "main",
         worktreePath: null,
+        createdVia: "user",
+        createdByThreadId: null,
         latestTurn: null,
         createdAt: NOW_ISO,
         updatedAt: NOW_ISO,

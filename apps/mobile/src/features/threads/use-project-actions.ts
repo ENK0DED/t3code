@@ -133,6 +133,8 @@ export function useProjectActions() {
             interactionMode: input.interactionMode,
             branch: input.branch,
             worktreePath: isWorktree ? null : input.worktreePath,
+            createdVia: "user",
+            createdByThreadId: null,
             createdAt,
           },
           ...(isWorktree

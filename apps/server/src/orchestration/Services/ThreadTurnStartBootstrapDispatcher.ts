@@ -263,6 +263,8 @@ export const ThreadTurnStartBootstrapDispatcherLive = Layer.effect(
             interactionMode: bootstrap.createThread.interactionMode,
             branch: bootstrap.createThread.branch,
             worktreePath: bootstrap.createThread.worktreePath,
+            createdVia: bootstrap.createThread.createdVia,
+            createdByThreadId: bootstrap.createThread.createdByThreadId,
             createdAt: bootstrap.createThread.createdAt,
             updatedAt: bootstrap.createThread.createdAt,
             archivedAt: null,
@@ -285,6 +287,8 @@ export const ThreadTurnStartBootstrapDispatcherLive = Layer.effect(
             interactionMode: bootstrap.createThread.interactionMode,
             branch: bootstrap.createThread.branch,
             worktreePath: bootstrap.createThread.worktreePath,
+            createdVia: bootstrap.createThread.createdVia,
+            createdByThreadId: bootstrap.createThread.createdByThreadId,
             createdAt: bootstrap.createThread.createdAt,
           });
           createdThread = true;

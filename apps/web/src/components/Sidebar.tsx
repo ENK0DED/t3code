@@ -18,6 +18,7 @@ import {
   terminalStatusFromRunningIds,
   ThreadStatusLabel,
 } from "./ThreadStatusIndicators";
+import { McpIcon } from "./Icons";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { autoAnimate } from "@formkit/auto-animate";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
@@ -838,6 +839,21 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
                       <CloudIcon className="size-3 text-muted-foreground/40" />
                     </TooltipTrigger>
                     <TooltipPopup side="top">{threadEnvironmentLabel}</TooltipPopup>
+                  </Tooltip>
+                )}
+                {thread.createdVia === "mcp" && (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <span
+                          aria-label="Created via MCP"
+                          className="inline-flex items-center justify-center"
+                        />
+                      }
+                    >
+                      <McpIcon className="size-3 text-muted-foreground/40" />
+                    </TooltipTrigger>
+                    <TooltipPopup side="top">Created via MCP</TooltipPopup>
                   </Tooltip>
                 )}
                 {jumpLabel ? (

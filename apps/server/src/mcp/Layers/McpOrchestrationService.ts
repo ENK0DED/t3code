@@ -73,6 +73,10 @@ const MCP_STRUCTURED_RESPONSE_MAX_BYTES = 1_000_000;
  */
 const MCP_THREAD_SUMMARY_INPUT_MAX_CHARACTERS = MCP_STRUCTURED_RESPONSE_MAX_BYTES;
 const MCP_THREAD_SUMMARY_OMITTED_MARKER = "[earlier messages omitted]";
+// Upper bound on MCP ownership creator-chain traversal. The chain is acyclic in valid
+// data (a creator always predates its creation) and the visited set already guarantees
+// termination; this cap additionally bounds the work and denies pathologically deep chains.
+const MAX_MCP_CREATOR_CHAIN_DEPTH = 64;
 const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
 
 const requireRead = Effect.fn("McpOrchestrationService.requireRead")(function* () {
@@ -549,6 +553,64 @@ export const McpOrchestrationServiceLive = Layer.effect(
       });
     });
 
+    // MCP management authorization: a credential may manage its own credential thread
+    // and any thread inside its MCP creation-subtree (threads it spawned, transitively).
+    // User-created threads — and threads owned by a different orchestrator — are never
+    // MCP-manageable. Returns the thread on success; fails with a diagnosable `forbidden`.
+    const requireThreadManageableByMcp = Effect.fn(
+      "McpOrchestrationService.requireThreadManageableByMcp",
+    )(function* (thread: OrchestrationThread) {
+      const invocation = yield* McpInvocationContext.McpInvocationContext;
+      // The orchestrator may always act on its own credential thread, even though that
+      // thread is itself user-created (a human started the orchestrator).
+      if (thread.id === invocation.threadId) {
+        return thread;
+      }
+      // Firewall: only MCP-created threads are ever MCP-manageable.
+      if (thread.createdVia !== "mcp") {
+        return yield* new McpOrchestrationError({
+          code: "forbidden",
+          message: `forbidden: Thread '${thread.id}' was created outside MCP and can only be managed by the user, not via MCP.`,
+        });
+      }
+      // Ownership: the credential thread must appear in the target's creator chain.
+      // Traverse `createdByThreadId` via a provenance-only lookup (no active/archive
+      // filter) so an archived or deleted intermediate ancestor does not strand an
+      // otherwise-owned descendant. The visited set guarantees termination; the depth
+      // cap bounds the work and denies pathologically deep chains.
+      const visited = new Set<string>();
+      let cursor: ThreadId | null = thread.createdByThreadId ?? null;
+      let depth = 0;
+      while (cursor !== null && !visited.has(cursor)) {
+        if (cursor === invocation.threadId) {
+          return thread;
+        }
+        if (depth >= MAX_MCP_CREATOR_CHAIN_DEPTH) {
+          return yield* new McpOrchestrationError({
+            code: "forbidden",
+            message: `forbidden: Thread '${thread.id}' ownership could not be resolved within ${MAX_MCP_CREATOR_CHAIN_DEPTH} creator-chain hops.`,
+          });
+        }
+        visited.add(cursor);
+        depth += 1;
+        const ancestor = yield* projectionSnapshotQuery
+          .getThreadCreatorById(cursor)
+          .pipe(
+            Effect.mapError((error) =>
+              toInternalError("Failed to resolve thread ownership.", error),
+            ),
+          );
+        if (Option.isNone(ancestor)) {
+          break;
+        }
+        cursor = ancestor.value.createdByThreadId ?? null;
+      }
+      return yield* new McpOrchestrationError({
+        code: "forbidden",
+        message: `forbidden: Thread '${thread.id}' is not within your MCP creation-subtree and cannot be managed via MCP.`,
+      });
+    });
+
     const requireIdleThread = Effect.fn("McpOrchestrationService.requireIdleThread")(function* (
       threadId: ThreadId,
     ) {
@@ -906,6 +968,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
         return null;
       }
       const parentThread = yield* requireThreadDetail(input.parentThreadId);
+      yield* requireThreadManageableByMcp(parentThread);
       yield* rejectArchivedThread(parentThread);
       if (parentThread.projectId !== input.targetProjectId) {
         return yield* new McpOrchestrationError({
@@ -1673,6 +1736,8 @@ export const McpOrchestrationServiceLive = Layer.effect(
             interactionMode: desiredInteractionMode,
             branch: desiredBranch,
             worktreePath: desiredWorktreePath,
+            createdVia: "mcp" as const,
+            createdByThreadId: invocation.threadId,
             createdAt,
             updatedAt: createdAt,
             archivedAt: null,
@@ -1698,6 +1763,8 @@ export const McpOrchestrationServiceLive = Layer.effect(
                 interactionMode: desiredInteractionMode,
                 branch: desiredBranch,
                 worktreePath: desiredWorktreePath,
+                createdVia: "mcp" as const,
+                createdByThreadId: invocation.threadId,
                 createdAt,
               })
               .pipe(
@@ -1739,6 +1806,8 @@ export const McpOrchestrationServiceLive = Layer.effect(
                   interactionMode: desiredInteractionMode,
                   branch: desiredBranch,
                   worktreePath: desiredWorktreePath,
+                  createdVia: "mcp" as const,
+                  createdByThreadId: invocation.threadId,
                   createdAt,
                 },
                 ...(shouldPrepareWorktree
@@ -1780,6 +1849,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
             readonly baseBranch?: string;
           };
           const thread = yield* requireWritableThread(input.threadId);
+          yield* requireThreadManageableByMcp(thread);
           const desiredModelSelection = input.modelSelection ?? thread.modelSelection;
           yield* validateMcpModelSelection(desiredModelSelection);
           yield* validateSessionCompatibility({
@@ -1891,6 +1961,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
             readonly worktreePath?: string | null;
           };
           const thread = yield* requireWritableThread(input.threadId);
+          yield* requireThreadManageableByMcp(thread);
           const hasUpdate =
             input.title !== undefined ||
             input.modelSelection !== undefined ||

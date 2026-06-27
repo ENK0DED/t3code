@@ -16,6 +16,7 @@ import type {
   CheckpointRef,
   ProviderInteractionMode,
   RuntimeMode,
+  ThreadCreatedVia,
 } from "@t3tools/contracts";
 
 export type SessionPhase = "disconnected" | "connecting" | "ready" | "running";
@@ -160,6 +161,7 @@ export interface SidebarThreadSummary {
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;
   hasActionableProposedPlan: boolean;
+  createdVia?: ThreadCreatedVia | undefined;
 }
 
 export interface ThreadSession {

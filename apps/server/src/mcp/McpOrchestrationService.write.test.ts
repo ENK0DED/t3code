@@ -78,6 +78,8 @@ const threadShell = (
   updatedAt: input.updatedAt ?? "2026-01-01T00:00:00.000Z",
   archivedAt: input.archivedAt ?? null,
   session: input.session ?? null,
+  createdVia: input.createdVia ?? "mcp",
+  createdByThreadId: input.createdByThreadId ?? ThreadId.make("thread-current"),
   latestUserMessageAt: input.latestUserMessageAt ?? null,
   hasPendingApprovals: input.hasPendingApprovals ?? false,
   hasPendingUserInput: input.hasPendingUserInput ?? false,
@@ -100,6 +102,8 @@ const threadDetail = (
   createdAt: input.createdAt ?? "2026-01-01T00:00:00.000Z",
   updatedAt: input.updatedAt ?? "2026-01-01T00:00:00.000Z",
   archivedAt: input.archivedAt ?? null,
+  createdVia: input.createdVia ?? "mcp",
+  createdByThreadId: input.createdByThreadId ?? ThreadId.make("thread-current"),
   deletedAt: input.deletedAt ?? null,
   messages: input.messages ?? [],
   proposedPlans: input.proposedPlans ?? [],
@@ -206,8 +210,21 @@ const projectionQueryMock = (input: {
     listThreadShellsByProject: () => Effect.succeed([]),
     getThreadShellById: (threadId) =>
       Effect.succeed(
-        input.threadShellById?.[String(threadId)]
+        // Models the real active-only lookup (archived rows excluded), so a reversion
+        // away from the provenance-only creator walk would surface in ownership tests.
+        input.threadShellById?.[String(threadId)] &&
+          input.threadShellById[String(threadId)]!.archivedAt === null
           ? Option.some(input.threadShellById[String(threadId)]!)
+          : Option.none(),
+      ),
+    getThreadCreatorById: (threadId) =>
+      Effect.succeed(
+        // Provenance-only: returns the creator link regardless of archived/deleted state.
+        input.threadDetailById?.[String(threadId)]
+          ? Option.some({
+              createdByThreadId:
+                input.threadDetailById[String(threadId)]!.createdByThreadId ?? null,
+            })
           : Option.none(),
       ),
     getThreadDetailById: (threadId) =>
@@ -1646,6 +1663,123 @@ it.effect("createThread child_of_thread inherits checkout metadata from the pare
       ),
     );
   })(),
+);
+
+it.effect("createThread child_of_thread rejects a user-created parent as forbidden", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.createThread({
+        placement: "child_of_thread",
+        parentThreadId: ThreadId.make("thread-parent"),
+        title: "Child of a user thread",
+      }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("forbidden");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        threadDetails: [
+          threadDetail({
+            id: ThreadId.make("thread-current"),
+            projectId: ProjectId.make("project-current"),
+            title: "Current Thread",
+          }),
+          threadDetail({
+            id: ThreadId.make("thread-parent"),
+            projectId: ProjectId.make("project-current"),
+            title: "User Parent",
+            createdVia: "user",
+            createdByThreadId: null,
+          }),
+        ],
+      }),
+    ),
+  ),
+);
+
+it.effect("createThread child_of_thread rejects an MCP parent owned by another orchestrator", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.createThread({
+        placement: "child_of_thread",
+        parentThreadId: ThreadId.make("thread-parent"),
+        title: "Child of a foreign MCP thread",
+      }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("forbidden");
+    }
+  }).pipe(
+    Effect.provide(
+      makeWriteHarnessLayer({
+        threadDetails: [
+          threadDetail({
+            id: ThreadId.make("thread-current"),
+            projectId: ProjectId.make("project-current"),
+            title: "Current Thread",
+          }),
+          threadDetail({
+            id: ThreadId.make("thread-parent"),
+            projectId: ProjectId.make("project-current"),
+            title: "Foreign MCP Parent",
+            createdVia: "mcp",
+            createdByThreadId: ThreadId.make("thread-other-orchestrator"),
+          }),
+        ],
+      }),
+    ),
+  ),
+);
+
+it.effect(
+  "createThread child_of_thread allows a parent owned through an archived intermediate ancestor",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      // thread-current -> thread-a (archived) -> thread-b. thread-b is still owned by the
+      // credential via the creator chain; the archived intermediate must not strand it.
+      const result = yield* service.createThread({
+        placement: "child_of_thread",
+        parentThreadId: ThreadId.make("thread-b"),
+        title: "Grandchild via archived ancestor",
+      });
+      expect(result).toMatchObject({ status: "created" });
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              projectId: ProjectId.make("project-current"),
+              title: "Current Thread",
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-a"),
+              projectId: ProjectId.make("project-current"),
+              title: "Archived intermediate",
+              createdVia: "mcp",
+              createdByThreadId: ThreadId.make("thread-current"),
+              archivedAt: "2026-01-02T00:00:00.000Z",
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-b"),
+              projectId: ProjectId.make("project-current"),
+              title: "Owned grandchild",
+              createdVia: "mcp",
+              createdByThreadId: ThreadId.make("thread-a"),
+            }),
+          ],
+        }),
+      ),
+    ),
 );
 
 it.effect(

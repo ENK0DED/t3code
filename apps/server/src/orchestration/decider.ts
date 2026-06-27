@@ -264,6 +264,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          createdVia: command.createdVia,
+          createdByThreadId: command.createdByThreadId,
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },

@@ -125,6 +125,9 @@ const ProjectionProjectLookupRowSchema = ProjectionProjectDbRowSchema;
 const ProjectionThreadIdLookupRowSchema = Schema.Struct({
   threadId: ThreadId,
 });
+const ProjectionThreadCreatorRowSchema = Schema.Struct({
+  createdByThreadId: Schema.NullOr(ThreadId),
+});
 const ProjectionThreadCheckpointContextThreadRowSchema = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
@@ -259,6 +262,8 @@ function mapThreadShellRow(
     interactionMode: row.interactionMode,
     branch: row.branch,
     worktreePath: row.worktreePath,
+    createdVia: row.createdVia,
+    createdByThreadId: row.createdByThreadId,
     latestTurn: latestTurnByThread.get(row.threadId) ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -364,6 +369,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          created_via AS "createdVia",
+          created_by_thread_id AS "createdByThreadId",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -393,6 +400,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          created_via AS "createdVia",
+          created_by_thread_id AS "createdByThreadId",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -424,6 +433,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          created_via AS "createdVia",
+          created_by_thread_id AS "createdByThreadId",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -795,6 +806,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          created_via AS "createdVia",
+          created_by_thread_id AS "createdByThreadId",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -905,6 +918,28 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const getThreadCreatorRow = SqlSchema.findOneOption({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadCreatorRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          created_by_thread_id AS "createdByThreadId"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `,
+  });
+
+  const getThreadCreatorById: ProjectionSnapshotQueryShape["getThreadCreatorById"] = (threadId) =>
+    getThreadCreatorRow({ threadId }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getThreadCreatorById:query",
+          "ProjectionSnapshotQuery.getThreadCreatorById:decodeRow",
+        ),
+      ),
+    );
+
   const getActiveThreadRowById = SqlSchema.findOneOption({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadDbRowSchema,
@@ -920,6 +955,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          created_via AS "createdVia",
+          created_by_thread_id AS "createdByThreadId",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1353,6 +1390,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 interactionMode: row.interactionMode,
                 branch: row.branch,
                 worktreePath: row.worktreePath,
+                createdVia: row.createdVia,
+                createdByThreadId: row.createdByThreadId,
                 latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
@@ -1552,6 +1591,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   interactionMode: row.interactionMode,
                   branch: row.branch,
                   worktreePath: row.worktreePath,
+                  createdVia: row.createdVia,
+                  createdByThreadId: row.createdByThreadId,
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
@@ -2092,6 +2133,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,
         worktreePath: threadRow.value.worktreePath,
+        createdVia: threadRow.value.createdVia,
+        createdByThreadId: threadRow.value.createdByThreadId,
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
@@ -2187,6 +2230,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,
         worktreePath: threadRow.value.worktreePath,
+        createdVia: threadRow.value.createdVia,
+        createdByThreadId: threadRow.value.createdByThreadId,
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
@@ -2262,6 +2307,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadCheckpointContext,
     getFullThreadDiffContext,
     getThreadShellById,
+    getThreadCreatorById,
     getThreadDetailById,
     searchThreadMessagesByProject,
   } satisfies ProjectionSnapshotQueryShape;

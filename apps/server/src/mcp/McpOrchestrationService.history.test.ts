@@ -129,6 +129,7 @@ const projectionQueryMock = (input: {
           return thread ? Option.some(thread) : Option.none();
         })(),
       ),
+    getThreadCreatorById: () => Effect.succeed(Option.none()),
     getThreadDetailById: (threadId) =>
       Effect.succeed(
         input.threadDetail && input.threadDetail.id === threadId

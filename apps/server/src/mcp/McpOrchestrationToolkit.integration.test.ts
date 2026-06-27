@@ -139,6 +139,7 @@ const makeIntegrationLayer = (dispatchedCommands: Array<OrchestrationCommand>) =
           getThreadCheckpointContext: () => Effect.die("unused"),
           getFullThreadDiffContext: () => Effect.die("unused"),
           getThreadShellById: () => Effect.die("unused"),
+          getThreadCreatorById: () => Effect.succeed(Option.none()),
           getThreadDetailById: (threadId) =>
             Effect.succeed(
               threadId === currentThreadId ? Option.some(currentThread) : Option.none(),
