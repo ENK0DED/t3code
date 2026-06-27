@@ -1589,6 +1589,67 @@ it.effect(
     })(),
 );
 
+it.effect(
+  "createThread first-turn new_worktree uses the prepared checkout metadata instead of inheriting the current thread checkout",
+  () =>
+    (() => {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      const createWorktreeCalls: Array<{
+        readonly cwd: string;
+        readonly refName: string;
+        readonly newRefName?: string | undefined;
+        readonly path: string | null;
+      }> = [];
+      return Effect.gen(function* () {
+        const service = yield* McpOrchestrationService;
+        const result = (yield* service.createThread({
+          title: "Fresh worktree task",
+          message: "Start from a new checkout",
+          checkoutMode: "new_worktree",
+          baseBranch: "main",
+        })) as { readonly threadId: ThreadId };
+
+        expect(result).toMatchObject({
+          status: "accepted",
+          thread: {
+            worktreePath: "/work/current/.worktrees/mcp-bootstrap",
+          },
+        });
+        expect(dispatchedCommands.map((command) => command.type)).toEqual([
+          "thread.create",
+          "thread.meta.update",
+          "thread.activity.append",
+          "thread.activity.append",
+          "thread.turn.start",
+        ]);
+        expect(createWorktreeCalls).toHaveLength(1);
+        expect(createWorktreeCalls[0]?.newRefName).toBeTruthy();
+        expect(createWorktreeCalls[0]?.newRefName).not.toBe("feature/current");
+        expect(dispatchedCommands[0]).toMatchObject({
+          type: "thread.create",
+          threadId: result.threadId,
+          branch: createWorktreeCalls[0]?.newRefName,
+          worktreePath: null,
+        });
+      }).pipe(
+        Effect.provide(
+          makeWriteHarnessLayer({
+            dispatchedCommands,
+            createWorktreeCalls,
+            threadDetails: [
+              threadDetail({
+                id: ThreadId.make("thread-current"),
+                projectId: ProjectId.make("project-current"),
+                branch: "feature/current",
+                worktreePath: "/work/current/.worktrees/current",
+              }),
+            ],
+          }),
+        ),
+      );
+    })(),
+);
+
 it.effect("createThread rejects cross-project child_of_thread", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;

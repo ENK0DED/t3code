@@ -1580,20 +1580,27 @@ export const McpOrchestrationServiceLive = Layer.effect(
           const shouldPrepareWorktree =
             input.message !== undefined &&
             (input.checkoutMode === "new_worktree" || input.baseBranch !== undefined);
+          const bootstrapBranch = shouldPrepareWorktree
+            ? (input.branch ?? buildTemporaryWorktreeBranchName(randomHex))
+            : null;
           const desiredBranch =
             desiredCheckoutMode === "current_checkout"
               ? null
               : hasDeferredEmptyNewWorktree
                 ? (input.branch ?? null)
-                : (input.branch ?? (isSameProjectTarget ? currentThread.branch : null) ?? null);
+                : shouldPrepareWorktree
+                  ? bootstrapBranch
+                  : (input.branch ?? (isSameProjectTarget ? currentThread.branch : null) ?? null);
           const desiredWorktreePath =
             desiredCheckoutMode === "current_checkout"
               ? null
               : hasDeferredEmptyNewWorktree
                 ? null
-                : (input.worktreePath ??
-                  (isSameProjectTarget ? currentThread.worktreePath : null) ??
-                  null);
+                : shouldPrepareWorktree
+                  ? null
+                  : (input.worktreePath ??
+                    (isSameProjectTarget ? currentThread.worktreePath : null) ??
+                    null);
           const title = sanitizeThreadTitle(input.title ?? input.message ?? "New thread");
           const createdAt = yield* currentIsoTimestamp();
           const threadId = makeThreadId();
@@ -1681,7 +1688,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
                       prepareWorktree: {
                         projectCwd: targetProject.workspaceRoot,
                         baseBranch: bootstrapBaseBranch!,
-                        branch: input.branch ?? buildTemporaryWorktreeBranchName(randomHex),
+                        branch: bootstrapBranch!,
                       },
                       runSetupScript: true,
                     }
