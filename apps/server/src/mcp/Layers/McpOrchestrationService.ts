@@ -1668,7 +1668,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
                 attachments: [],
               },
               modelSelection: desiredModelSelection,
-              titleSeed: title,
+              ...(input.title === undefined ? { titleSeed: title } : {}),
               runtimeMode: desiredRuntimeMode,
               interactionMode: desiredInteractionMode,
               bootstrap: {
@@ -1771,7 +1771,6 @@ export const McpOrchestrationServiceLive = Layer.effect(
                         attachments: [],
                       },
                       modelSelection: desiredModelSelection,
-                      titleSeed: thread.title,
                       runtimeMode: thread.runtimeMode,
                       interactionMode: thread.interactionMode,
                       bootstrap: {
@@ -1804,7 +1803,6 @@ export const McpOrchestrationServiceLive = Layer.effect(
                       attachments: [],
                     },
                     modelSelection: desiredModelSelection,
-                    titleSeed: thread.title,
                     runtimeMode: thread.runtimeMode,
                     interactionMode: thread.interactionMode,
                     createdAt,

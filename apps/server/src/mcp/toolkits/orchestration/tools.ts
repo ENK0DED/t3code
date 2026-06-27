@@ -416,11 +416,11 @@ export const CreateThreadTool = Tool.make("create_thread", {
     title: Schema.optional(
       Schema.String.annotate({
         description:
-          "Optional thread title. If omitted, the first message or New thread is used as the title seed.",
+          "Optional custom thread title. If omitted, the first message or New thread is used as the generated-title seed.",
       }),
     ).annotate({
       description:
-        "Optional thread title. If omitted, the first message or New thread is used as the title seed.",
+        "Optional custom thread title. If omitted, the first message or New thread is used as the generated-title seed.",
     }),
     message: Schema.optional(
       Schema.String.annotate({

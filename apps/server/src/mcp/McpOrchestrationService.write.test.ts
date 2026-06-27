@@ -1357,8 +1357,37 @@ it.effect("createThread with a message creates the thread before starting the tu
         },
       });
       if (dispatchedCommands[1]?.type === "thread.turn.start") {
+        expect(dispatchedCommands[1].titleSeed).toBeUndefined();
         expect(dispatchedCommands[1].bootstrap).toBeUndefined();
       }
+    }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
+  })(),
+);
+
+it.effect("createThread with a message seeds title generation when title is message-derived", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = (yield* service.createThread({
+        message: "Please inspect reconnect failures",
+        checkoutMode: "current_checkout",
+      })) as { readonly threadId: ThreadId };
+
+      expect(result).toMatchObject({
+        status: "accepted",
+        threadId: expect.any(String),
+        sequence: 2,
+      });
+      expect(dispatchedCommands[0]).toMatchObject({
+        type: "thread.create",
+        title: "Please inspect reconnect failures",
+      });
+      expect(dispatchedCommands[1]).toMatchObject({
+        type: "thread.turn.start",
+        threadId: result.threadId,
+        titleSeed: "Please inspect reconnect failures",
+      });
     }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
   })(),
 );
@@ -2115,10 +2144,12 @@ it.effect(
             text: "Continue",
             attachments: [],
           },
-          titleSeed: "Current Thread",
           runtimeMode: "full-access",
           interactionMode: "default",
         });
+        if (dispatchedCommands[0]?.type === "thread.turn.start") {
+          expect(dispatchedCommands[0].titleSeed).toBeUndefined();
+        }
       }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
     })(),
 );

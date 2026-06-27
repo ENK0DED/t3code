@@ -2266,7 +2266,6 @@ Build a `thread.turn.start` command:
     attachments: [],
   },
   modelSelection,
-  titleSeed: thread.title,
   runtimeMode: thread.runtimeMode,
   interactionMode: thread.interactionMode,
   createdAt,
@@ -2274,6 +2273,10 @@ Build a `thread.turn.start` command:
 ```
 
 Before dispatch, call `isThreadIdleReady`. Return:
+
+Do not pass `thread.title` as `titleSeed` from `send_thread_message`; existing custom titles must remain stable when
+the first message is sent. `create_thread(message)` only passes `titleSeed` when the title was derived from the first
+message/default instead of explicitly supplied.
 
 ```ts
 {

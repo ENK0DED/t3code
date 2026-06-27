@@ -737,6 +737,15 @@ Defaults:
 - `interactionMode`: current MCP credential thread's interaction mode unless a better project-level default is added later.
 - `checkoutMode`: omitted means current checkout/default behavior.
 
+Title behavior:
+
+- `title` is optional.
+- A non-default explicit `title` is stored as the initial thread title and is not forwarded as the first-turn
+  `titleSeed`; this prevents first-turn title generation from overwriting a caller-provided title.
+- If `title` is omitted, the initial title is derived from `message` when present, otherwise `New thread`.
+- When `message` is supplied and `title` is omitted, the derived initial title is sent as `titleSeed` so first-turn
+  title generation may replace it with a concise generated title.
+
 Model resolution:
 
 1. explicit `modelSelection` from the tool input
@@ -800,6 +809,10 @@ Semantics:
 - `modelSelection`, when provided, is a persistent thread setting change before the turn, not a one-off override.
 - requested model selection must be MCP-enabled.
 - no `runtimeMode` or `interactionMode` overrides in this tool; use `update_thread_settings`.
+- this tool does not pass the current thread title as `titleSeed`; an existing custom title is preserved when sending
+  the first message.
+- an empty thread titled `New thread` remains eligible for normal first-turn generated title replacement because
+  `New thread` is the default placeholder title.
 
 Checkout/worktree bootstrap:
 
