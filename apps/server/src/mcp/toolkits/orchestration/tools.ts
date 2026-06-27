@@ -481,6 +481,90 @@ export const UpdateThreadSettingsTool = Tool.make("update_thread_settings", {
   dependencies,
 });
 
+const RequestIdInput = Schema.String.annotate({
+  description:
+    "Open request id to answer. Discover open requests via get_thread_settings (pendingRequests) or get_thread_history activities.",
+})
+  .check(Schema.isTrimmed())
+  .check(Schema.isNonEmpty())
+  .pipe(Schema.brand("ApprovalRequestId"));
+
+export const InterruptThreadTurnTool = Tool.make("interrupt_thread_turn", {
+  description:
+    "Interrupt the running turn of an MCP-managed sub-thread. Cancels any pending approval/user-input requests and returns the thread to idle so you can send a corrective message. Use to stop a runaway or misdirected sub-thread.",
+  success: Schema.Unknown,
+  failure: McpOrchestrationError,
+  parameters: Schema.Struct({
+    threadId: ThreadIdInput,
+  }),
+  dependencies,
+});
+
+export const RespondToApprovalTool = Tool.make("respond_to_approval", {
+  description:
+    "Answer a pending approval request raised inside an MCP-managed sub-thread (e.g. command execution or file change while in approval-required mode). The thread blocks on the gate until answered. Discover open requests via get_thread_settings (pendingRequests).",
+  success: Schema.Unknown,
+  failure: McpOrchestrationError,
+  parameters: Schema.Struct({
+    threadId: ThreadIdInput,
+    requestId: RequestIdInput,
+    decision: Schema.Literals(["accept", "decline", "acceptForSession"]).annotate({
+      description:
+        "accept = allow this one request; decline = deny it; acceptForSession = allow it AND stop being asked about the same kind of request for the rest of the session (cannot be individually revoked). To cancel the turn instead, use interrupt_thread_turn.",
+    }),
+  }),
+  dependencies,
+});
+
+export const RespondToUserInputTool = Tool.make("respond_to_user_input", {
+  description:
+    "Answer a pending user-input request (a question the provider asked mid-turn) inside an MCP-managed sub-thread. The thread blocks until answered. Discover the open request and its expected fields via get_thread_settings (pendingRequests).",
+  success: Schema.Unknown,
+  failure: McpOrchestrationError,
+  parameters: Schema.Struct({
+    threadId: ThreadIdInput,
+    requestId: RequestIdInput,
+    answers: Schema.Record(Schema.String, Schema.Unknown).annotate({
+      description:
+        "Answer fields keyed by the request's field names (see the pending request's fields). Free-form object.",
+    }),
+  }),
+  dependencies,
+});
+
+export const DeleteThreadTool = Tool.make("delete_thread", {
+  description:
+    "Permanently delete an MCP-managed thread and its sub-threads. Only threads within your MCP creation-subtree can be deleted; user-created threads cannot.",
+  success: Schema.Unknown,
+  failure: McpOrchestrationError,
+  parameters: Schema.Struct({
+    threadId: ThreadIdInput,
+  }),
+  dependencies,
+});
+
+export const ArchiveThreadTool = Tool.make("archive_thread", {
+  description:
+    "Archive an MCP-managed thread (hide it from the active list; reversible via unarchive_thread). Only threads within your MCP creation-subtree can be archived.",
+  success: Schema.Unknown,
+  failure: McpOrchestrationError,
+  parameters: Schema.Struct({
+    threadId: ThreadIdInput,
+  }),
+  dependencies,
+});
+
+export const UnarchiveThreadTool = Tool.make("unarchive_thread", {
+  description:
+    "Restore a previously archived MCP-managed thread to the active list. Only threads within your MCP creation-subtree can be unarchived.",
+  success: Schema.Unknown,
+  failure: McpOrchestrationError,
+  parameters: Schema.Struct({
+    threadId: ThreadIdInput,
+  }),
+  dependencies,
+});
+
 export const OrchestrationToolkit = Toolkit.make(
   ListMcpModelsTool,
   ListProjectsTool,
@@ -498,4 +582,10 @@ export const OrchestrationToolkit = Toolkit.make(
   CreateThreadTool,
   SendThreadMessageTool,
   UpdateThreadSettingsTool,
+  InterruptThreadTurnTool,
+  RespondToApprovalTool,
+  RespondToUserInputTool,
+  DeleteThreadTool,
+  ArchiveThreadTool,
+  UnarchiveThreadTool,
 );

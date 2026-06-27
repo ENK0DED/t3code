@@ -12,6 +12,8 @@ import {
   type RuntimeMode,
   type ServerProvider,
   type ServerProviderModel,
+  ApprovalRequestId,
+  ThreadCreatedVia,
   ThreadId,
 } from "@t3tools/contracts";
 import { buildProjectCreateCommand, resolveAddProjectPath } from "@t3tools/shared/addProject";
@@ -559,7 +561,11 @@ export const McpOrchestrationServiceLive = Layer.effect(
     // MCP-manageable. Returns the thread on success; fails with a diagnosable `forbidden`.
     const requireThreadManageableByMcp = Effect.fn(
       "McpOrchestrationService.requireThreadManageableByMcp",
-    )(function* (thread: OrchestrationThread) {
+    )(function* (thread: {
+      readonly id: ThreadId;
+      readonly createdVia?: ThreadCreatedVia | undefined;
+      readonly createdByThreadId?: ThreadId | null | undefined;
+    }) {
       const invocation = yield* McpInvocationContext.McpInvocationContext;
       // The orchestrator may always act on its own credential thread, even though that
       // thread is itself user-created (a human started the orchestrator).
@@ -608,6 +614,30 @@ export const McpOrchestrationServiceLive = Layer.effect(
       return yield* new McpOrchestrationError({
         code: "forbidden",
         message: `forbidden: Thread '${thread.id}' is not within your MCP creation-subtree and cannot be managed via MCP.`,
+      });
+    });
+
+    // Resolve a thread's provenance regardless of archived/deleted state and verify it is
+    // MCP-manageable by this credential. Used by cleanup ops that can target archived
+    // threads (which the active-only thread lookups do not return).
+    const requireThreadOwnershipByMcp = Effect.fn(
+      "McpOrchestrationService.requireThreadOwnershipByMcp",
+    )(function* (threadId: ThreadId) {
+      const provenance = yield* projectionSnapshotQuery
+        .getThreadCreatorById(threadId)
+        .pipe(
+          Effect.mapError((error) => toInternalError("Failed to resolve thread ownership.", error)),
+        );
+      if (Option.isNone(provenance)) {
+        return yield* new McpOrchestrationError({
+          code: "unknown_thread",
+          message: `Thread '${threadId}' does not exist.`,
+        });
+      }
+      yield* requireThreadManageableByMcp({
+        id: threadId,
+        createdVia: provenance.value.createdVia,
+        createdByThreadId: provenance.value.createdByThreadId,
       });
     });
 
@@ -2122,6 +2152,154 @@ export const McpOrchestrationServiceLive = Layer.effect(
             status: "updated" as const,
             threadId: input.threadId,
             sequence: lastSequence,
+          };
+        }),
+      interruptThreadTurn: (rawInput) =>
+        Effect.gen(function* () {
+          const input = rawInput as { readonly threadId: ThreadId };
+          // Control tools act on a running/blocked thread, so they are exempt from the
+          // idle gate; they still require the thread to be MCP-manageable by this credential.
+          const thread = yield* requireThreadDetail(input.threadId);
+          yield* requireThreadManageableByMcp(thread);
+          const accepted = yield* orchestrationEngine
+            .dispatch({
+              type: "thread.turn.interrupt",
+              commandId: makeCommandId("thread-turn-interrupt"),
+              threadId: input.threadId,
+              createdAt: yield* currentIsoTimestamp(),
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
+          return {
+            status: "interrupt_requested" as const,
+            threadId: input.threadId,
+            sequence: accepted.sequence,
+          };
+        }),
+      respondToApproval: (rawInput) =>
+        Effect.gen(function* () {
+          const input = rawInput as {
+            readonly threadId: ThreadId;
+            readonly requestId: ApprovalRequestId;
+            readonly decision: "accept" | "decline" | "acceptForSession";
+          };
+          const thread = yield* requireThreadDetail(input.threadId);
+          yield* requireThreadManageableByMcp(thread);
+          const accepted = yield* orchestrationEngine
+            .dispatch({
+              type: "thread.approval.respond",
+              commandId: makeCommandId("thread-approval-respond"),
+              threadId: input.threadId,
+              requestId: input.requestId,
+              decision: input.decision,
+              createdAt: yield* currentIsoTimestamp(),
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
+          return {
+            status: "approval_recorded" as const,
+            threadId: input.threadId,
+            requestId: input.requestId,
+            sequence: accepted.sequence,
+          };
+        }),
+      respondToUserInput: (rawInput) =>
+        Effect.gen(function* () {
+          const input = rawInput as {
+            readonly threadId: ThreadId;
+            readonly requestId: ApprovalRequestId;
+            readonly answers: Record<string, unknown>;
+          };
+          const thread = yield* requireThreadDetail(input.threadId);
+          yield* requireThreadManageableByMcp(thread);
+          const accepted = yield* orchestrationEngine
+            .dispatch({
+              type: "thread.user-input.respond",
+              commandId: makeCommandId("thread-user-input-respond"),
+              threadId: input.threadId,
+              requestId: input.requestId,
+              answers: input.answers,
+              createdAt: yield* currentIsoTimestamp(),
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
+          return {
+            status: "user_input_recorded" as const,
+            threadId: input.threadId,
+            requestId: input.requestId,
+            sequence: accepted.sequence,
+          };
+        }),
+      deleteThread: (rawInput) =>
+        Effect.gen(function* () {
+          const input = rawInput as { readonly threadId: ThreadId };
+          yield* requireThreadOwnershipByMcp(input.threadId);
+          const accepted = yield* orchestrationEngine
+            .dispatch({
+              type: "thread.delete",
+              commandId: makeCommandId("thread-delete"),
+              threadId: input.threadId,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
+          return {
+            status: "deleted" as const,
+            threadId: input.threadId,
+            sequence: accepted.sequence,
+          };
+        }),
+      archiveThread: (rawInput) =>
+        Effect.gen(function* () {
+          const input = rawInput as { readonly threadId: ThreadId };
+          yield* requireThreadOwnershipByMcp(input.threadId);
+          const accepted = yield* orchestrationEngine
+            .dispatch({
+              type: "thread.archive",
+              commandId: makeCommandId("thread-archive"),
+              threadId: input.threadId,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
+          return {
+            status: "archived" as const,
+            threadId: input.threadId,
+            sequence: accepted.sequence,
+          };
+        }),
+      unarchiveThread: (rawInput) =>
+        Effect.gen(function* () {
+          const input = rawInput as { readonly threadId: ThreadId };
+          yield* requireThreadOwnershipByMcp(input.threadId);
+          const accepted = yield* orchestrationEngine
+            .dispatch({
+              type: "thread.unarchive",
+              commandId: makeCommandId("thread-unarchive"),
+              threadId: input.threadId,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
+          return {
+            status: "unarchived" as const,
+            threadId: input.threadId,
+            sequence: accepted.sequence,
           };
         }),
     });

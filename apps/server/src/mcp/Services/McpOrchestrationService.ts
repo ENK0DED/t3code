@@ -317,6 +317,24 @@ export interface McpOrchestrationServiceShape {
   readonly updateThreadSettings: (
     input: unknown,
   ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
+  readonly interruptThreadTurn: (
+    input: unknown,
+  ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
+  readonly respondToApproval: (
+    input: unknown,
+  ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
+  readonly respondToUserInput: (
+    input: unknown,
+  ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
+  readonly deleteThread: (
+    input: unknown,
+  ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
+  readonly archiveThread: (
+    input: unknown,
+  ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
+  readonly unarchiveThread: (
+    input: unknown,
+  ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
 }
 
 /** @effect-expect-leaking McpInvocationContext */

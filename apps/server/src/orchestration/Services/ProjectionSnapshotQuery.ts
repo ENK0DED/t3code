@@ -15,6 +15,7 @@ import type {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadShell,
+  ThreadCreatedVia,
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -176,10 +177,11 @@ export interface ProjectionSnapshotQueryShape {
    * archived/deleted state. Used for MCP ownership creator-chain traversal so an
    * archived or deleted intermediate ancestor does not strand owned descendants.
    */
-  readonly getThreadCreatorById: (
-    threadId: ThreadId,
-  ) => Effect.Effect<
-    Option.Option<{ readonly createdByThreadId: ThreadId | null }>,
+  readonly getThreadCreatorById: (threadId: ThreadId) => Effect.Effect<
+    Option.Option<{
+      readonly createdVia: ThreadCreatedVia;
+      readonly createdByThreadId: ThreadId | null;
+    }>,
     ProjectionRepositoryError
   >;
 

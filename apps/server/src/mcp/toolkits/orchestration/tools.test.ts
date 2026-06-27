@@ -23,6 +23,12 @@ const expectedToolNames = [
   "create_thread",
   "send_thread_message",
   "update_thread_settings",
+  "interrupt_thread_turn",
+  "respond_to_approval",
+  "respond_to_user_input",
+  "delete_thread",
+  "archive_thread",
+  "unarchive_thread",
 ] as const;
 
 const schemaHasDescription = (schema: unknown): boolean => {

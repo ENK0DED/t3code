@@ -222,6 +222,7 @@ const projectionQueryMock = (input: {
         // Provenance-only: returns the creator link regardless of archived/deleted state.
         input.threadDetailById?.[String(threadId)]
           ? Option.some({
+              createdVia: input.threadDetailById[String(threadId)]!.createdVia ?? "user",
               createdByThreadId:
                 input.threadDetailById[String(threadId)]!.createdByThreadId ?? null,
             })

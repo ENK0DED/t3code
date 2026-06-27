@@ -22,6 +22,7 @@ import {
   type OrchestrationThreadShell,
   ModelSelection,
   ProjectId,
+  ThreadCreatedVia,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
@@ -126,6 +127,7 @@ const ProjectionThreadIdLookupRowSchema = Schema.Struct({
   threadId: ThreadId,
 });
 const ProjectionThreadCreatorRowSchema = Schema.Struct({
+  createdVia: ThreadCreatedVia,
   createdByThreadId: Schema.NullOr(ThreadId),
 });
 const ProjectionThreadCheckpointContextThreadRowSchema = Schema.Struct({
@@ -924,6 +926,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     execute: ({ threadId }) =>
       sql`
         SELECT
+          created_via AS "createdVia",
           created_by_thread_id AS "createdByThreadId"
         FROM projection_threads
         WHERE thread_id = ${threadId}
