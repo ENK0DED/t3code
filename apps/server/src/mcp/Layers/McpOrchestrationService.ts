@@ -370,6 +370,13 @@ function derivePendingRequestsForTurn(
   thread: OrchestrationThread,
   turnId: string,
 ): ReadonlyArray<PendingRequest> {
+  // Scope the response-timeout's pending-request set to THIS turn (review B7): a request
+  // left open by an OLDER turn must not trip a new turn's response timeout. Requests open
+  // mid-turn, so their activities carry that turn's id. Do NOT broaden this to include
+  // null/unattributed turnIds (e.g. `|| activity.turnId == null`) — that would let a stale
+  // unattributed request cancel an unrelated turn, reintroducing B7. A request that somehow
+  // opens without a turn id is intentionally not response-timeout-scoped here; the per-turn
+  // turn_timeout_ms remains its backstop.
   return derivePendingRequestsFromActivities(
     thread.activities.filter((activity) => activity.turnId === TurnId.make(turnId)),
   );
