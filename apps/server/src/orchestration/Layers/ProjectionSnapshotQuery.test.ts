@@ -1231,12 +1231,29 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         assert.equal(completed.value.assistantMessageId, "message-assistant-1");
       }
 
+      // Resolves the same concrete turn by the pending-start message id that bound it.
+      const byMessageId = yield* snapshotQuery.getThreadTurnStateByPendingMessageId({
+        threadId: ThreadId.make("thread-1"),
+        messageId: MessageId.make("message-user-1"),
+      });
+      assert.equal(byMessageId._tag, "Some");
+      if (byMessageId._tag === "Some") {
+        assert.equal(byMessageId.value.turnId, asTurnId("turn-done"));
+        assert.equal(byMessageId.value.state, "completed");
+      }
+
       // An unknown turn id resolves to None.
       const missing = yield* snapshotQuery.getThreadTurnStateById({
         threadId: ThreadId.make("thread-1"),
         turnId: asTurnId("turn-nope"),
       });
       assert.equal(missing._tag, "None");
+
+      const missingMessage = yield* snapshotQuery.getThreadTurnStateByPendingMessageId({
+        threadId: ThreadId.make("thread-1"),
+        messageId: MessageId.make("message-missing"),
+      });
+      assert.equal(missingMessage._tag, "None");
     }),
   );
 

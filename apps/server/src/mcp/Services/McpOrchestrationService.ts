@@ -168,6 +168,22 @@ export interface DeleteProjectActionResult {
   readonly sequence: number;
 }
 
+export interface AddProjectInput {
+  readonly path: string;
+}
+
+export type AddProjectResult =
+  | {
+      readonly status: "already_exists";
+      readonly project: ProjectSelector;
+      readonly sequence: null;
+    }
+  | {
+      readonly status: "created";
+      readonly project: ProjectSelector;
+      readonly sequence: number;
+    };
+
 export interface ListThreadsInput {
   readonly projectId: ProjectId;
   readonly search?: string | undefined;
@@ -388,8 +404,12 @@ export interface McpOrchestrationServiceShape {
     McpInvocationContext.McpInvocationContext
   >;
   readonly addProject: (
-    input: unknown,
-  ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
+    input: AddProjectInput,
+  ) => Effect.Effect<
+    AddProjectResult,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext
+  >;
   readonly createThread: (
     input: unknown,
   ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;

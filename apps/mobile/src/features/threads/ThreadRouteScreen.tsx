@@ -273,6 +273,25 @@ export function ThreadRouteScreen() {
     ],
   );
 
+  const headerSubtitle = [
+    selectedThreadProject?.title ?? null,
+    selectedEnvironmentConnection?.environmentLabel ?? null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const headerTitle = selectedThreadDetail?.title ?? "";
+  const renderHeaderTitle = useCallback(
+    () => (
+      <ThreadRouteHeaderTitle
+        title={headerTitle}
+        subtitle={headerSubtitle}
+        foregroundColor={foregroundColor}
+        secondaryColor={secondaryFg}
+      />
+    ),
+    [foregroundColor, headerSubtitle, headerTitle, secondaryFg],
+  );
+
   if (!environmentId || !threadId) {
     return <OpeningThreadLoadingScreen />;
   }
@@ -319,24 +338,6 @@ export function ThreadRouteScreen() {
       Arr.findFirst((value) => value !== null),
       Option.getOrNull,
     );
-
-  const headerSubtitle = [
-    selectedThreadProject?.title ?? null,
-    selectedEnvironmentConnection?.environmentLabel ?? null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const renderHeaderTitle = useCallback(
-    () => (
-      <ThreadRouteHeaderTitle
-        title={selectedThreadDetail.title}
-        subtitle={headerSubtitle}
-        foregroundColor={foregroundColor}
-        secondaryColor={secondaryFg}
-      />
-    ),
-    [foregroundColor, headerSubtitle, secondaryFg, selectedThreadDetail.title],
-  );
 
   return (
     <>

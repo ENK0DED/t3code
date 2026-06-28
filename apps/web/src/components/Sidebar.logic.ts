@@ -438,11 +438,12 @@ type ThreadTreeInput = ThreadStatusInput &
 // server event data and `store.ts` maps `parentThreadId` without validating
 // acyclicity, so a malformed chain must terminate here rather than freeze the
 // tab. Mirrors the `ancestors` guard in `buildThreadTreeRows`'s `visit`.
-export function hasThreadDescendant(
+export function hasThreadDescendant<TThread extends { id: string }>(
   threadId: string,
   targetThreadId: string | undefined,
-  childrenByParentId: ReadonlyMap<string, readonly { id: string }[]>,
+  childrenByParentId: ReadonlyMap<string, readonly TThread[]>,
   visited: Set<string> = new Set(),
+  getThreadKey: (thread: TThread) => string = (thread) => thread.id,
 ): boolean {
   if (!targetThreadId) {
     return false;
@@ -453,10 +454,11 @@ export function hasThreadDescendant(
   visited.add(threadId);
   const children = childrenByParentId.get(threadId) ?? [];
   for (const child of children) {
-    if (child.id === targetThreadId) {
+    const childKey = getThreadKey(child);
+    if (childKey === targetThreadId) {
       return true;
     }
-    if (hasThreadDescendant(child.id, targetThreadId, childrenByParentId, visited)) {
+    if (hasThreadDescendant(childKey, targetThreadId, childrenByParentId, visited, getThreadKey)) {
       return true;
     }
   }
@@ -467,19 +469,22 @@ export function resolveDescendantThreadStatus<TThread extends ThreadTreeInput>(
   threads: readonly TThread[],
   childrenByParentId: ReadonlyMap<string, readonly TThread[]>,
   visited: Set<string> = new Set(),
+  getThreadKey: (thread: TThread) => string = (thread) => thread.id,
 ): ThreadStatusPill | null {
   return resolveProjectStatusIndicator(
     threads.flatMap((thread) => {
-      if (visited.has(thread.id)) {
+      const threadKey = getThreadKey(thread);
+      if (visited.has(threadKey)) {
         return [];
       }
-      visited.add(thread.id);
+      visited.add(threadKey);
       return [
         resolveThreadStatusPill({ thread }),
         resolveDescendantThreadStatus(
-          childrenByParentId.get(thread.id) ?? [],
+          childrenByParentId.get(threadKey) ?? [],
           childrenByParentId,
           visited,
+          getThreadKey,
         ),
       ];
     }),
@@ -519,7 +524,20 @@ export function buildThreadTreeRows<TThread extends ThreadTreeInput>(input: {
   readonly sortOrder: SidebarThreadSortOrder;
   readonly getThreadExpansionId?: ((thread: TThread) => string) | undefined;
 }): SidebarThreadTreeRow<TThread>[] {
-  const threadIds = new Set(input.threads.map((thread) => thread.id));
+  const getThreadKey = (thread: TThread) => input.getThreadExpansionId?.(thread) ?? thread.id;
+  const getParentKey = (thread: TThread) => {
+    if (thread.parentThreadId === null) {
+      return null;
+    }
+    if (!input.getThreadExpansionId) {
+      return thread.parentThreadId;
+    }
+    return input.getThreadExpansionId({
+      ...thread,
+      id: thread.parentThreadId,
+    });
+  };
+  const threadIds = new Set(input.threads.map(getThreadKey));
   const sortedThreads = [...input.threads].toSorted((left, right) => {
     const rightTimestamp = getThreadSortTimestamp(right, input.sortOrder);
     const leftTimestamp = getThreadSortTimestamp(left, input.sortOrder);
@@ -531,40 +549,66 @@ export function buildThreadTreeRows<TThread extends ThreadTreeInput>(input: {
   const rootThreads: TThread[] = [];
   const byParent = new Map<string, TThread[]>();
   for (const thread of sortedThreads) {
-    if (thread.parentThreadId === null || !threadIds.has(thread.parentThreadId)) {
+    const parentKey = getParentKey(thread);
+    if (parentKey === null || !threadIds.has(parentKey)) {
       rootThreads.push(thread);
       continue;
     }
-    const siblings = byParent.get(thread.parentThreadId);
+    const siblings = byParent.get(parentKey);
     if (siblings) {
       siblings.push(thread);
     } else {
-      byParent.set(thread.parentThreadId, [thread]);
+      byParent.set(parentKey, [thread]);
     }
   }
 
   const rows: SidebarThreadTreeRow<TThread>[] = [];
-  const visit = (thread: TThread, depth: number, ancestors: ReadonlySet<string>) => {
-    if (ancestors.has(thread.id)) {
+  const visitedThreadKeys = new Set<string>();
+  const markDescendantsVisited = (threads: readonly TThread[], ancestors: ReadonlySet<string>) => {
+    for (const thread of threads) {
+      const threadKey = getThreadKey(thread);
+      if (visitedThreadKeys.has(threadKey) || ancestors.has(threadKey)) {
+        continue;
+      }
+      visitedThreadKeys.add(threadKey);
+      const nextAncestors = new Set(ancestors);
+      nextAncestors.add(threadKey);
+      markDescendantsVisited(byParent.get(threadKey) ?? [], nextAncestors);
+    }
+  };
+  const visit = (
+    thread: TThread,
+    depth: number,
+    ancestors: ReadonlySet<string>,
+    isRecoveredRoot = false,
+  ) => {
+    const threadKey = getThreadKey(thread);
+    if (visitedThreadKeys.has(threadKey) || ancestors.has(threadKey)) {
       return;
     }
-    const children = byParent.get(thread.id) ?? [];
-    const threadExpansionId = input.getThreadExpansionId?.(thread) ?? thread.id;
+    visitedThreadKeys.add(threadKey);
+    const children = byParent.get(threadKey) ?? [];
+    const threadExpansionId = input.getThreadExpansionId?.(thread) ?? threadKey;
     const expanded =
       input.expandedThreadIds.has(threadExpansionId) ||
-      hasThreadDescendant(thread.id, input.activeThreadId, byParent);
+      hasThreadDescendant(threadKey, input.activeThreadId, byParent, new Set(), getThreadKey);
     rows.push({
       thread,
       depth,
       hasChildren: children.length > 0,
       expanded,
-      descendantStatus: expanded ? null : resolveDescendantThreadStatus(children, byParent),
+      descendantStatus: expanded
+        ? null
+        : resolveDescendantThreadStatus(children, byParent, new Set(), getThreadKey),
     });
     if (!expanded) {
+      if (!isRecoveredRoot) {
+        markDescendantsVisited(children, new Set([threadKey]));
+      }
       return;
     }
     const nextAncestors = new Set(ancestors);
-    nextAncestors.add(thread.id);
+    nextAncestors.add(threadKey);
     for (const child of children) {
       visit(child, depth + 1, nextAncestors);
     }
@@ -572,6 +616,9 @@ export function buildThreadTreeRows<TThread extends ThreadTreeInput>(input: {
 
   for (const thread of rootThreads) {
     visit(thread, 0, new Set());
+  }
+  for (const thread of sortedThreads) {
+    visit(thread, 0, new Set(), true);
   }
   return rows;
 }

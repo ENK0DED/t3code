@@ -104,6 +104,11 @@ const ProjectionLatestTurnDbRowSchema = Schema.Struct({
   sourceProposedPlanThreadId: Schema.NullOr(ThreadId),
   sourceProposedPlanId: Schema.NullOr(OrchestrationProposedPlanId),
 });
+const ProjectionPendingTurnStartDbRowSchema = Schema.Struct({
+  threadId: ProjectionThread.fields.threadId,
+  messageId: MessageId,
+  requestedAt: IsoDateTime,
+});
 const ProjectionStateDbRowSchema = ProjectionState;
 const ProjectionCountsRowSchema = Schema.Struct({
   projectCount: Schema.Number,
@@ -631,6 +636,24 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listPendingTurnStartRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionPendingTurnStartDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          pending_message_id AS "messageId",
+          requested_at AS "requestedAt"
+        FROM projection_turns
+        WHERE turn_id IS NULL
+          AND state = 'pending'
+          AND pending_message_id IS NOT NULL
+          AND checkpoint_turn_count IS NULL
+        ORDER BY thread_id ASC, requested_at DESC
+      `,
+  });
+
   const listActiveLatestTurnRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProjectionLatestTurnDbRowSchema,
@@ -979,6 +1002,42 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       ),
     );
+
+  const getThreadTurnRowByPendingMessageId = SqlSchema.findOneOption({
+    Request: Schema.Struct({ threadId: ThreadId, messageId: MessageId }),
+    Result: ProjectionLatestTurnDbRowSchema,
+    execute: ({ threadId, messageId }) =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          state,
+          requested_at AS "requestedAt",
+          started_at AS "startedAt",
+          completed_at AS "completedAt",
+          assistant_message_id AS "assistantMessageId",
+          source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
+          source_proposed_plan_id AS "sourceProposedPlanId"
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND pending_message_id = ${messageId}
+          AND turn_id IS NOT NULL
+        ORDER BY requested_at DESC
+        LIMIT 1
+      `,
+  });
+
+  const getThreadTurnStateByPendingMessageId: ProjectionSnapshotQueryShape["getThreadTurnStateByPendingMessageId"] =
+    (input) =>
+      getThreadTurnRowByPendingMessageId(input).pipe(
+        Effect.map(Option.map(mapLatestTurn)),
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.getThreadTurnStateByPendingMessageId:query",
+            "ProjectionSnapshotQuery.getThreadTurnStateByPendingMessageId:decodeRow",
+          ),
+        ),
+      );
 
   const getActiveThreadRowById = SqlSchema.findOneOption({
     Request: ThreadIdLookupInput,
@@ -1510,6 +1569,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listPendingTurnStartRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getCommandReadModel:listPendingTurnStarts:query",
+                "ProjectionSnapshotQuery.getCommandReadModel:listPendingTurnStarts:decodeRows",
+              ),
+            ),
+          ),
           listProjectionStateRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -1522,7 +1589,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       )
       .pipe(
         Effect.flatMap(
-          ([projectRows, threadRows, proposedPlanRows, sessionRows, latestTurnRows, stateRows]) =>
+          ([
+            projectRows,
+            threadRows,
+            proposedPlanRows,
+            sessionRows,
+            latestTurnRows,
+            pendingTurnStartRows,
+            stateRows,
+          ]) =>
             Effect.sync(() => {
               let updatedAt: string | null = null;
               const projects: OrchestrationProject[] = [];
@@ -1579,6 +1654,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   updatedAt = maxIso(updatedAt, row.completedAt);
                 }
               }
+              for (let index = 0; index < pendingTurnStartRows.length; index += 1) {
+                const row = pendingTurnStartRows[index];
+                if (!row) {
+                  continue;
+                }
+                updatedAt = maxIso(updatedAt, row.requestedAt);
+              }
               for (let index = 0; index < stateRows.length; index += 1) {
                 const row = stateRows[index];
                 if (!row) {
@@ -1594,6 +1676,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   continue;
                 }
                 latestTurnByThread.set(row.threadId, mapLatestTurn(row));
+              }
+              const pendingTurnStartByThread = new Map<
+                string,
+                Schema.Schema.Type<typeof ProjectionPendingTurnStartDbRowSchema>
+              >();
+              for (let index = 0; index < pendingTurnStartRows.length; index += 1) {
+                const row = pendingTurnStartRows[index];
+                if (!row || pendingTurnStartByThread.has(row.threadId)) {
+                  continue;
+                }
+                pendingTurnStartByThread.set(row.threadId, row);
               }
               const proposedPlansByThread = new Map<string, Array<OrchestrationProposedPlan>>();
               const sessionByThread = new Map<string, OrchestrationSession>();
@@ -1634,6 +1727,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   createdVia: row.createdVia,
                   createdByThreadId: row.createdByThreadId,
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
+                  pendingTurnStart: pendingTurnStartByThread.get(row.threadId) ?? null,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
                   archivedAt: row.archivedAt,
@@ -2350,6 +2444,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadCreatorById,
     getThreadDetailById,
     getThreadTurnStateById,
+    getThreadTurnStateByPendingMessageId,
     searchThreadMessagesByProject,
   } satisfies ProjectionSnapshotQueryShape;
 });

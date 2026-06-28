@@ -124,12 +124,14 @@ const makeProvider = (input: {
   driver: ServerProvider["driver"];
   models?: ReadonlyArray<ServerProvider["models"][number]>;
   displayName?: string;
+  installed?: boolean;
+  enabled?: boolean;
 }): ServerProvider => ({
   instanceId: ProviderInstanceId.make(input.instanceId),
   driver: input.driver,
   displayName: input.displayName,
-  enabled: true,
-  installed: true,
+  enabled: input.enabled ?? true,
+  installed: input.installed ?? true,
   version: "1.0.0",
   status: "ready",
   auth: { status: "authenticated" },
@@ -179,6 +181,7 @@ const projectionQueryMock = (input?: {
           : Option.none(),
       ),
     getThreadTurnStateById: () => Effect.succeed(Option.none()),
+    getThreadTurnStateByPendingMessageId: () => Effect.die("unused"),
     listProjectShells: () => Effect.succeed(input?.projects ?? []),
     listThreadShellsByProject: ({ projectId, archived }) =>
       Effect.succeed(
@@ -369,6 +372,34 @@ it.effect("listMcpModels excludes models disabled in server settings", () =>
             [ProviderInstanceId.make("codex")]: ["gpt-disabled"],
           },
         },
+      }),
+    ),
+  ),
+);
+
+it.effect("listMcpModels excludes provider instances that are not installed", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.listMcpModels();
+
+    expect(result.providers[ProviderInstanceId.make("codex")]).toBeDefined();
+    expect(result.providers[ProviderInstanceId.make("claude")]).toBeUndefined();
+  }).pipe(
+    Effect.provide(
+      makeReadHarnessLayer({
+        providers: [
+          makeProvider({
+            instanceId: "codex",
+            driver: ProviderDriverKind.make("codex"),
+            models: [{ slug: "gpt-5.5", name: "GPT-5.5", isCustom: false, capabilities: null }],
+          }),
+          makeProvider({
+            instanceId: "claude",
+            driver: ProviderDriverKind.make("claudeAgent"),
+            installed: false,
+            models: [{ slug: "sonnet", name: "Sonnet", isCustom: false, capabilities: null }],
+          }),
+        ],
       }),
     ),
   ),

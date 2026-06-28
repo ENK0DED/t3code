@@ -806,10 +806,115 @@ describe("buildThreadTreeRows", () => {
     ]);
   });
 
+  it("keeps duplicate thread ids in different environments under their scoped parent", () => {
+    const getThreadExpansionId = (thread: SidebarThreadTestSummary) =>
+      `${thread.environmentId}:${thread.id}`;
+    const rows = buildThreadTreeRows({
+      threads: [
+        sidebarThread({
+          id: "thread-parent",
+          environmentId: "environment-a",
+          parentThreadId: null,
+          updatedAt: "2026-01-04T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-parent",
+          environmentId: "environment-b",
+          parentThreadId: null,
+          updatedAt: "2026-01-03T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-child",
+          environmentId: "environment-a",
+          parentThreadId: "thread-parent",
+          updatedAt: "2026-01-02T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-child",
+          environmentId: "environment-b",
+          parentThreadId: "thread-parent",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        }),
+      ],
+      expandedThreadIds: new Set(["environment-a:thread-parent"]),
+      activeThreadId: undefined,
+      sortOrder: "updated_at",
+      getThreadExpansionId,
+    });
+
+    expect(rows.map((row) => [`${row.thread.environmentId}:${row.thread.id}`, row.depth])).toEqual([
+      ["environment-a:thread-parent", 0],
+      ["environment-a:thread-child", 1],
+      ["environment-b:thread-parent", 0],
+    ]);
+  });
+
+  it("auto-expands only the scoped parent of the active thread", () => {
+    const getThreadExpansionId = (thread: SidebarThreadTestSummary) =>
+      `${thread.environmentId}:${thread.id}`;
+    const rows = buildThreadTreeRows({
+      threads: [
+        sidebarThread({
+          id: "thread-parent",
+          environmentId: "environment-a",
+          parentThreadId: null,
+          updatedAt: "2026-01-04T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-parent",
+          environmentId: "environment-b",
+          parentThreadId: null,
+          updatedAt: "2026-01-03T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-active",
+          environmentId: "environment-a",
+          parentThreadId: "thread-parent",
+          updatedAt: "2026-01-02T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-active",
+          environmentId: "environment-b",
+          parentThreadId: "thread-parent",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        }),
+      ],
+      expandedThreadIds: new Set(),
+      activeThreadId: "environment-b:thread-active",
+      sortOrder: "updated_at",
+      getThreadExpansionId,
+    });
+
+    expect(
+      rows.map((row) => [`${row.thread.environmentId}:${row.thread.id}`, row.depth, row.expanded]),
+    ).toEqual([
+      ["environment-a:thread-parent", 0, false],
+      ["environment-b:thread-parent", 0, true],
+      ["environment-b:thread-active", 1, false],
+    ]);
+  });
+
+  it("recovers unvisited cyclic components as roots instead of hiding them", () => {
+    const rows = buildThreadTreeRows({
+      threads: [
+        sidebarThread({ id: "thread-a", parentThreadId: "thread-b" }),
+        sidebarThread({ id: "thread-b", parentThreadId: "thread-a" }),
+      ],
+      expandedThreadIds: new Set(),
+      activeThreadId: undefined,
+      sortOrder: "updated_at",
+    });
+
+    expect(rows.map((row) => [row.thread.id, row.depth])).toEqual([
+      ["thread-b", 0],
+      ["thread-a", 0],
+    ]);
+  });
+
   it("terminates on a cyclic parentThreadId chain instead of recursing forever", () => {
     // A malformed server payload where a→b→a form a cycle. The tree builder
-    // skips cyclic components (they have no root), but the build must still
-    // return rather than hang.
+    // recovers unvisited cyclic components as roots and must still return
+    // rather than hang.
     const rows = buildThreadTreeRows({
       threads: [
         sidebarThread({ id: "thread-root", parentThreadId: null }),
@@ -821,7 +926,7 @@ describe("buildThreadTreeRows", () => {
       sortOrder: "updated_at",
     });
 
-    expect(rows.map((row) => row.thread.id)).toEqual(["thread-root"]);
+    expect(rows.map((row) => row.thread.id)).toEqual(["thread-root", "thread-b", "thread-a"]);
   });
 });
 

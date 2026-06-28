@@ -26,7 +26,10 @@ import * as Stream from "effect/Stream";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts";
-import { McpOrchestrationService } from "./Services/McpOrchestrationService.ts";
+import {
+  McpOrchestrationError,
+  McpOrchestrationService,
+} from "./Services/McpOrchestrationService.ts";
 import { CheckpointDiffQuery } from "../checkpointing/Services/CheckpointDiffQuery.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -48,6 +51,19 @@ const defaultModelSelection = (overrides?: Partial<ModelSelection>): ModelSelect
 });
 
 const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+
+const expectForbidden = (
+  name: string,
+  effect: Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>,
+) =>
+  Effect.gen(function* () {
+    const exit = yield* Effect.exit(effect.pipe(Effect.asVoid));
+    expect(Exit.isFailure(exit), name).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code, name).toBe("forbidden");
+    }
+  });
 
 const makeProjectShell = (
   input: Partial<OrchestrationProjectShell> & Pick<OrchestrationProjectShell, "id">,
@@ -236,6 +252,7 @@ const projectionQueryMock = (input: {
           : Option.none(),
       ),
     getThreadTurnStateById: () => Effect.succeed(Option.none()),
+    getThreadTurnStateByPendingMessageId: () => Effect.die("unused"),
     searchThreadMessagesByProject: () => Effect.succeed([]),
   });
 
@@ -257,6 +274,7 @@ const makeWriteHarnessLayer = (input?: {
   readonly threads?: ReadonlyArray<OrchestrationThreadShell>;
   readonly threadDetails?: ReadonlyArray<OrchestrationThread>;
   readonly providers?: ReadonlyArray<ServerProvider>;
+  readonly capabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
   readonly runtimeSessions?: ReadonlyArray<ProviderSession>;
   readonly settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
   readonly dispatchedCommands?: Array<OrchestrationCommand>;
@@ -328,7 +346,8 @@ const makeWriteHarnessLayer = (input?: {
         threadId: ThreadId.make("thread-current"),
         providerSessionId: "provider-session-1",
         providerInstanceId: ProviderInstanceId.make("codex"),
-        capabilities: new Set(["orchestration.write", "orchestration.read"] as const),
+        capabilities:
+          input?.capabilities ?? new Set(["orchestration.write", "orchestration.read"] as const),
         issuedAt: 0,
         expiresAt: 60_000,
       }),
@@ -504,6 +523,7 @@ it.effect("addProject returns already_exists for an existing normalized path", (
         project: {
           id: "project-current",
         },
+        sequence: null,
       });
       expect(dispatchedCommands).toHaveLength(0);
     }).pipe(
@@ -542,6 +562,7 @@ it.effect("addProject sanitizes duplicate project responses and hides action com
           title: "Current Project",
           workspaceRoot: "/work/current",
         },
+        sequence: null,
       });
       const encoded = encodeUnknownJsonString(result);
       expect(encoded).not.toContain("command");
@@ -624,6 +645,176 @@ it.effect("addProject does not request directory creation for MCP-created projec
         });
       }),
     ).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
+  })(),
+);
+
+it.effect("inner mutating service methods require orchestration.write", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* expectForbidden("addProject", service.addProject({ path: "/work/current" }));
+      yield* expectForbidden(
+        "updateProjectSettings",
+        service.updateProjectSettings({
+          projectId: ProjectId.make("project-current"),
+          title: "No write",
+        }),
+      );
+      yield* expectForbidden(
+        "createProjectAction",
+        service.createProjectAction({
+          projectId: ProjectId.make("project-current"),
+          name: "Test",
+          command: "bun test",
+        }),
+      );
+      yield* expectForbidden(
+        "updateProjectAction",
+        service.updateProjectAction({
+          projectId: ProjectId.make("project-current"),
+          actionId: "test",
+          name: "Renamed",
+        }),
+      );
+      yield* expectForbidden(
+        "deleteProjectAction",
+        service.deleteProjectAction({
+          projectId: ProjectId.make("project-current"),
+          actionId: "test",
+        }),
+      );
+      yield* expectForbidden("createThread", service.createThread({ title: "No write" }));
+      yield* expectForbidden(
+        "sendThreadMessage",
+        service.sendThreadMessage({
+          threadId: ThreadId.make("thread-current"),
+          message: "No write",
+        }),
+      );
+      yield* expectForbidden(
+        "updateThreadSettings",
+        service.updateThreadSettings({
+          threadId: ThreadId.make("thread-current"),
+          title: "No write",
+        }),
+      );
+      yield* expectForbidden(
+        "interruptThreadTurn",
+        service.interruptThreadTurn({ threadId: ThreadId.make("thread-current") }),
+      );
+      yield* expectForbidden(
+        "respondToApproval",
+        service.respondToApproval({
+          threadId: ThreadId.make("thread-current"),
+          requestId: "req-approval" as never,
+          decision: "accept",
+        }),
+      );
+      yield* expectForbidden(
+        "respondToUserInput",
+        service.respondToUserInput({
+          threadId: ThreadId.make("thread-current"),
+          requestId: "req-input" as never,
+          answers: {},
+        }),
+      );
+      yield* expectForbidden(
+        "deleteThread",
+        service.deleteThread({ threadId: ThreadId.make("thread-current") }),
+      );
+      yield* expectForbidden(
+        "archiveThread",
+        service.archiveThread({ threadId: ThreadId.make("thread-current") }),
+      );
+      yield* expectForbidden(
+        "unarchiveThread",
+        service.unarchiveThread({ threadId: ThreadId.make("thread-current") }),
+      );
+      expect(dispatchedCommands, "no commands dispatched").toEqual([]);
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          capabilities: new Set(["orchestration.read"] as const),
+          dispatchedCommands,
+          projects: [
+            makeProjectShell({
+              id: ProjectId.make("project-current"),
+              scripts: [
+                {
+                  id: "test",
+                  name: "Test",
+                  command: "bun test",
+                  icon: "test",
+                  runOnWorktreeCreate: false,
+                },
+              ],
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("project-level writes reject projects outside the invocation thread project", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* expectForbidden(
+        "updateProjectSettings",
+        service.updateProjectSettings({
+          projectId: ProjectId.make("project-other"),
+          title: "Cross project",
+        }),
+      );
+      yield* expectForbidden(
+        "createProjectAction",
+        service.createProjectAction({
+          projectId: ProjectId.make("project-other"),
+          name: "Test",
+          command: "bun test",
+        }),
+      );
+      yield* expectForbidden(
+        "updateProjectAction",
+        service.updateProjectAction({
+          projectId: ProjectId.make("project-other"),
+          actionId: "test",
+          name: "Renamed",
+        }),
+      );
+      yield* expectForbidden(
+        "deleteProjectAction",
+        service.deleteProjectAction({
+          projectId: ProjectId.make("project-other"),
+          actionId: "test",
+        }),
+      );
+      expect(dispatchedCommands).toEqual([]);
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          projects: [
+            makeProjectShell({ id: ProjectId.make("project-current") }),
+            makeProjectShell({
+              id: ProjectId.make("project-other"),
+              scripts: [
+                {
+                  id: "test",
+                  name: "Test",
+                  command: "bun test",
+                  icon: "test",
+                  runOnWorktreeCreate: false,
+                },
+              ],
+            }),
+          ],
+        }),
+      ),
+    );
   })(),
 );
 
@@ -1407,6 +1598,29 @@ it.effect("createThread defaults placement to top_level", () =>
   })(),
 );
 
+it.effect("createThread rejects top_level placement with a parentThreadId", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const exit = yield* Effect.exit(
+        service.createThread({
+          placement: "top_level",
+          parentThreadId: ThreadId.make("thread-parent"),
+          title: "Contradictory placement",
+        }),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause) as { readonly code: string };
+        expect(error.code).toBe("invalid_input");
+      }
+      expect(dispatchedCommands).toEqual([]);
+    }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
+  })(),
+);
+
 it.effect("createThread with a message creates the thread before starting the turn", () =>
   (() => {
     const dispatchedCommands: Array<OrchestrationCommand> = [];
@@ -1449,6 +1663,44 @@ it.effect("createThread with a message creates the thread before starting the tu
       }
     }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
   })(),
+);
+
+it.effect("createThread trims the first message before dispatch", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* service.createThread({
+        message: "  Please trim this prompt  ",
+        checkoutMode: "current_checkout",
+      });
+
+      expect(dispatchedCommands[1]).toMatchObject({
+        type: "thread.turn.start",
+        message: {
+          text: "Please trim this prompt",
+        },
+      });
+    }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
+  })(),
+);
+
+it.effect("createThread rejects whitespace-only first messages", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.createThread({
+        message: "   \n\t  ",
+        checkoutMode: "current_checkout",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("invalid_input");
+    }
+  }).pipe(Effect.provide(makeWriteHarnessLayer({}))),
 );
 
 it.effect("createThread with a message seeds title generation when title is message-derived", () =>
@@ -1554,13 +1806,7 @@ it.effect(
 );
 
 it.effect(
-  // #2 regression: an omitted-checkout top-level create+message resolves the safe default
-  // new_worktree (Decision 4). Cross-project, there is no source checkout to inherit, so the
-  // first turn must PREPARE a fresh isolated worktree (off HEAD) rather than silently running
-  // unsupervised in the target project's shared tree — and it must NOT inherit the source
-  // thread's feature/current. Previously this set new_worktree-implying metadata but prepared
-  // no worktree (the shouldPrepareWorktree-vs-desiredCheckoutMode mismatch).
-  "createThread in another project prepares a fresh worktree instead of inheriting the source checkout",
+  "createThread top-level rejects explicit projectId outside the invocation thread project",
   () =>
     (() => {
       const dispatchedCommands: Array<OrchestrationCommand> = [];
@@ -1578,30 +1824,21 @@ it.effect(
       }> = [];
       return Effect.gen(function* () {
         const service = yield* McpOrchestrationService;
-        const result = (yield* service.createThread({
-          projectId: ProjectId.make("project-other"),
-          title: "Cross-project follow-up",
-          message: "Start this in the other project",
-        })) as { readonly threadId: ThreadId };
+        const exit = yield* Effect.exit(
+          service.createThread({
+            projectId: ProjectId.make("project-other"),
+            title: "Cross-project follow-up",
+            message: "Start this in the other project",
+          }),
+        );
 
-        expect(result).toMatchObject({
-          status: "accepted",
-          threadId: expect.any(String),
-          messageId: expect.any(String),
-        });
-        // The first turn prepares a worktree, so a bootstrapped turn.start sequence is dispatched.
-        expect(dispatchedCommands.map((command) => command.type)).toContain("thread.turn.start");
-        // It did NOT inherit feature/current; instead it created a fresh branch off HEAD in the
-        // TARGET project's workspace.
-        expect(createWorktreeCalls).toEqual([
-          {
-            cwd: "/work/other",
-            refName: "HEAD",
-            newRefName: expect.any(String),
-            path: null,
-          },
-        ]);
-        expect(createWorktreeCalls[0]?.newRefName).not.toBe("feature/current");
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit)) {
+          const error = Cause.squash(exit.cause) as { readonly code: string };
+          expect(error.code).toBe("forbidden");
+        }
+        expect(dispatchedCommands).toEqual([]);
+        expect(createWorktreeCalls).toEqual([]);
       }).pipe(
         Effect.provide(
           makeWriteHarnessLayer({
@@ -1721,6 +1958,48 @@ it.effect("createThread child_of_thread inherits checkout metadata from the pare
               title: "Parent Thread",
               branch: "feature/parent",
               worktreePath: "/work/current/.worktrees/parent",
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("createThread infers child_of_thread placement when parentThreadId is provided", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.createThread({
+        parentThreadId: ThreadId.make("thread-parent"),
+        title: "Implicit child",
+      });
+
+      expect(result).toMatchObject({
+        status: "created",
+        thread: {
+          parentThreadId: "thread-parent",
+        },
+      });
+      expect(dispatchedCommands[0]).toMatchObject({
+        type: "thread.create",
+        parentThreadId: "thread-parent",
+      });
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              projectId: ProjectId.make("project-current"),
+              title: "Current Thread",
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-parent"),
+              projectId: ProjectId.make("project-current"),
+              title: "Parent Thread",
             }),
           ],
         }),
@@ -2377,6 +2656,72 @@ it.effect("sendThreadMessage rejects archived threads", () =>
       }),
     ),
   ),
+);
+
+it.effect("sendThreadMessage trims the user message before dispatch", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* service.sendThreadMessage({
+        threadId: ThreadId.make("thread-current"),
+        message: "  Continue with the focused fix  ",
+      });
+
+      expect(dispatchedCommands[0]).toMatchObject({
+        type: "thread.turn.start",
+        message: {
+          text: "Continue with the focused fix",
+        },
+      });
+    }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
+  })(),
+);
+
+it.effect("sendThreadMessage rejects whitespace-only messages", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.sendThreadMessage({
+        threadId: ThreadId.make("thread-current"),
+        message: "   \n\t  ",
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("invalid_input");
+    }
+  }).pipe(Effect.provide(makeWriteHarnessLayer({}))),
+);
+
+it.effect("turn control timeout inputs reject explicit zero values", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      for (const input of [
+        { timeoutMs: 0 },
+        { turnTimeoutMs: 0 },
+        { responseTimeoutMs: 0 },
+      ] as const) {
+        const exit = yield* Effect.exit(
+          service.sendThreadMessage({
+            threadId: ThreadId.make("thread-current"),
+            message: "hello",
+            ...input,
+          }),
+        );
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit)) {
+          const error = Cause.squash(exit.cause) as { readonly code: string };
+          expect(error.code).toBe("invalid_input");
+        }
+      }
+      expect(dispatchedCommands).toEqual([]);
+    }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
+  })(),
 );
 
 it.effect("sendThreadMessage rejects branch without explicit new_worktree checkout mode", () =>
@@ -3115,4 +3460,279 @@ it.effect(
         ]);
       }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
     })(),
+);
+
+it.effect("cleanup methods reject the invocation thread self-target when it is user-created", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* expectForbidden(
+        "deleteThread",
+        service.deleteThread({ threadId: ThreadId.make("thread-current") }),
+      );
+      yield* expectForbidden(
+        "archiveThread",
+        service.archiveThread({ threadId: ThreadId.make("thread-current") }),
+      );
+      yield* expectForbidden(
+        "unarchiveThread",
+        service.unarchiveThread({ threadId: ThreadId.make("thread-current") }),
+      );
+      expect(dispatchedCommands).toEqual([]);
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              createdVia: "user",
+              createdByThreadId: null,
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("createThread defaults omitted runtimeMode to auto-accept-edits", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.createThread({ title: "Safe default child" });
+
+      expect(result).toMatchObject({
+        status: "created",
+        thread: {
+          runtimeMode: "auto-accept-edits",
+        },
+      });
+      expect(dispatchedCommands).toContainEqual(
+        expect.objectContaining({
+          type: "thread.create",
+          runtimeMode: "auto-accept-edits",
+        }),
+      );
+    }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
+  })(),
+);
+
+it.effect("send and update reject MCP-created threads outside the invocation ownership chain", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* expectForbidden(
+        "sendThreadMessage",
+        service.sendThreadMessage({
+          threadId: ThreadId.make("thread-foreign"),
+          message: "Do this",
+        }),
+      );
+      yield* expectForbidden(
+        "updateThreadSettings",
+        service.updateThreadSettings({
+          threadId: ThreadId.make("thread-foreign"),
+          title: "Renamed",
+        }),
+      );
+      expect(dispatchedCommands).toEqual([]);
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              createdVia: "user",
+              createdByThreadId: null,
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-foreign"),
+              createdVia: "mcp",
+              createdByThreadId: ThreadId.make("thread-other-root"),
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("cleanup methods dispatch for owned active and archived targets", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+
+      const deleteResult = yield* service.deleteThread({ threadId: ThreadId.make("thread-child") });
+      const archiveResult = yield* service.archiveThread({
+        threadId: ThreadId.make("thread-child"),
+      });
+      const unarchiveResult = yield* service.unarchiveThread({
+        threadId: ThreadId.make("thread-archived-child"),
+      });
+
+      expect(deleteResult).toMatchObject({ status: "deleted", sequence: 1 });
+      expect(archiveResult).toMatchObject({ status: "archived", sequence: 2 });
+      expect(unarchiveResult).toMatchObject({ status: "unarchived", sequence: 3 });
+      expect(dispatchedCommands.map((command) => command.type)).toEqual([
+        "thread.delete",
+        "thread.archive",
+        "thread.unarchive",
+      ]);
+      expect(dispatchedCommands[2]).toMatchObject({
+        type: "thread.unarchive",
+        threadId: ThreadId.make("thread-archived-child"),
+      });
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              createdVia: "user",
+              createdByThreadId: null,
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-child"),
+              createdVia: "mcp",
+              createdByThreadId: ThreadId.make("thread-current"),
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-archived-child"),
+              createdVia: "mcp",
+              createdByThreadId: ThreadId.make("thread-current"),
+              archivedAt: "2026-01-02T00:00:00.000Z",
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("cleanup methods reject unknown and foreign-owned targets before dispatch", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+
+      for (const [name, effect] of [
+        [
+          "deleteThread unknown",
+          service.deleteThread({ threadId: ThreadId.make("thread-missing") }),
+        ],
+        [
+          "archiveThread unknown",
+          service.archiveThread({ threadId: ThreadId.make("thread-missing") }),
+        ],
+        [
+          "unarchiveThread unknown",
+          service.unarchiveThread({ threadId: ThreadId.make("thread-missing") }),
+        ],
+      ] as const) {
+        const exit = yield* Effect.exit(effect);
+        expect(Exit.isFailure(exit), name).toBe(true);
+        if (Exit.isFailure(exit)) {
+          const error = Cause.squash(exit.cause) as { readonly code: string };
+          expect(error.code, name).toBe("unknown_thread");
+        }
+      }
+
+      yield* expectForbidden(
+        "deleteThread foreign",
+        service.deleteThread({ threadId: ThreadId.make("thread-foreign") }),
+      );
+      yield* expectForbidden(
+        "archiveThread foreign",
+        service.archiveThread({ threadId: ThreadId.make("thread-foreign") }),
+      );
+      yield* expectForbidden(
+        "unarchiveThread foreign",
+        service.unarchiveThread({ threadId: ThreadId.make("thread-foreign") }),
+      );
+      expect(dispatchedCommands).toEqual([]);
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              createdVia: "user",
+              createdByThreadId: null,
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-foreign"),
+              createdVia: "mcp",
+              createdByThreadId: ThreadId.make("thread-other-root"),
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("cleanup methods handle archived target state at the service boundary", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+
+      const deleteArchived = yield* service.deleteThread({
+        threadId: ThreadId.make("thread-archived-child"),
+      });
+      expect(deleteArchived).toMatchObject({ status: "deleted", sequence: 1 });
+
+      const archiveArchivedExit = yield* Effect.exit(
+        service.archiveThread({ threadId: ThreadId.make("thread-archived-child") }),
+      );
+      expect(Exit.isFailure(archiveArchivedExit)).toBe(true);
+      if (Exit.isFailure(archiveArchivedExit)) {
+        const error = Cause.squash(archiveArchivedExit.cause) as { readonly code: string };
+        expect(error.code).toBe("thread_archived");
+      }
+
+      const unarchiveActiveExit = yield* Effect.exit(
+        service.unarchiveThread({ threadId: ThreadId.make("thread-active-child") }),
+      );
+      expect(Exit.isFailure(unarchiveActiveExit)).toBe(true);
+      if (Exit.isFailure(unarchiveActiveExit)) {
+        const error = Cause.squash(unarchiveActiveExit.cause) as { readonly code: string };
+        expect(error.code).toBe("invalid_input");
+      }
+
+      expect(dispatchedCommands.map((command) => command.type)).toEqual(["thread.delete"]);
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              createdVia: "user",
+              createdByThreadId: null,
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-active-child"),
+              createdVia: "mcp",
+              createdByThreadId: ThreadId.make("thread-current"),
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-archived-child"),
+              createdVia: "mcp",
+              createdByThreadId: ThreadId.make("thread-current"),
+              archivedAt: "2026-01-02T00:00:00.000Z",
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
 );

@@ -5,9 +5,11 @@ import {
   MessageId,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  EventId,
   ProjectId,
   ThreadId,
   type OrchestrationCommand,
+  type OrchestrationEvent,
   type OrchestrationReadModel,
   ProviderInstanceId,
 } from "@t3tools/contracts";
@@ -21,6 +23,7 @@ import {
   requireThreadAbsent,
 } from "./commandInvariants.ts";
 import { decideOrchestrationCommand } from "./decider.ts";
+import { projectEvent } from "./projector.ts";
 
 const now = "2026-01-01T00:00:00.000Z";
 
@@ -254,6 +257,102 @@ deciderLayer("commandInvariants decider checks", (it) => {
       );
 
       effectExpect(error.message).toContain("belongs to a different project");
+    }),
+  );
+
+  it.effect("rejects starting a turn when a turn-start request is already pending", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        decideOrchestrationCommand({
+          readModel: {
+            ...readModel,
+            threads: readModel.threads.map((thread) =>
+              thread.id === ThreadId.make("thread-1")
+                ? {
+                    ...thread,
+                    pendingTurnStart: {
+                      messageId: MessageId.make("msg-pending"),
+                      requestedAt: now,
+                    },
+                  }
+                : thread,
+            ),
+          },
+          command: {
+            ...messageSendCommand,
+            commandId: CommandId.make("cmd-second-turn"),
+            message: {
+              ...messageSendCommand.message,
+              messageId: MessageId.make("msg-second"),
+            },
+          },
+        }),
+      );
+
+      effectExpect(error.message).toContain("already has an active or pending turn");
+    }),
+  );
+
+  it.effect("accepts starting a turn after a pending start is settled by session failure", () =>
+    Effect.gen(function* () {
+      const firstDecided = yield* decideOrchestrationCommand({
+        readModel,
+        command: messageSendCommand,
+      });
+      const firstEvents = Array.isArray(firstDecided) ? firstDecided : [firstDecided];
+      let projected = readModel;
+      let sequence = readModel.snapshotSequence;
+      for (const event of firstEvents) {
+        sequence += 1;
+        projected = yield* projectEvent(projected, {
+          ...event,
+          sequence,
+        }).pipe(Effect.orDie);
+      }
+
+      projected = yield* projectEvent(projected, {
+        sequence: sequence + 1,
+        eventId: EventId.make("evt-session-start-failed"),
+        type: "thread.session-set",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-session-start-failed"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-session-start-failed"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "error",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: "Provider turn start failed.",
+            updatedAt: now,
+          },
+        },
+      } satisfies OrchestrationEvent).pipe(Effect.orDie);
+
+      const retry = yield* decideOrchestrationCommand({
+        readModel: projected,
+        command: {
+          ...messageSendCommand,
+          commandId: CommandId.make("cmd-retry-after-start-failure"),
+          message: {
+            ...messageSendCommand.message,
+            messageId: MessageId.make("msg-retry-after-start-failure"),
+          },
+        },
+      });
+      const retryEvents = Array.isArray(retry) ? retry : [retry];
+
+      effectExpect(projected.threads[0]?.pendingTurnStart).toBeNull();
+      effectExpect(retryEvents.map((event) => event.type)).toEqual([
+        "thread.message-sent",
+        "thread.turn-start-requested",
+      ]);
     }),
   );
 

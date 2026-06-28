@@ -4,18 +4,19 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
-import Migration033 from "./033_ProjectionThreadsParentThreadId.ts";
+import Migration036 from "./036_ProjectionThreadProvenance.ts";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
-layer("033_ProjectionThreadsParentThreadId", (it) => {
-  it.effect("adds nullable parent_thread_id column without creating an unused parent index", () =>
+layer("036_ProjectionThreadProvenance", (it) => {
+  it.effect("backfills existing threads as user-created with no creator thread", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`
         CREATE TABLE projection_threads (
           thread_id TEXT PRIMARY KEY,
           project_id TEXT NOT NULL,
+          parent_thread_id TEXT,
           title TEXT NOT NULL,
           model_selection_json TEXT NOT NULL,
           runtime_mode TEXT NOT NULL,
@@ -55,24 +56,18 @@ layer("033_ProjectionThreadsParentThreadId", (it) => {
         )
       `;
 
-      yield* Migration033;
+      yield* Migration036;
 
-      const columns = yield* sql<{ readonly name: string }>`
-        PRAGMA table_info(projection_threads)
-      `;
-      assert.isTrue(columns.some((column) => column.name === "parent_thread_id"));
-
-      const indexes = yield* sql<{ readonly name: string }>`
-        PRAGMA index_list(projection_threads)
-      `;
-      assert.isFalse(indexes.some((index) => index.name === "idx_projection_threads_parent"));
-
-      const rows = yield* sql<{ readonly parent_thread_id: string | null }>`
-        SELECT parent_thread_id
+      const rows = yield* sql<{
+        readonly created_via: string;
+        readonly created_by_thread_id: string | null;
+      }>`
+        SELECT created_via, created_by_thread_id
         FROM projection_threads
         WHERE thread_id = 'thread-existing'
       `;
-      assert.strictEqual(rows[0]?.parent_thread_id ?? null, null);
+      assert.strictEqual(rows[0]?.created_via, "user");
+      assert.strictEqual(rows[0]?.created_by_thread_id ?? null, null);
     }),
   );
 });

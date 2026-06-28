@@ -8,6 +8,7 @@
  */
 import type {
   CheckpointRef,
+  MessageId,
   OrchestrationCheckpointSummary,
   OrchestrationLatestTurn,
   OrchestrationProject,
@@ -208,6 +209,16 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadTurnStateById: (input: {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
+  }) => Effect.Effect<Option.Option<OrchestrationLatestTurn>, ProjectionRepositoryError>;
+
+  /**
+   * Read the concrete turn row that was bound from a pending start carrying
+   * `messageId`. Used by MCP turn controls to bind waiters/watchers to the
+   * exact dispatch they issued, not to whichever turn became latest next.
+   */
+  readonly getThreadTurnStateByPendingMessageId: (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
   }) => Effect.Effect<Option.Option<OrchestrationLatestTurn>, ProjectionRepositoryError>;
 
   /**

@@ -1,4 +1,6 @@
 import { expect, it } from "@effect/vitest";
+import * as Context from "effect/Context";
+import * as Schema from "effect/Schema";
 import { Tool } from "effect/unstable/ai";
 
 import { OrchestrationToolkit } from "./tools.ts";
@@ -32,13 +34,27 @@ const expectedToolNames = [
   "get_thread_diff",
 ] as const;
 
-const schemaHasDescription = (schema: unknown): boolean => {
+const schemaHasDescription = (
+  schema: unknown,
+  root: unknown = schema,
+  seenRefs: ReadonlySet<string> = new Set(),
+): boolean => {
   if (!schema || typeof schema !== "object") return false;
   const record = schema as Record<string, unknown>;
   if (typeof record.description === "string" && record.description.length > 0) return true;
+  if (typeof record.$ref === "string" && !seenRefs.has(record.$ref)) {
+    const refPrefix = "#/$defs/";
+    if (record.$ref.startsWith(refPrefix) && root && typeof root === "object") {
+      const definitions =
+        (record as { readonly $defs?: Readonly<Record<string, unknown>> }).$defs ??
+        (root as { readonly $defs?: Readonly<Record<string, unknown>> }).$defs;
+      const referenced = definitions?.[record.$ref.slice(refPrefix.length)];
+      return schemaHasDescription(referenced, root, new Set([...seenRefs, record.$ref]));
+    }
+  }
   return [record.anyOf, record.oneOf, record.allOf]
     .filter(Array.isArray)
-    .some((members) => members.some(schemaHasDescription));
+    .some((members) => members.some((member) => schemaHasDescription(member, root, seenRefs)));
 };
 
 it("exports provider-compatible object schemas with described parameters", () => {
@@ -58,7 +74,7 @@ it("exports provider-compatible object schemas with described parameters", () =>
     expect(schema.oneOf, `${tool.name} must not export a root oneOf`).toBeUndefined();
     for (const [field, fieldSchema] of Object.entries(schema.properties ?? {})) {
       expect(
-        schemaHasDescription(fieldSchema),
+        schemaHasDescription(fieldSchema, schema),
         `${tool.name}.${field} should explain what data the agent must pass`,
       ).toBe(true);
     }
@@ -171,4 +187,124 @@ it("exposes only top_level and child_of_thread create_thread placements", () => 
   expect(serialized).not.toContain(legacyPlacement);
   expect(serialized).toContain("child_of_thread");
   expect(serialized).toContain("top_level");
+});
+
+it("trims and validates message inputs at the tool boundary", () => {
+  const decodeCreateThread = Schema.decodeUnknownSync(
+    OrchestrationToolkit.tools.create_thread.parametersSchema,
+  );
+  const decodeSendThreadMessage = Schema.decodeUnknownSync(
+    OrchestrationToolkit.tools.send_thread_message.parametersSchema,
+  );
+
+  expect(
+    decodeCreateThread({
+      message: "  start with trimmed text  ",
+    }),
+  ).toMatchObject({ message: "start with trimmed text" });
+  expect(
+    decodeSendThreadMessage({
+      threadId: "thread-1",
+      message: "  continue with trimmed text  ",
+    }),
+  ).toMatchObject({ message: "continue with trimmed text" });
+  expect(() => decodeCreateThread({ message: "   \n\t  " })).toThrow();
+  expect(() => decodeSendThreadMessage({ threadId: "thread-1", message: "   " })).toThrow();
+});
+
+it("rejects zero-valued turn control timeouts at the tool boundary", () => {
+  const decodeSendThreadMessage = Schema.decodeUnknownSync(
+    OrchestrationToolkit.tools.send_thread_message.parametersSchema,
+  );
+
+  for (const input of [{ timeoutMs: 0 }, { turnTimeoutMs: 0 }, { responseTimeoutMs: 0 }]) {
+    expect(() =>
+      decodeSendThreadMessage({
+        threadId: "thread-1",
+        message: "hello",
+        ...input,
+      }),
+    ).toThrow();
+  }
+});
+
+it("requires instanceId in MCP model selections and omits null from non-null optionals", () => {
+  const decodeSendThreadMessage = Schema.decodeUnknownSync(
+    OrchestrationToolkit.tools.send_thread_message.parametersSchema,
+  );
+  const sendSchema = Tool.getJsonSchema(OrchestrationToolkit.tools.send_thread_message) as {
+    readonly properties?: Readonly<Record<string, unknown>>;
+  };
+  const createSchema = Tool.getJsonSchema(OrchestrationToolkit.tools.create_thread) as {
+    readonly properties?: Readonly<Record<string, unknown>>;
+  };
+
+  expect(() =>
+    decodeSendThreadMessage({
+      threadId: "thread-1",
+      message: "hello",
+      modelSelection: { model: "gpt-5.5" },
+    }),
+  ).toThrow();
+  const serializedModelSelection = JSON.stringify(sendSchema.properties?.modelSelection);
+  expect(serializedModelSelection).toContain("instanceId");
+  expect(serializedModelSelection).not.toContain('"provider"');
+  for (const [schemaName, fieldSchema] of [
+    ["send_thread_message.timeoutMs", sendSchema.properties?.timeoutMs],
+    ["send_thread_message.modelSelection", sendSchema.properties?.modelSelection],
+    ["create_thread.parentThreadId", createSchema.properties?.parentThreadId],
+  ] as const) {
+    expect(JSON.stringify(fieldSchema), `${schemaName} must not advertise null`).not.toContain(
+      '"null"',
+    );
+  }
+});
+
+it("annotates orchestration tools with MCP read/write/destructive hints", () => {
+  const readTools = [
+    "list_mcp_models",
+    "list_projects",
+    "get_project_details",
+    "get_project_settings",
+    "list_threads",
+    "get_thread_settings",
+    "get_thread_messages",
+    "list_project_actions",
+    "get_thread_diff",
+  ] as const;
+  const writeTools = [
+    "update_project_settings",
+    "create_project_action",
+    "update_project_action",
+    "add_project",
+    "create_thread",
+    "send_thread_message",
+    "update_thread_settings",
+    "respond_to_approval",
+    "respond_to_user_input",
+  ] as const;
+  const destructiveTools = [
+    "delete_project_action",
+    "interrupt_thread_turn",
+    "delete_thread",
+    "archive_thread",
+    "unarchive_thread",
+  ] as const;
+
+  for (const toolName of readTools) {
+    const tool = OrchestrationToolkit.tools[toolName];
+    expect(Context.get(tool.annotations, Tool.Readonly), toolName).toBe(true);
+    expect(Context.get(tool.annotations, Tool.Destructive), toolName).toBe(false);
+    expect(Context.get(tool.annotations, Tool.Idempotent), toolName).toBe(true);
+  }
+  for (const toolName of writeTools) {
+    const tool = OrchestrationToolkit.tools[toolName];
+    expect(Context.get(tool.annotations, Tool.Readonly), toolName).toBe(false);
+    expect(Context.get(tool.annotations, Tool.Destructive), toolName).toBe(false);
+  }
+  for (const toolName of destructiveTools) {
+    const tool = OrchestrationToolkit.tools[toolName];
+    expect(Context.get(tool.annotations, Tool.Readonly), toolName).toBe(false);
+    expect(Context.get(tool.annotations, Tool.Destructive), toolName).toBe(true);
+  }
 });

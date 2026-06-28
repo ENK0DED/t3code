@@ -854,6 +854,12 @@ const make = Effect.gen(function* () {
     // Pass the exact orchestration-tracked turn id through to the provider runtime,
     // which maps/uses it to interrupt that specific turn. When the turn id is absent
     // (legacy or explicit-user interrupts), the runtime falls back to the active turn.
+    if (
+      event.payload.turnId !== undefined &&
+      thread.session?.activeTurnId !== event.payload.turnId
+    ) {
+      return;
+    }
     yield* providerService.interruptTurn({
       threadId: event.payload.threadId,
       ...(event.payload.turnId !== undefined ? { turnId: event.payload.turnId } : {}),

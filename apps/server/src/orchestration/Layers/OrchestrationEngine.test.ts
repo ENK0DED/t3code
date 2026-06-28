@@ -205,6 +205,7 @@ describe("OrchestrationEngine", () => {
           getThreadCreatorById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadTurnStateById: () => Effect.succeed(Option.none()),
+          getThreadTurnStateByPendingMessageId: () => Effect.die("unused"),
           searchThreadMessagesByProject: () => Effect.succeed([]),
         }),
       ),
@@ -296,6 +297,97 @@ describe("OrchestrationEngine", () => {
     const readModelA = await system.readModel();
     const readModelB = await system.readModel();
     expect(readModelB).toEqual(readModelA);
+    await system.dispose();
+  });
+
+  it("rejects a concurrent second turn start while the first is still pending", async () => {
+    const createdAt = now();
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-concurrent-create"),
+        projectId: asProjectId("project-concurrent"),
+        title: "Project Concurrent",
+        workspaceRoot: "/tmp/project-concurrent",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-concurrent-create"),
+        threadId: ThreadId.make("thread-concurrent"),
+        projectId: asProjectId("project-concurrent"),
+        parentThreadId: null,
+        title: "Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+
+    const [first, second] = await Promise.allSettled([
+      system.run(
+        engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-concurrent-a"),
+          threadId: ThreadId.make("thread-concurrent"),
+          message: {
+            messageId: asMessageId("msg-concurrent-a"),
+            role: "user",
+            text: "first",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      ),
+      system.run(
+        engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-concurrent-b"),
+          threadId: ThreadId.make("thread-concurrent"),
+          message: {
+            messageId: asMessageId("msg-concurrent-b"),
+            role: "user",
+            text: "second",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      ),
+    ]);
+
+    const accepted = [first, second].filter((result) => result.status === "fulfilled");
+    const rejected = [first, second].filter((result) => result.status === "rejected");
+    expect(accepted).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(String((rejected[0] as PromiseRejectedResult).reason)).toContain(
+      "already has an active or pending turn",
+    );
+
+    const readModel = await system.readModel();
+    const thread = readModel.threads.find(
+      (entry) => entry.id === ThreadId.make("thread-concurrent"),
+    );
+    expect(thread?.messages).toHaveLength(1);
+    expect(["first", "second"]).toContain(thread?.messages[0]?.text);
     await system.dispose();
   });
 

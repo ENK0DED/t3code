@@ -1290,11 +1290,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     () => new Set<string>(expandedThreadTreeIds),
     [expandedThreadTreeIds],
   );
-  const activeRouteThreadId = useMemo(
-    () => (activeRouteThreadKey ? parseScopedThreadKey(activeRouteThreadKey)?.threadId : undefined),
-    [activeRouteThreadKey],
-  );
-
   const {
     projectStatus,
     visibleProjectThreads,
@@ -1331,7 +1326,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           ) ?? undefined,
       })),
       expandedThreadIds: expandedThreadTreeIdSet,
-      activeThreadId: activeRouteThreadId,
+      activeThreadId: activeRouteThreadKey ?? undefined,
       sortOrder: threadSortOrder,
       getThreadExpansionId: (thread) =>
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
@@ -1348,7 +1343,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       visibleProjectThreadRows,
     };
   }, [
-    activeRouteThreadId,
+    activeRouteThreadKey,
     expandedThreadTreeIdSet,
     projectThreads,
     threadLastVisitedAts,
@@ -3433,9 +3428,6 @@ export default function Sidebar() {
         );
         const projectExpanded = projectExpandedById[project.projectKey] ?? true;
         const activeThreadKey = routeThreadKey ?? undefined;
-        const activeThreadId = activeThreadKey
-          ? parseScopedThreadKey(activeThreadKey)?.threadId
-          : undefined;
         const pinnedCollapsedThread =
           !projectExpanded && activeThreadKey
             ? (projectThreads.find(
@@ -3452,7 +3444,7 @@ export default function Sidebar() {
         const projectThreadRows = buildThreadTreeRows({
           threads: projectThreads,
           expandedThreadIds: new Set(expandedThreadTreeIdsByProject[project.projectKey] ?? []),
-          activeThreadId,
+          activeThreadId: activeThreadKey,
           sortOrder: sidebarThreadSortOrder,
           getThreadExpansionId: (thread) =>
             scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),

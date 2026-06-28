@@ -3184,6 +3184,91 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
   ),
 );
 
+it.effect("deletes pending turn-start rows when a session settles before a turn id exists", () =>
+  Effect.gen(function* () {
+    const { dbPath } = yield* ServerConfig;
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+    const projectionLayer = OrchestrationProjectionPipelineLive.pipe(
+      Layer.provideMerge(OrchestrationEventStoreLive),
+      Layer.provideMerge(persistenceLayer),
+    );
+
+    const threadId = ThreadId.make("thread-start-failed");
+    const messageId = MessageId.make("message-start-failed");
+    const requestedAt = "2026-02-26T15:00:00.000Z";
+    const failedAt = "2026-02-26T15:00:05.000Z";
+
+    const pendingRows = yield* Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* eventStore.append({
+        type: "thread.turn-start-requested",
+        eventId: EventId.make("evt-start-failed-1"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: requestedAt,
+        commandId: CommandId.make("cmd-start-failed-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-start-failed-1"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId,
+          runtimeMode: "approval-required",
+          createdAt: requestedAt,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-start-failed-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: failedAt,
+        commandId: CommandId.make("cmd-start-failed-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-start-failed-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "error",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: "Provider turn start failed.",
+            updatedAt: failedAt,
+          },
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      return yield* sql<{ readonly threadId: string }>`
+        SELECT thread_id AS "threadId"
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND turn_id IS NULL
+          AND state = 'pending'
+      `;
+    }).pipe(Effect.provide(projectionLayer));
+
+    assert.deepEqual(pendingRows, []);
+  }).pipe(
+    Effect.provide(
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), {
+          prefix: "t3-projection-pipeline-start-failed-",
+        }),
+        NodeServices.layer,
+      ),
+    ),
+  ),
+);
+
 const engineLayer = it.layer(
   OrchestrationEngineLive.pipe(
     Layer.provide(OrchestrationProjectionSnapshotQueryLive),

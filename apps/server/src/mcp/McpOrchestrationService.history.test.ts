@@ -175,6 +175,7 @@ const projectionQueryMock = (input: {
           : Option.none(),
       ),
     getThreadTurnStateById: () => Effect.succeed(Option.none()),
+    getThreadTurnStateByPendingMessageId: () => Effect.die("unused"),
     listProjectShells: () => Effect.succeed([] satisfies ReadonlyArray<OrchestrationProjectShell>),
     listThreadShellsByProject: () => Effect.succeed([]),
     searchThreadMessagesByProject: () => Effect.succeed([]),
@@ -1245,6 +1246,64 @@ it.effect("get_thread_diff rejects a half-specified turn range", () =>
         checkpointContext: makeCheckpointContext({
           threadId: diffThreadId,
           checkpoints: [makeCheckpointSummary({ checkpointTurnCount: 2 })],
+        }),
+      }),
+    ),
+  ),
+);
+
+it.effect("get_thread_diff rejects an empty explicit turn range", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.getThreadDiff({
+        threadId: diffThreadId,
+        fromTurnCount: 1,
+        toTurnCount: 1,
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("invalid_input");
+    }
+  }).pipe(
+    Effect.provide(
+      makeHistoryHarnessLayer({
+        threadDetail: diffThreadDetail,
+        checkpointContext: makeCheckpointContext({
+          threadId: diffThreadId,
+          checkpoints: [makeCheckpointSummary({ checkpointTurnCount: 1 })],
+        }),
+      }),
+    ),
+  ),
+);
+
+it.effect("get_thread_diff reports unknown_turn for an explicit bound outside checkpoints", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const exit = yield* Effect.exit(
+      service.getThreadDiff({
+        threadId: diffThreadId,
+        fromTurnCount: 1,
+        toTurnCount: 99,
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause) as { readonly code: string };
+      expect(error.code).toBe("unknown_turn");
+    }
+  }).pipe(
+    Effect.provide(
+      makeHistoryHarnessLayer({
+        threadDetail: diffThreadDetail,
+        checkpointContext: makeCheckpointContext({
+          threadId: diffThreadId,
+          checkpoints: [makeCheckpointSummary({ checkpointTurnCount: 1 })],
         }),
       }),
     ),

@@ -93,6 +93,7 @@ const TestLayer = McpHttpServer.McpToolkitRegistrationLive.pipe(
           getThreadCreatorById: () => Effect.die("unused"),
           getThreadDetailById: () => Effect.die("unused"),
           getThreadTurnStateById: () => Effect.die("unused"),
+          getThreadTurnStateByPendingMessageId: () => Effect.die("unused"),
           searchThreadMessagesByProject: () => Effect.succeed([]),
         }),
       ),

@@ -8,9 +8,11 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
   type ModelSelection,
   type OrchestrationCommand,
   type OrchestrationProjectShell,
+  type OrchestrationThreadShell,
   type OrchestrationThread,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -18,6 +20,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpBody, HttpClient, HttpRouter } from "effect/unstable/http";
@@ -35,6 +38,7 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import { TextGeneration } from "../textGeneration/TextGeneration.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
+import { OrchestrationToolkit } from "./toolkits/orchestration/tools.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-test");
 const currentThreadId = ThreadId.make("thread-mcp-test");
@@ -115,7 +119,27 @@ const unsupportedProviderOperation = (operation: string) =>
 const encodeUnknownJsonString = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
 const decodeUnknownJsonString = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
 
-const makeIntegrationLayer = (dispatchedCommands: Array<OrchestrationCommand>) =>
+type IntegrationLayerOptions = {
+  readonly getThreadDetailById?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<OrchestrationThread>>;
+  readonly getThreadCreatorById?: (threadId: ThreadId) => Effect.Effect<
+    Option.Option<{
+      readonly createdVia: NonNullable<OrchestrationThread["createdVia"]>;
+      readonly createdByThreadId: Exclude<OrchestrationThread["createdByThreadId"], undefined>;
+    }>
+  >;
+  readonly onDispatch?: (command: OrchestrationCommand) => Effect.Effect<void>;
+  readonly onBootstrapDispatch?: (input: {
+    readonly command: OrchestrationCommand;
+    readonly createdThread?: OrchestrationThreadShell | undefined;
+  }) => Effect.Effect<void>;
+};
+
+const makeIntegrationLayer = (
+  dispatchedCommands: Array<OrchestrationCommand>,
+  options?: IntegrationLayerOptions,
+) =>
   McpHttpServer.layer.pipe(
     Layer.provideMerge(McpSessionRegistry.layer),
     Layer.provideMerge(NodeServices.layer),
@@ -140,12 +164,15 @@ const makeIntegrationLayer = (dispatchedCommands: Array<OrchestrationCommand>) =
           getThreadCheckpointContext: () => Effect.die("unused"),
           getFullThreadDiffContext: () => Effect.die("unused"),
           getThreadShellById: () => Effect.die("unused"),
-          getThreadCreatorById: () => Effect.succeed(Option.none()),
+          getThreadCreatorById: (threadId) =>
+            options?.getThreadCreatorById?.(threadId) ?? Effect.succeed(Option.none()),
           getThreadDetailById: (threadId) =>
+            options?.getThreadDetailById?.(threadId) ??
             Effect.succeed(
               threadId === currentThreadId ? Option.some(currentThread) : Option.none(),
             ),
           getThreadTurnStateById: () => Effect.succeed(Option.none()),
+          getThreadTurnStateByPendingMessageId: () => Effect.die("unused"),
           searchThreadMessagesByProject: () => Effect.succeed([]),
         }),
       ),
@@ -164,8 +191,11 @@ const makeIntegrationLayer = (dispatchedCommands: Array<OrchestrationCommand>) =
         OrchestrationEngineService,
         OrchestrationEngineService.of({
           dispatch: (command) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               dispatchedCommands.push(command);
+              if (options?.onDispatch) {
+                yield* options.onDispatch(command);
+              }
               return { sequence: dispatchedCommands.length };
             }),
           readEvents: () => Stream.empty,
@@ -178,7 +208,7 @@ const makeIntegrationLayer = (dispatchedCommands: Array<OrchestrationCommand>) =
         ThreadTurnStartBootstrapDispatcher,
         ThreadTurnStartBootstrapDispatcher.of({
           dispatch: (command) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               let createdThread:
                 | {
                     readonly id: ThreadId;
@@ -263,6 +293,12 @@ const makeIntegrationLayer = (dispatchedCommands: Array<OrchestrationCommand>) =
 
               const { bootstrap: _bootstrap, ...turnStartCommand } = command;
               dispatchedCommands.push(turnStartCommand);
+              if (options?.onBootstrapDispatch) {
+                yield* options.onBootstrapDispatch({
+                  command: turnStartCommand,
+                  createdThread,
+                });
+              }
 
               return {
                 sequence: dispatchedCommands.length,
@@ -423,24 +459,7 @@ function issueMcpToken() {
   });
 }
 
-const expectedToolNames = [
-  "list_mcp_models",
-  "list_projects",
-  "get_project_details",
-  "get_project_settings",
-  "update_project_settings",
-  "list_threads",
-  "get_thread_settings",
-  "get_thread_messages",
-  "list_project_actions",
-  "create_project_action",
-  "update_project_action",
-  "delete_project_action",
-  "add_project",
-  "create_thread",
-  "send_thread_message",
-  "update_thread_settings",
-] as const;
+const expectedToolNames = Object.keys(OrchestrationToolkit.tools);
 
 it.effect("lists MCP-enabled models through the MCP transport", () =>
   Effect.scoped(
@@ -720,6 +739,227 @@ it.effect("returns final bootstrap metadata for accepted create_thread responses
         branch: "t3code/mcp-http-bootstrap",
         worktreePath: "/work/mcp-test/.worktrees/http-bootstrap",
       });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("resolves an approval-required child deadlock through MCP tools", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      const childTurnId = TurnId.make("turn-child-approval");
+      const approvalRequestId = "approval-child-1";
+      const threadsRef = yield* Ref.make(
+        new Map<string, OrchestrationThread>([
+          [
+            String(currentThreadId),
+            {
+              ...currentThread,
+              createdVia: "user",
+              createdByThreadId: null,
+            },
+          ],
+        ]),
+      );
+      const integrationLayer = makeIntegrationLayer(dispatchedCommands, {
+        getThreadDetailById: (threadId) =>
+          Ref.get(threadsRef).pipe(
+            Effect.map((threads) => {
+              const found = threads.get(String(threadId));
+              return found ? Option.some(found) : Option.none();
+            }),
+          ),
+        getThreadCreatorById: (threadId) =>
+          Ref.get(threadsRef).pipe(
+            Effect.map((threads) => {
+              const found = threads.get(String(threadId));
+              return found
+                ? Option.some({
+                    createdVia: found.createdVia ?? "user",
+                    createdByThreadId: found.createdByThreadId ?? null,
+                  })
+                : Option.none();
+            }),
+          ),
+        onBootstrapDispatch: ({ command, createdThread }) =>
+          Effect.gen(function* () {
+            if (command.type !== "thread.turn.start" || createdThread === undefined) {
+              return;
+            }
+            const blockedChild: OrchestrationThread = {
+              id: createdThread.id,
+              projectId: createdThread.projectId,
+              parentThreadId: createdThread.parentThreadId,
+              title: createdThread.title,
+              modelSelection: createdThread.modelSelection,
+              runtimeMode: createdThread.runtimeMode,
+              interactionMode: createdThread.interactionMode,
+              branch: createdThread.branch,
+              worktreePath: createdThread.worktreePath,
+              latestTurn: {
+                turnId: childTurnId,
+                state: "running",
+                requestedAt: createdThread.createdAt,
+                startedAt: createdThread.createdAt,
+                completedAt: null,
+                assistantMessageId: null,
+              },
+              createdAt: createdThread.createdAt,
+              updatedAt: createdThread.updatedAt,
+              archivedAt: null,
+              createdVia: "mcp",
+              createdByThreadId: currentThreadId,
+              deletedAt: null,
+              messages: [],
+              proposedPlans: [],
+              activities: [
+                {
+                  id: "evt-child-approval-requested" as never,
+                  tone: "approval",
+                  kind: "approval.requested",
+                  summary: "Approval requested",
+                  payload: {
+                    requestId: approvalRequestId,
+                    requestKind: "command",
+                    requestType: "command_execution_approval",
+                    detail: "bun test",
+                  },
+                  turnId: childTurnId,
+                  createdAt: "2026-01-01T00:00:01.000Z",
+                },
+              ],
+              checkpoints: [],
+              session: {
+                threadId: createdThread.id,
+                status: "running",
+                providerName: "codex",
+                providerInstanceId,
+                runtimeMode: createdThread.runtimeMode,
+                activeTurnId: childTurnId,
+                lastError: null,
+                updatedAt: "2026-01-01T00:00:01.000Z",
+              },
+            };
+            yield* Ref.update(threadsRef, (threads) =>
+              new Map(threads).set(String(blockedChild.id), blockedChild),
+            );
+          }),
+        onDispatch: (command) =>
+          Effect.gen(function* () {
+            if (command.type !== "thread.approval.respond") {
+              return;
+            }
+            yield* Ref.update(threadsRef, (threads) => {
+              const current = threads.get(String(command.threadId));
+              if (!current) {
+                return threads;
+              }
+              return new Map(threads).set(String(command.threadId), {
+                ...current,
+                latestTurn:
+                  current.latestTurn === null
+                    ? null
+                    : {
+                        ...current.latestTurn,
+                        state: "completed" as const,
+                        completedAt: "2026-01-01T00:00:02.000Z",
+                      },
+                activities: [
+                  ...current.activities,
+                  {
+                    id: "evt-child-approval-resolved" as never,
+                    tone: "approval" as const,
+                    kind: "approval.resolved",
+                    summary: "Approval resolved",
+                    payload: {
+                      requestId: command.requestId,
+                      decision: command.decision,
+                    },
+                    turnId: childTurnId,
+                    createdAt: "2026-01-01T00:00:02.000Z",
+                  },
+                ],
+                session:
+                  current.session === null
+                    ? null
+                    : {
+                        ...current.session,
+                        status: "ready" as const,
+                        activeTurnId: null,
+                        updatedAt: "2026-01-01T00:00:02.000Z",
+                      },
+              });
+            });
+          }),
+      });
+      yield* HttpRouter.serve(integrationLayer, {
+        disableListenLog: true,
+        disableLogger: true,
+      }).pipe(Layer.build);
+      const issuedToken = yield* issueMcpToken();
+      const initialize = yield* initializeMcpSession(issuedToken);
+
+      const create = yield* callMcpTool(initialize.sessionId, issuedToken, "create_thread", {
+        placement: "child_of_thread",
+        parentThreadId: currentThreadId,
+        title: "Approval deadlock child",
+        runtimeMode: "approval-required",
+        message: "Run the test suite",
+      });
+      const childThreadId = (create.structuredContent as { readonly threadId: ThreadId }).threadId;
+
+      const settings = yield* callMcpTool(
+        initialize.sessionId,
+        issuedToken,
+        "get_thread_settings",
+        { threadId: childThreadId },
+      );
+      expect(settings.structuredContent).toMatchObject({
+        threadId: childThreadId,
+        runtimeMode: "approval-required",
+        hasPendingApprovals: true,
+        pendingRequests: [
+          {
+            kind: "approval",
+            requestId: approvalRequestId,
+            requestKind: "command",
+          },
+        ],
+      });
+
+      const approval = yield* callMcpTool(
+        initialize.sessionId,
+        issuedToken,
+        "respond_to_approval",
+        {
+          threadId: childThreadId,
+          requestId: approvalRequestId,
+          decision: "accept",
+        },
+      );
+      expect(approval.structuredContent).toMatchObject({
+        status: "approval_recorded",
+        threadId: childThreadId,
+        requestId: approvalRequestId,
+      });
+
+      const after = yield* callMcpTool(initialize.sessionId, issuedToken, "get_thread_settings", {
+        threadId: childThreadId,
+      });
+      expect(after.structuredContent).toMatchObject({
+        threadId: childThreadId,
+        hasPendingApprovals: false,
+        pendingRequests: [],
+        session: {
+          status: "ready",
+          activeTurnId: null,
+        },
+      });
+      expect(dispatchedCommands.map((command) => command.type)).toEqual([
+        "thread.create",
+        "thread.turn.start",
+        "thread.approval.respond",
+      ]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

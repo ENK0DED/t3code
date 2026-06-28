@@ -20,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -122,6 +123,14 @@ const runningTurn = (turnId: string): OrchestrationLatestTurn => ({
   assistantMessageId: null,
 });
 
+const expectForbiddenExit = (name: string, exit: Exit.Exit<unknown, unknown>) => {
+  expect(Exit.isFailure(exit), name).toBe(true);
+  if (Exit.isFailure(exit)) {
+    const error = Cause.squash(exit.cause) as { readonly code: string };
+    expect(error.code, name).toBe("forbidden");
+  }
+};
+
 const completedTurn = (turnId: string, assistantMessageId: string): OrchestrationLatestTurn => ({
   turnId: TurnId.make(turnId),
   state: "completed",
@@ -185,21 +194,114 @@ const makeHarness = (
       readonly emit: (event: OrchestrationEvent) => Effect.Effect<void>;
     },
   ) => Effect.Effect<void>,
+  hooks?: {
+    readonly onReadTurnStateById?: (
+      input: {
+        readonly threadId: ThreadId;
+        readonly turnId: TurnId;
+        readonly observed: Option.Option<OrchestrationLatestTurn>;
+      },
+      api: {
+        readonly setThread: (next: OrchestrationThread) => Effect.Effect<void>;
+        readonly emit: (event: OrchestrationEvent) => Effect.Effect<void>;
+      },
+    ) => Effect.Effect<void>;
+  },
 ): Effect.Effect<Harness> =>
   Effect.gen(function* () {
     const threadsRef = yield* Ref.make(
       new Map(initial.map((entry) => [String(entry.id), entry] as const)),
     );
+    const pendingMessageIdsRef = yield* Ref.make(new Map<string, MessageId>());
+    const turnIdsByMessageIdRef = yield* Ref.make(new Map<string, TurnId>());
     const eventPubSub = yield* PubSub.unbounded<OrchestrationEvent>();
     const dispatched: Array<OrchestrationCommand> = [];
 
     const setThread = (next: OrchestrationThread) =>
-      Ref.update(threadsRef, (map) => new Map(map).set(String(next.id), next));
+      Effect.gen(function* () {
+        const pendingMessageIds = yield* Ref.get(pendingMessageIdsRef);
+        const pendingMessageId = pendingMessageIds.get(String(next.id));
+        if (pendingMessageId !== undefined && next.latestTurn !== null) {
+          const turnIdsByMessageId = yield* Ref.get(turnIdsByMessageIdRef);
+          const key = `${next.id}:${pendingMessageId}`;
+          if (!turnIdsByMessageId.has(key)) {
+            yield* Ref.update(turnIdsByMessageIdRef, (map) =>
+              new Map(map).set(key, next.latestTurn!.turnId),
+            );
+            yield* Ref.update(pendingMessageIdsRef, (map) => {
+              const updated = new Map(map);
+              updated.delete(String(next.id));
+              return updated;
+            });
+          }
+        }
+        yield* Ref.update(threadsRef, (map) => new Map(map).set(String(next.id), next));
+      });
     const emit = (event: OrchestrationEvent) =>
       PubSub.publish(eventPubSub, event).pipe(Effect.asVoid);
 
     const unsupported = (operation: string) =>
       Effect.die(new Error(`${operation} unused`)) as never;
+
+    const readTurnStateById = ({ threadId, turnId }: { threadId: ThreadId; turnId: TurnId }) =>
+      Effect.gen(function* () {
+        const observed = yield* Ref.get(threadsRef).pipe(
+          Effect.map((map): Option.Option<OrchestrationLatestTurn> => {
+            const found = map.get(String(threadId));
+            if (!found) {
+              return Option.none();
+            }
+            if (found.latestTurn !== null && found.latestTurn.turnId === turnId) {
+              return Option.some(found.latestTurn);
+            }
+            const checkpoint = found.checkpoints.find((entry) => entry.turnId === turnId);
+            return checkpoint
+              ? Option.some({
+                  turnId: checkpoint.turnId,
+                  state: "completed",
+                  requestedAt: checkpoint.completedAt,
+                  startedAt: checkpoint.completedAt,
+                  completedAt: checkpoint.completedAt,
+                  assistantMessageId: checkpoint.assistantMessageId,
+                })
+              : Option.none();
+          }),
+        );
+        if (hooks?.onReadTurnStateById) {
+          yield* hooks.onReadTurnStateById({ threadId, turnId, observed }, { setThread, emit });
+        }
+        return observed;
+      });
+
+    const readTurnStateByIdSnapshot = ({
+      threadId,
+      turnId,
+    }: {
+      threadId: ThreadId;
+      turnId: TurnId;
+    }) =>
+      Ref.get(threadsRef).pipe(
+        Effect.map((map): Option.Option<OrchestrationLatestTurn> => {
+          const found = map.get(String(threadId));
+          if (!found) {
+            return Option.none();
+          }
+          if (found.latestTurn !== null && found.latestTurn.turnId === turnId) {
+            return Option.some(found.latestTurn);
+          }
+          const checkpoint = found.checkpoints.find((entry) => entry.turnId === turnId);
+          return checkpoint
+            ? Option.some({
+                turnId: checkpoint.turnId,
+                state: "completed",
+                requestedAt: checkpoint.completedAt,
+                startedAt: checkpoint.completedAt,
+                completedAt: checkpoint.completedAt,
+                assistantMessageId: checkpoint.assistantMessageId,
+              })
+            : Option.none();
+        }),
+      );
 
     const projectionQuery = ProjectionSnapshotQuery.of({
       getCommandReadModel: () => Effect.die("unused"),
@@ -244,29 +346,16 @@ const makeHarness = (
       // the projection_turns row DIRECTLY (so it resolves a turn even when latest_turn_id was
       // nulled). Resolve from the stored thread's latestTurn when it matches, else from a
       // checkpoint for that turn id (checkpoints exist only for completed turns).
-      getThreadTurnStateById: ({ threadId, turnId }) =>
-        Ref.get(threadsRef).pipe(
-          Effect.map((map): Option.Option<OrchestrationLatestTurn> => {
-            const found = map.get(String(threadId));
-            if (!found) {
-              return Option.none();
-            }
-            if (found.latestTurn !== null && found.latestTurn.turnId === turnId) {
-              return Option.some(found.latestTurn);
-            }
-            const checkpoint = found.checkpoints.find((entry) => entry.turnId === turnId);
-            return checkpoint
-              ? Option.some({
-                  turnId: checkpoint.turnId,
-                  state: "completed",
-                  requestedAt: checkpoint.completedAt,
-                  startedAt: checkpoint.completedAt,
-                  completedAt: checkpoint.completedAt,
-                  assistantMessageId: checkpoint.assistantMessageId,
-                })
-              : Option.none();
-          }),
-        ),
+      getThreadTurnStateById: readTurnStateById,
+      getThreadTurnStateByPendingMessageId: ({ threadId, messageId }) =>
+        Effect.gen(function* () {
+          const turnIdsByMessageId = yield* Ref.get(turnIdsByMessageIdRef);
+          const turnId = turnIdsByMessageId.get(`${threadId}:${messageId}`);
+          if (turnId === undefined) {
+            return Option.none<OrchestrationLatestTurn>();
+          }
+          return yield* readTurnStateByIdSnapshot({ threadId, turnId });
+        }),
       searchThreadMessagesByProject: () => Effect.succeed([]),
     });
 
@@ -335,6 +424,11 @@ const makeHarness = (
             dispatch: (command) =>
               Effect.gen(function* () {
                 dispatched.push(command);
+                if (command.type === "thread.turn.start") {
+                  yield* Ref.update(pendingMessageIdsRef, (map) =>
+                    new Map(map).set(String(command.threadId), command.message.messageId),
+                  );
+                }
                 if (onDispatch !== undefined) {
                   yield* onDispatch(command, { setThread, emit });
                 }
@@ -496,6 +590,61 @@ it.live("send_thread_message wait_for_response settles when an event drives comp
   }),
 );
 
+// --- wait_for_response: subscribe before probe so a completion event emitted during probing is not missed ---
+it.live("send_thread_message wait_for_response catches completion during initial probe", () =>
+  Effect.gen(function* () {
+    let emittedCompletion = false;
+    const harness = yield* makeHarness(
+      [thread({ id: TARGET, latestTurn: null })],
+      (command, api) =>
+        command.type === "thread.turn.start"
+          ? api.setThread(thread({ id: TARGET, latestTurn: runningTurn("turn-race") }))
+          : Effect.void,
+      {
+        onReadTurnStateById: ({ turnId, observed }, api) =>
+          Effect.gen(function* () {
+            if (
+              emittedCompletion ||
+              turnId !== TurnId.make("turn-race") ||
+              Option.isNone(observed) ||
+              observed.value.state !== "running"
+            ) {
+              return;
+            }
+            emittedCompletion = true;
+            yield* api.setThread(
+              thread({
+                id: TARGET,
+                latestTurn: completedTurn("turn-race", "msg-race"),
+                messages: [assistantMessage("msg-race", "turn-race", "race answer")],
+              }),
+            );
+            yield* api.emit(threadEvent(TARGET));
+          }),
+      },
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const startedAt = yield* Clock.currentTimeMillis;
+      const result = (yield* service.sendThreadMessage({
+        threadId: TARGET,
+        message: "race the wait",
+        waitForResponse: true,
+        timeoutMs: 1_000,
+      })) as {
+        readonly wait?: {
+          readonly state: string;
+          readonly answer: { readonly text: string } | null;
+        };
+      };
+      const elapsedMs = (yield* Clock.currentTimeMillis) - startedAt;
+      expect(result.wait?.state).toBe("completed");
+      expect(result.wait?.answer?.text).toBe("race answer");
+      expect(elapsedMs).toBeLessThan(500);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 // --- wait_for_response: timeout stops waiting, turn keeps running, no interrupt ---
 it.live("send_thread_message wait_for_response timeout returns running and does NOT cancel", () =>
   Effect.gen(function* () {
@@ -525,6 +674,58 @@ it.live("send_thread_message wait_for_response timeout returns running and does 
       // Wait timeout must NOT dispatch an interrupt (only the turn start command ran).
       const interrupts = harness.dispatched.filter((c) => c.type === "thread.turn.interrupt");
       expect(interrupts).toHaveLength(0);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+// --- wait_for_response: provider turn-start failure before a turn id exists is reported as error ---
+it.live("send_thread_message wait_for_response reports provider start failure", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness([thread({ id: TARGET, latestTurn: null })], (command, api) =>
+      command.type === "thread.turn.start"
+        ? Effect.gen(function* () {
+            yield* api.setThread(
+              thread({
+                id: TARGET,
+                latestTurn: null,
+                activities: [
+                  {
+                    id: "evt-start-failed" as never,
+                    tone: "error",
+                    kind: "provider.turn.start.failed",
+                    summary: "Provider turn start failed",
+                    payload: { detail: "No provider session could be started." },
+                    turnId: null,
+                    createdAt: command.createdAt,
+                  },
+                ],
+              }),
+            );
+            yield* api.emit(threadEvent(TARGET));
+          })
+        : Effect.void,
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = (yield* service.sendThreadMessage({
+        threadId: TARGET,
+        message: "start should fail",
+        waitForResponse: true,
+        timeoutMs: 200,
+      })) as {
+        readonly wait?: {
+          readonly state: string;
+          readonly turnId: string | null;
+          readonly answer: unknown;
+          readonly detail?: string;
+          readonly timedOut?: boolean;
+        };
+      };
+      expect(result.wait?.state).toBe("error");
+      expect(result.wait?.turnId).toBeNull();
+      expect(result.wait?.answer).toBeNull();
+      expect(result.wait?.detail).toContain("No provider session could be started.");
+      expect(result.wait?.timedOut).toBeUndefined();
     }).pipe(Effect.provide(harness.layer));
   }),
 );
@@ -704,6 +905,48 @@ it.live("response_timeout_ms does NOT cancel when the pending request was resolv
           ],
         }),
       );
+      yield* Effect.sleep("120 millis");
+      const interrupts = harness.dispatched.filter((c) => c.type === "thread.turn.interrupt");
+      expect(interrupts).toHaveLength(0);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+// --- response_timeout_ms watcher: ignores stale pending requests from older turns ---
+it.live("response_timeout_ms does NOT cancel for a pending request from another turn", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness([thread({ id: TARGET, latestTurn: null })], (command, api) =>
+      command.type === "thread.turn.start"
+        ? api.setThread(
+            thread({
+              id: TARGET,
+              latestTurn: runningTurn("turn-current"),
+              activities: [
+                {
+                  id: "evt-old-req" as never,
+                  tone: "approval",
+                  kind: "approval.requested",
+                  summary: "old approval requested",
+                  payload: {
+                    requestId: "req-old",
+                    requestKind: "command",
+                    detail: "stale approval",
+                  },
+                  turnId: TurnId.make("turn-old"),
+                  createdAt: "2026-01-01T00:00:00.100Z",
+                },
+              ],
+            }),
+          )
+        : Effect.void,
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* service.sendThreadMessage({
+        threadId: TARGET,
+        message: "new turn",
+        responseTimeoutMs: 30,
+      });
       yield* Effect.sleep("120 millis");
       const interrupts = harness.dispatched.filter((c) => c.type === "thread.turn.interrupt");
       expect(interrupts).toHaveLength(0);
@@ -1049,6 +1292,214 @@ it.live("respond_to_user_input rejects an unknown requestId before dispatch", ()
       }
       const responds = harness.dispatched.filter((c) => c.type === "thread.user-input.respond");
       expect(responds).toHaveLength(0);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.live("interrupt_thread_turn dispatches against the current active provider turn", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness([
+      thread({
+        id: TARGET,
+        latestTurn: runningTurn("turn-latest"),
+        session: {
+          threadId: TARGET,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "auto-accept-edits",
+          activeTurnId: TurnId.make("turn-active"),
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      }),
+    ]);
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.interruptThreadTurn({ threadId: TARGET });
+
+      expect(result).toMatchObject({
+        status: "interrupt_requested",
+        threadId: TARGET,
+        sequence: 1,
+      });
+      expect(harness.dispatched).toHaveLength(1);
+      expect(harness.dispatched[0]).toMatchObject({
+        type: "thread.turn.interrupt",
+        threadId: TARGET,
+        turnId: TurnId.make("turn-active"),
+      });
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.live("control tools reject targets outside the invocation ownership chain", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness([
+      thread({
+        id: TARGET,
+        createdVia: "mcp",
+        createdByThreadId: ThreadId.make("thread-other-root"),
+        latestTurn: runningTurn("turn-x"),
+        activities: [
+          {
+            id: "evt-approval" as never,
+            tone: "approval",
+            kind: "approval.requested",
+            summary: "approval requested",
+            payload: { requestId: "req-approval", requestKind: "command" },
+            turnId: TurnId.make("turn-x"),
+            createdAt: "2026-01-01T00:00:00.500Z",
+          },
+          {
+            id: "evt-user-input" as never,
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "input requested",
+            payload: { requestId: "req-input", questions: [] },
+            turnId: TurnId.make("turn-x"),
+            createdAt: "2026-01-01T00:00:00.600Z",
+          },
+        ],
+      }),
+    ]);
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+
+      const interruptExit = yield* Effect.exit(service.interruptThreadTurn({ threadId: TARGET }));
+      expectForbiddenExit("interruptThreadTurn", interruptExit);
+
+      const approvalExit = yield* Effect.exit(
+        service.respondToApproval({
+          threadId: TARGET,
+          requestId: "req-approval" as never,
+          decision: "accept",
+        }),
+      );
+      expectForbiddenExit("respondToApproval", approvalExit);
+
+      const userInputExit = yield* Effect.exit(
+        service.respondToUserInput({
+          threadId: TARGET,
+          requestId: "req-input" as never,
+          answers: { answer: "yes" },
+        }),
+      );
+      expectForbiddenExit("respondToUserInput", userInputExit);
+      expect(harness.dispatched).toEqual([]);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.live("respond_to_approval dispatches decline and acceptForSession decisions", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness([
+      thread({
+        id: TARGET,
+        latestTurn: runningTurn("turn-x"),
+        activities: [
+          {
+            id: "evt-req-decline" as never,
+            tone: "approval",
+            kind: "approval.requested",
+            summary: "approval requested",
+            payload: { requestId: "req-decline", requestKind: "command", detail: "rm tmp" },
+            turnId: TurnId.make("turn-x"),
+            createdAt: "2026-01-01T00:00:00.500Z",
+          },
+          {
+            id: "evt-req-session" as never,
+            tone: "approval",
+            kind: "approval.requested",
+            summary: "approval requested",
+            payload: { requestId: "req-session", requestKind: "command", detail: "bun test" },
+            turnId: TurnId.make("turn-x"),
+            createdAt: "2026-01-01T00:00:00.600Z",
+          },
+        ],
+      }),
+    ]);
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+
+      yield* service.respondToApproval({
+        threadId: TARGET,
+        requestId: "req-decline" as never,
+        decision: "decline",
+      });
+      yield* service.respondToApproval({
+        threadId: TARGET,
+        requestId: "req-session" as never,
+        decision: "acceptForSession",
+      });
+
+      expect(
+        harness.dispatched
+          .filter((command) => command.type === "thread.approval.respond")
+          .map((command) =>
+            command.type === "thread.approval.respond"
+              ? { requestId: command.requestId, decision: command.decision }
+              : null,
+          ),
+      ).toEqual([
+        { requestId: "req-decline", decision: "decline" },
+        { requestId: "req-session", decision: "acceptForSession" },
+      ]);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.live("respond_to_user_input dispatches answers for an open request", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness([
+      thread({
+        id: TARGET,
+        latestTurn: runningTurn("turn-x"),
+        activities: [
+          {
+            id: "evt-user-input" as never,
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "input requested",
+            payload: {
+              requestId: "req-input",
+              questions: [
+                {
+                  id: "choice",
+                  header: "Choice",
+                  question: "Pick one",
+                  options: [{ label: "Yes", description: "Continue" }],
+                  multiSelect: false,
+                },
+              ],
+            },
+            turnId: TurnId.make("turn-x"),
+            createdAt: "2026-01-01T00:00:00.500Z",
+          },
+        ],
+      }),
+    ]);
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.respondToUserInput({
+        threadId: TARGET,
+        requestId: "req-input" as never,
+        answers: { choice: "Yes" },
+      });
+
+      expect(result).toMatchObject({
+        status: "user_input_recorded",
+        threadId: TARGET,
+        requestId: "req-input",
+        sequence: 1,
+      });
+      expect(harness.dispatched).toHaveLength(1);
+      expect(harness.dispatched[0]).toMatchObject({
+        type: "thread.user-input.respond",
+        threadId: TARGET,
+        requestId: "req-input",
+        answers: { choice: "Yes" },
+      });
     }).pipe(Effect.provide(harness.layer));
   }),
 );
