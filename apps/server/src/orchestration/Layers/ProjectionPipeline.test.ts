@@ -1766,6 +1766,245 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("does not clobber a completed turn when a late interrupt is projected", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-late-interrupt");
+      const turnId = TurnId.make("turn-late-interrupt");
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-li1"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-li1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-li1"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-late-interrupt"),
+          title: "Late interrupt",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claude"),
+            model: "claude-opus",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      // Drive the turn to "running" via a session-set whose active turn matches.
+      yield* appendAndProject({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-li2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:00:01.000Z",
+        commandId: CommandId.make("cmd-li2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-li2"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "claude",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:01.000Z",
+          },
+        },
+      });
+
+      // The session leaving "running" settles the turn to "completed".
+      yield* appendAndProject({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-li3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:01:00.000Z",
+        commandId: CommandId.make("cmd-li3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-li3"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "claude",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-01-01T00:01:00.000Z",
+          },
+        },
+      });
+
+      const completedRows = yield* sql<{
+        readonly state: string;
+        readonly completedAt: string | null;
+      }>`
+        SELECT state, completed_at AS "completedAt"
+        FROM projection_turns
+        WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+      `;
+      assert.deepEqual(completedRows, [
+        { state: "completed", completedAt: "2026-01-01T00:01:00.000Z" },
+      ]);
+
+      // A timeout-driven interrupt event can be sequenced AFTER the turn already
+      // settled. Projecting it must NOT overwrite the terminal "completed" state.
+      yield* appendAndProject({
+        type: "thread.turn-interrupt-requested",
+        eventId: EventId.make("evt-li4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:02:00.000Z",
+        commandId: CommandId.make("cmd-li4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-li4"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnId,
+          createdAt: "2026-01-01T00:02:00.000Z",
+        },
+      });
+
+      const afterInterruptRows = yield* sql<{
+        readonly state: string;
+        readonly completedAt: string | null;
+      }>`
+        SELECT state, completed_at AS "completedAt"
+        FROM projection_turns
+        WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+      `;
+      assert.deepEqual(afterInterruptRows, [
+        { state: "completed", completedAt: "2026-01-01T00:01:00.000Z" },
+      ]);
+    }),
+  );
+
+  it.effect("interrupts a still-running turn", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-running-interrupt");
+      const turnId = TurnId.make("turn-running-interrupt");
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-ri1"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-ri1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ri1"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-running-interrupt"),
+          title: "Running interrupt",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claude"),
+            model: "claude-opus",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      // Drive the turn to "running"; the turn never settles before the interrupt.
+      yield* appendAndProject({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-ri2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:00:01.000Z",
+        commandId: CommandId.make("cmd-ri2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ri2"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "claude",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:01.000Z",
+          },
+        },
+      });
+
+      const runningRows = yield* sql<{
+        readonly state: string;
+      }>`
+        SELECT state
+        FROM projection_turns
+        WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+      `;
+      assert.deepEqual(runningRows, [{ state: "running" }]);
+
+      // Interrupting a still-running turn DOES transition it to "interrupted".
+      yield* appendAndProject({
+        type: "thread.turn-interrupt-requested",
+        eventId: EventId.make("evt-ri3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:00:30.000Z",
+        commandId: CommandId.make("cmd-ri3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ri3"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnId,
+          createdAt: "2026-01-01T00:00:30.000Z",
+        },
+      });
+
+      const interruptedRows = yield* sql<{
+        readonly state: string;
+        readonly completedAt: string | null;
+      }>`
+        SELECT state, completed_at AS "completedAt"
+        FROM projection_turns
+        WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+      `;
+      assert.deepEqual(interruptedRows, [
+        { state: "interrupted", completedAt: "2026-01-01T00:00:30.000Z" },
+      ]);
+    }),
+  );
+
   it.effect("settles a superseded running turn when a new turn becomes active", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

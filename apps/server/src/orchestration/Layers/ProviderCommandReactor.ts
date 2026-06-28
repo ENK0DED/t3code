@@ -851,8 +851,13 @@ const make = Effect.gen(function* () {
       });
     }
 
-    // Orchestration turn ids are not provider turn ids, so interrupt by session.
-    yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+    // Pass the exact orchestration-tracked turn id through to the provider runtime,
+    // which maps/uses it to interrupt that specific turn. When the turn id is absent
+    // (legacy or explicit-user interrupts), the runtime falls back to the active turn.
+    yield* providerService.interruptTurn({
+      threadId: event.payload.threadId,
+      ...(event.payload.turnId !== undefined ? { turnId: event.payload.turnId } : {}),
+    });
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (

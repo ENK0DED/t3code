@@ -54,6 +54,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { randomUUID } from "node:crypto";
 
@@ -852,6 +853,29 @@ export const McpOrchestrationServiceLive = Layer.effect(
     const turnTimeoutWatcherScope = yield* Scope.make("sequential");
     yield* Effect.addFinalizer(() => Scope.close(turnTimeoutWatcherScope, Exit.void));
 
+    // Per-thread serialization for turn-starting MCP writes (review F1). Two concurrent
+    // send_thread_message calls on the SAME idle thread must not both pass the idle gate and
+    // both start a turn — that orphans one turn (no watcher/waiter) and binds both callers'
+    // waiters to the same turn id. A per-thread Semaphore(1) makes the idle-check→dispatch span
+    // atomic per thread; once the first send dispatches, the synchronous turn-start projection
+    // makes the thread non-idle, so the second send (now holding the permit) fails the idle gate
+    // instead of starting a second turn. The map is keyed by threadId so writes to DIFFERENT
+    // threads stay fully concurrent; the (potentially minutes-long) wait_for_response block runs
+    // OUTSIDE this lock since it is read-only and must not delay writes to the same thread.
+    const threadWriteLocks = new Map<string, Semaphore.Semaphore>();
+    const withThreadWriteLock = <A, E, R>(
+      threadId: ThreadId,
+      effect: Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E, R> =>
+      Effect.suspend(() => {
+        let semaphore = threadWriteLocks.get(threadId);
+        if (semaphore === undefined) {
+          semaphore = Semaphore.makeUnsafe(1);
+          threadWriteLocks.set(threadId, semaphore);
+        }
+        return semaphore.withPermits(1)(effect);
+      });
+
     // Non-failing snapshot read used by wait/watcher loops: a transient projection read
     // error must not crash a watcher (which would then never dispatch) nor the wait loop.
     // Treats read failure and a missing thread identically as "no detail available".
@@ -917,6 +941,10 @@ export const McpOrchestrationServiceLive = Layer.effect(
     // runs only when a per-turn knob is set.
     const OBSERVE_ARMED_TURN_POLL_MS = 5;
     const OBSERVE_ARMED_TURN_MAX_ATTEMPTS = 200; // ~1s ceiling; dispatch latency is far lower.
+    // Poll cadence for the response-timeout discovery watcher's termination backstop (review F8):
+    // how often it re-checks that its armed turn is still running when no domain events arrive, so
+    // the follower fiber cannot outlive the turn even with a silent stream.
+    const RESPONSE_WATCHER_TERMINATION_POLL_MS = 1_000;
     const observeArmedTurnId = (input: {
       readonly threadId: ThreadId;
       readonly priorTurnId: string | null;
@@ -1002,12 +1030,19 @@ export const McpOrchestrationServiceLive = Layer.effect(
             Effect.catch(() => Effect.succeed<TurnTerminalObservation | null>(null)),
           );
 
-        // Race the settle stream against the wait timeout, starting the stream subscription
-        // BEFORE the initial probe so a completion landing in that window is not missed
-        // (subscribe-then-probe). The stream's own first action is the post-subscribe probe,
-        // so the initial snapshot is covered without a separate pre-subscribe read. On timeout
-        // the stream fiber is interrupted (it only holds a PubSub subscription) and we return
-        // null; we do NOT cancel the turn — that is the distinct turn/response_timeout_ms
+        // Probe ONCE up front (review F2): a turn that already settled before this wait began
+        // (e.g. a fast answer-only turn) must return immediately rather than block for the full
+        // timeoutMs. The `settle` stream below only re-probes on a FUTURE domain event, so an
+        // already-terminal turn with no further events previously waited out the entire timeout
+        // before the closing probe. If the up-front probe is not yet terminal, race the
+        // event-driven `settle` against the wait timeout; a final probe after the race still
+        // closes the narrow window between this probe and the stream's subscription.
+        const initialObservation = yield* probe;
+        if (initialObservation !== null) {
+          return initialObservation;
+        }
+        // On timeout the stream fiber is interrupted (it only holds a PubSub subscription) and we
+        // return null; we do NOT cancel the turn — that is the distinct turn/response_timeout_ms
         // behavior. A final probe right before giving up closes the settle-vs-timeout gap.
         const raced = yield* Effect.race(
           settle,
@@ -1031,7 +1066,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
     const armTurnTimeoutWatcher = (input: {
       readonly threadId: ThreadId;
       readonly priorTurnId: string | null;
-      readonly turnTimeoutMs: number;
+      readonly deadlineMs: number;
     }) =>
       Effect.gen(function* () {
         const armedTurnId = yield* observeArmedTurnId({
@@ -1041,7 +1076,12 @@ export const McpOrchestrationServiceLive = Layer.effect(
         if (armedTurnId === null) {
           return;
         }
-        yield* Effect.sleep(Duration.millis(input.turnTimeoutMs));
+        // Sleep only the time REMAINING until the dispatch-anchored deadline (review F7). The
+        // budget is measured from when the turn was dispatched, not from when observation
+        // finished, so observe latency (bounded but up to ~1s) cannot silently extend — or, under
+        // pathological projection lag, effectively disable — the turn timeout.
+        const nowMs = yield* Clock.currentTimeMillis;
+        yield* Effect.sleep(Duration.millis(Math.max(0, input.deadlineMs - nowMs)));
         // Only cancel if the ARMED turn is still running; if it already completed (or a newer
         // turn replaced it), do nothing — never cancel unrelated work.
         if (yield* isArmedTurnRunning(input.threadId, armedTurnId)) {
@@ -1141,10 +1181,21 @@ export const McpOrchestrationServiceLive = Layer.effect(
           yield* armForOpenRequests(initial.value);
         }
 
-        // Then follow the thread's events, arming watchers for late-opening requests, until
-        // the armed turn is no longer running (terminal) — at which point no further request
-        // can open for it. streamDomainEvents has no failure channel in practice; defend it.
-        yield* orchestrationEngine.streamDomainEvents.pipe(
+        // Pre-subscribe guard (review F8): if the armed turn already settled before we begin
+        // following events, there is nothing left to watch — return rather than subscribe to a
+        // hot stream that may never emit again for this thread.
+        if (!(yield* isArmedTurnRunning(input.threadId, armedTurnId))) {
+          return;
+        }
+
+        // Follow the thread's events, arming watchers for late-opening requests. `takeUntilEffect`
+        // only re-evaluates its predicate when an event ARRIVES, so a turn that goes terminal with
+        // no subsequent thread event would otherwise leave this follower blocked on the hot stream
+        // until the service-lifetime scope closes at shutdown (review F8). Race the event-follow
+        // against a poll that completes once the armed turn is no longer running, so the fiber
+        // cannot outlive its turn even when the terminal transition produces no further event.
+        // streamDomainEvents has no failure channel in practice; defend it anyway.
+        const followEvents = orchestrationEngine.streamDomainEvents.pipe(
           Stream.filter((event) => event.aggregateId === input.threadId),
           Stream.takeUntilEffect(() =>
             isArmedTurnRunning(input.threadId, armedTurnId).pipe(Effect.map((running) => !running)),
@@ -1158,6 +1209,17 @@ export const McpOrchestrationServiceLive = Layer.effect(
           ),
           Effect.catch(() => Effect.void),
         );
+        const pollUntilSettled = (): Effect.Effect<void, never> =>
+          isArmedTurnRunning(input.threadId, armedTurnId).pipe(
+            Effect.flatMap((running) =>
+              running
+                ? Effect.sleep(Duration.millis(RESPONSE_WATCHER_TERMINATION_POLL_MS)).pipe(
+                    Effect.flatMap(() => pollUntilSettled()),
+                  )
+                : Effect.void,
+            ),
+          );
+        yield* Effect.race(followEvents, pollUntilSettled());
       }).pipe(
         Effect.ignoreCause({ log: true }),
         Effect.forkIn(turnTimeoutWatcherScope),
@@ -1226,6 +1288,9 @@ export const McpOrchestrationServiceLive = Layer.effect(
       };
     }): Effect.Effect<WaitResult | undefined, never> =>
       Effect.gen(function* () {
+        // Dispatch-anchored clock for per-turn deadlines (review F7): captured before any
+        // observation so a turn-timeout budget is measured from dispatch, not from observe latency.
+        const armedAtMs = yield* Clock.currentTimeMillis;
         const turnTimeoutMs = normalizeTimeoutMs(input.options.turnTimeoutMs);
         const responseTimeoutMs = normalizeTimeoutMs(input.options.responseTimeoutMs);
         const wantsWait = input.options.waitForResponse === true;
@@ -1237,7 +1302,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           yield* armTurnTimeoutWatcher({
             threadId: input.threadId,
             priorTurnId: input.priorTurnId,
-            turnTimeoutMs,
+            deadlineMs: armedAtMs + turnTimeoutMs,
           });
         }
         if (responseTimeoutMs !== null) {
@@ -1406,6 +1471,19 @@ export const McpOrchestrationServiceLive = Layer.effect(
           );
         if (Option.isNone(ancestor)) {
           break;
+        }
+        // Every INTERMEDIATE ancestor traversed must itself be MCP-created (review F9). A
+        // legitimate MCP creation-subtree is mcp-created threads rooted at the (possibly
+        // user-created) credential thread — and that credential thread is matched by the
+        // `cursor === invocation.threadId` check above BEFORE we resolve its provenance here, so
+        // its user-createdness is fine. Any OTHER user-created link in the chain must not bridge
+        // ownership: otherwise malformed/legacy provenance on a user thread that points back at
+        // the credential thread would grant access through it.
+        if (ancestor.value.createdVia !== "mcp") {
+          return yield* new McpOrchestrationError({
+            code: "forbidden",
+            message: `forbidden: Thread '${thread.id}' is not within your MCP creation-subtree: an intermediate ancestor was not created via MCP.`,
+          });
         }
         cursor = ancestor.value.createdByThreadId ?? null;
       }
@@ -2829,8 +2907,12 @@ export const McpOrchestrationServiceLive = Layer.effect(
           const desiredBranch =
             desiredCheckoutMode === "current_checkout"
               ? null
-              : hasDeferredEmptyNewWorktree
-                ? (input.branch ?? null)
+              : // Deferred new_worktree (review F6): persist a branch so that
+                // `branch != null && worktreePath == null` is a durable "wants a fresh worktree,
+                // not yet prepared" signal sendThreadMessage consumes on the first turn (else the
+                // first turn would run in the shared checkout). Derive a temp branch when none given.
+                hasDeferredEmptyNewWorktree
+                ? (input.branch ?? buildTemporaryWorktreeBranchName(randomHex))
                 : shouldPrepareWorktree
                   ? bootstrapBranch
                   : (input.branch ??
@@ -2993,51 +3075,104 @@ export const McpOrchestrationServiceLive = Layer.effect(
             readonly timeoutMs?: number;
             readonly maxCharacters?: number;
           };
-          const thread = yield* requireWritableThread(input.threadId);
-          yield* requireThreadManageableByMcp(thread);
-          // Capture the turn observed before dispatch so the wait/watchers act only on the
-          // *new* turn this call starts. requireWritableThread already enforced idle, so
-          // latestTurn is null or a prior terminal turn here.
-          const priorTurnId = thread.latestTurn?.turnId ?? null;
-          const desiredModelSelection = input.modelSelection ?? thread.modelSelection;
-          yield* validateMcpModelSelection(desiredModelSelection);
-          yield* validateSessionCompatibility({
-            thread,
-            desiredModelSelection,
-            requestedModelSelection: input.modelSelection,
-          });
-          yield* validateSendThreadMessageCheckout({
-            thread,
-            checkoutMode: input.checkoutMode,
-            branch: input.branch,
-            worktreePath: input.worktreePath,
-            baseBranch: input.baseBranch,
-          });
+          // Serialize the idle-check→dispatch span per thread (review F1): two concurrent sends
+          // on the same idle thread must not both pass the idle gate and start two turns. The
+          // lock is RELEASED before the (possibly minutes-long) wait_for_response below — that
+          // block is read-only and must not delay other writes to the same thread.
+          const dispatched = yield* withThreadWriteLock(
+            input.threadId,
+            Effect.gen(function* () {
+              const thread = yield* requireWritableThread(input.threadId);
+              yield* requireThreadManageableByMcp(thread);
+              // Capture the turn observed before dispatch so the wait/watchers act only on the
+              // *new* turn this call starts. requireWritableThread already enforced idle, so
+              // latestTurn is null or a prior terminal turn here.
+              const priorTurnId = thread.latestTurn?.turnId ?? null;
+              const desiredModelSelection = input.modelSelection ?? thread.modelSelection;
+              yield* validateMcpModelSelection(desiredModelSelection);
+              yield* validateSessionCompatibility({
+                thread,
+                desiredModelSelection,
+                requestedModelSelection: input.modelSelection,
+              });
+              yield* validateSendThreadMessageCheckout({
+                thread,
+                checkoutMode: input.checkoutMode,
+                branch: input.branch,
+                worktreePath: input.worktreePath,
+                baseBranch: input.baseBranch,
+              });
 
-          const messageId = makeMessageId();
-          const createdAt = yield* currentIsoTimestamp();
-          if (
-            input.modelSelection !== undefined &&
-            !Equal.equals(thread.modelSelection, desiredModelSelection)
-          ) {
-            yield* orchestrationEngine
-              .dispatch({
-                type: "thread.meta.update",
-                commandId: makeCommandId("thread-meta-model"),
-                threadId: input.threadId,
-                modelSelection: desiredModelSelection,
-              })
-              .pipe(
-                Effect.mapError((error) =>
-                  toInternalError("Failed to dispatch orchestration command.", error),
-                ),
-              );
-          }
-          const accepted =
-            input.checkoutMode === "new_worktree"
-              ? yield* requireProject(thread.projectId).pipe(
-                  Effect.flatMap((project) =>
-                    bootstrapDispatcher.dispatch({
+              const messageId = makeMessageId();
+              const createdAt = yield* currentIsoTimestamp();
+              if (
+                input.modelSelection !== undefined &&
+                !Equal.equals(thread.modelSelection, desiredModelSelection)
+              ) {
+                yield* orchestrationEngine
+                  .dispatch({
+                    type: "thread.meta.update",
+                    commandId: makeCommandId("thread-meta-model"),
+                    threadId: input.threadId,
+                    modelSelection: desiredModelSelection,
+                  })
+                  .pipe(
+                    Effect.mapError((error) =>
+                      toInternalError("Failed to dispatch orchestration command.", error),
+                    ),
+                  );
+              }
+              // Prepare a fresh worktree both when the caller explicitly asks for new_worktree
+              // AND when this is a deferred-new_worktree thread (review F6): one created
+              // new_worktree with no first message recorded a branch but no worktree
+              // (branch != null && worktreePath == null), so — unless the caller opts into the
+              // shared checkout via current_checkout — its first turn must still prepare one
+              // rather than silently running in the project's shared checkout.
+              const isDeferredNewWorktree =
+                thread.worktreePath === null &&
+                thread.branch !== null &&
+                input.checkoutMode !== "current_checkout";
+              const prepareNewWorktree =
+                input.checkoutMode === "new_worktree" || isDeferredNewWorktree;
+              const accepted = prepareNewWorktree
+                ? yield* requireProject(thread.projectId).pipe(
+                    Effect.flatMap((project) =>
+                      bootstrapDispatcher.dispatch({
+                        type: "thread.turn.start",
+                        commandId: makeCommandId("thread-turn-start"),
+                        threadId: input.threadId,
+                        message: {
+                          messageId,
+                          role: "user",
+                          text: input.message,
+                          attachments: [],
+                        },
+                        modelSelection: desiredModelSelection,
+                        runtimeMode: thread.runtimeMode,
+                        interactionMode: thread.interactionMode,
+                        bootstrap: {
+                          prepareWorktree: {
+                            projectCwd: project.workspaceRoot,
+                            // Explicit new_worktree requires baseBranch (validated above); the
+                            // deferred safe-default path branches off the project's current
+                            // checkout (HEAD) when the caller gave none.
+                            baseBranch: input.baseBranch ?? "HEAD",
+                            branch:
+                              input.branch ??
+                              thread.branch ??
+                              buildTemporaryWorktreeBranchName(randomHex),
+                          },
+                          runSetupScript: true,
+                        },
+                        createdAt,
+                      }),
+                    ),
+                    Effect.mapError((error) =>
+                      toInternalError("Failed to dispatch orchestration command.", error),
+                    ),
+                  )
+                : yield* orchestrationEngine
+                    .dispatch({
                       type: "thread.turn.start",
                       commandId: makeCommandId("thread-turn-start"),
                       threadId: input.threadId,
@@ -3050,52 +3185,24 @@ export const McpOrchestrationServiceLive = Layer.effect(
                       modelSelection: desiredModelSelection,
                       runtimeMode: thread.runtimeMode,
                       interactionMode: thread.interactionMode,
-                      bootstrap: {
-                        prepareWorktree: {
-                          projectCwd: project.workspaceRoot,
-                          baseBranch: input.baseBranch!,
-                          branch:
-                            input.branch ??
-                            thread.branch ??
-                            buildTemporaryWorktreeBranchName(randomHex),
-                        },
-                        runSetupScript: true,
-                      },
                       createdAt,
-                    }),
-                  ),
-                  Effect.mapError((error) =>
-                    toInternalError("Failed to dispatch orchestration command.", error),
-                  ),
-                )
-              : yield* orchestrationEngine
-                  .dispatch({
-                    type: "thread.turn.start",
-                    commandId: makeCommandId("thread-turn-start"),
-                    threadId: input.threadId,
-                    message: {
-                      messageId,
-                      role: "user",
-                      text: input.message,
-                      attachments: [],
-                    },
-                    modelSelection: desiredModelSelection,
-                    runtimeMode: thread.runtimeMode,
-                    interactionMode: thread.interactionMode,
-                    createdAt,
-                  })
-                  .pipe(
-                    Effect.mapError((error) =>
-                      toInternalError("Failed to dispatch orchestration command.", error),
-                    ),
-                  );
+                    })
+                    .pipe(
+                      Effect.mapError((error) =>
+                        toInternalError("Failed to dispatch orchestration command.", error),
+                      ),
+                    );
+              return { accepted, messageId, priorTurnId };
+            }),
+          );
 
           // Per-turn control options (Decisions 3, 8, 10): arm auto-cancel watchers and/or
-          // block for the answer. All default OFF, so an omitting caller gets the exact
-          // prior fire-and-forget behavior (no `wait` field).
+          // block for the answer. Runs OUTSIDE the per-thread write lock (review F1) — a blocking
+          // wait must not delay other writes. All default OFF, so an omitting caller gets the
+          // exact prior fire-and-forget behavior (no `wait` field).
           const wait = yield* applyTurnControlOptions({
             threadId: input.threadId,
-            priorTurnId,
+            priorTurnId: dispatched.priorTurnId,
             options: {
               responseTimeoutMs: input.responseTimeoutMs,
               turnTimeoutMs: input.turnTimeoutMs,
@@ -3108,8 +3215,8 @@ export const McpOrchestrationServiceLive = Layer.effect(
           return {
             status: "accepted" as const,
             threadId: input.threadId,
-            messageId,
-            sequence: accepted.sequence,
+            messageId: dispatched.messageId,
+            sequence: dispatched.accepted.sequence,
             ...(wait !== undefined ? { wait } : {}),
           };
         }),
@@ -3296,11 +3403,17 @@ export const McpOrchestrationServiceLive = Layer.effect(
           // idle gate; they still require the thread to be MCP-manageable by this credential.
           const thread = yield* requireThreadDetail(input.threadId);
           yield* requireThreadManageableByMcp(thread);
+          // Bind the interrupt to the thread's current turn (review F3): the active session turn
+          // if present, else the latest turn. With the turn id carried, the projection (which now
+          // guards on the turn still running) and the provider reactor both target that exact
+          // turn — if it already settled, the interrupt no-ops rather than corrupting a newer one.
+          const targetTurnId = thread.session?.activeTurnId ?? thread.latestTurn?.turnId ?? null;
           const accepted = yield* orchestrationEngine
             .dispatch({
               type: "thread.turn.interrupt",
               commandId: makeCommandId("thread-turn-interrupt"),
               threadId: input.threadId,
+              ...(targetTurnId !== null ? { turnId: TurnId.make(targetTurnId) } : {}),
               createdAt: yield* currentIsoTimestamp(),
             })
             .pipe(

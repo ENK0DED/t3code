@@ -1319,6 +1319,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             turnId: event.payload.turnId,
           });
           if (Option.isSome(existingTurn)) {
+            // A late interrupt (e.g. a timeout-driven interrupt event sequenced
+            // after the turn already settled) must not clobber an already-settled
+            // turn. Only a still-running turn transitions to "interrupted".
+            if (existingTurn.value.state !== "running") {
+              return;
+            }
             yield* projectionTurnRepository.upsertByTurnId({
               ...existingTurn.value,
               state: "interrupted",

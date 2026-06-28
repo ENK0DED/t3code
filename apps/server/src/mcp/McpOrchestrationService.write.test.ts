@@ -1847,6 +1847,56 @@ it.effect(
 );
 
 it.effect(
+  "createThread child_of_thread rejects a parent reached through a user-created intermediate ancestor",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      // thread-current -> thread-user (USER-created, with a malformed createdByThreadId pointing
+      // back at the credential thread) -> thread-target (mcp). A user-created intermediate must
+      // NOT bridge ownership even though the chain ends at the credential thread (review F9), so
+      // the target is not MCP-manageable and creating a child of it is forbidden.
+      const exit = yield* Effect.exit(
+        service.createThread({
+          placement: "child_of_thread",
+          parentThreadId: ThreadId.make("thread-target"),
+          title: "Child via a user-created intermediate",
+        }),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause) as { readonly code: string };
+        expect(error.code).toBe("forbidden");
+      }
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              projectId: ProjectId.make("project-current"),
+              title: "Current Thread",
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-user"),
+              projectId: ProjectId.make("project-current"),
+              title: "User-created intermediate",
+              createdVia: "user",
+              createdByThreadId: ThreadId.make("thread-current"),
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-target"),
+              projectId: ProjectId.make("project-current"),
+              title: "Target behind a user intermediate",
+              createdVia: "mcp",
+              createdByThreadId: ThreadId.make("thread-user"),
+            }),
+          ],
+        }),
+      ),
+    ),
+);
+
+it.effect(
   "createThread with a new worktree prepares checkout and setup before starting the turn",
   () =>
     (() => {
@@ -2198,18 +2248,24 @@ it.effect(
           checkoutMode: "new_worktree",
         });
 
+        // A deferred new_worktree (explicit new_worktree, no branch, no first message) records a
+        // FRESH branch as the durable "wants a worktree, not yet prepared" signal (review F6) with
+        // a null worktreePath — it still does NOT inherit the current thread's branch/worktree.
         expect(result).toMatchObject({
           status: "created",
           thread: {
-            branch: null,
+            branch: expect.any(String),
             worktreePath: null,
           },
         });
+        expect(
+          (result as { readonly thread: { readonly branch: string | null } }).thread.branch,
+        ).not.toBe("feature/current");
         expect(dispatchedCommands).toContainEqual(
           expect.objectContaining({
             type: "thread.create",
             title: "Metadata-only thread",
-            branch: null,
+            branch: expect.any(String),
             worktreePath: null,
           }),
         );
@@ -2346,6 +2402,66 @@ it.effect("sendThreadMessage rejects branch without explicit new_worktree checko
       }),
     ),
   ),
+);
+
+it.effect(
+  // review F6: a deferred new_worktree thread (created new_worktree with no first message, so it
+  // recorded a branch but has no worktree yet) must PREPARE its isolated worktree on the first
+  // send_thread_message even when the caller does not re-supply checkoutMode — otherwise the
+  // first turn silently runs in the project's shared checkout.
+  "sendThreadMessage prepares a deferred new_worktree on the first turn without re-supplying checkoutMode",
+  () =>
+    (() => {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      const createWorktreeCalls: Array<{
+        readonly cwd: string;
+        readonly refName: string;
+        readonly newRefName?: string | undefined;
+        readonly path: string | null;
+      }> = [];
+      return Effect.gen(function* () {
+        const service = yield* McpOrchestrationService;
+        const result = yield* service.sendThreadMessage({
+          threadId: ThreadId.make("thread-deferred"),
+          message: "Begin work",
+        });
+        expect(result).toMatchObject({ status: "accepted" });
+        // A worktree-preparing bootstrap turn.start was dispatched (not a bare start), and the
+        // recorded deferred branch was created off HEAD in the project workspace.
+        expect(dispatchedCommands.map((command) => command.type)).toContain("thread.turn.start");
+        expect(createWorktreeCalls).toEqual([
+          {
+            cwd: "/work/current",
+            refName: "HEAD",
+            newRefName: "t3code/deferred-xyz",
+            path: null,
+          },
+        ]);
+      }).pipe(
+        Effect.provide(
+          makeWriteHarnessLayer({
+            dispatchedCommands,
+            createWorktreeCalls,
+            threadDetails: [
+              threadDetail({
+                id: ThreadId.make("thread-current"),
+                projectId: ProjectId.make("project-current"),
+                title: "Current Thread",
+              }),
+              threadDetail({
+                id: ThreadId.make("thread-deferred"),
+                projectId: ProjectId.make("project-current"),
+                title: "Deferred new_worktree thread",
+                createdVia: "mcp",
+                createdByThreadId: ThreadId.make("thread-current"),
+                branch: "t3code/deferred-xyz",
+                worktreePath: null,
+              }),
+            ],
+          }),
+        ),
+      );
+    })(),
 );
 
 it.effect("sendThreadMessage rejects checkout bootstrap fields on non-empty threads", () =>
