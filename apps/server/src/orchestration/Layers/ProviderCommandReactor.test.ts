@@ -1831,6 +1831,48 @@ describe("ProviderCommandReactor", () => {
     expect(harness.interruptTurn).not.toHaveBeenCalled();
   });
 
+  it("interrupts the started turn during the startup window before an active turn id is reported", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    // The session is running but has not yet reported an active turn id (the sub-second
+    // window after dispatch). An explicit interrupt for the started turn must still take
+    // effect rather than be silently dropped, since there is no newer turn to mis-cancel.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-no-active-turn"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-turn-interrupt-startup"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-starting"),
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
+    expect(harness.interruptTurn.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-1",
+      turnId: "turn-starting",
+    });
+  });
+
   it("interrupts by session without a turn id when the interrupt request omits one", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

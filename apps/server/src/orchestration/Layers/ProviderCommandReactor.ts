@@ -854,9 +854,17 @@ const make = Effect.gen(function* () {
     // Pass the exact orchestration-tracked turn id through to the provider runtime,
     // which maps/uses it to interrupt that specific turn. When the turn id is absent
     // (legacy or explicit-user interrupts), the runtime falls back to the active turn.
+    //
+    // Skip ONLY when a DIFFERENT turn is currently active — i.e. a late interrupt for a
+    // turn the session has already moved past. If the session reports no active turn yet
+    // (`activeTurnId == null`, e.g. the sub-second window after dispatch before the
+    // provider reports the started turn, or between turns), proceed: there is no newer
+    // turn to cancel by mistake, so an explicit interrupt should still take effect rather
+    // than be silently dropped.
     if (
       event.payload.turnId !== undefined &&
-      thread.session?.activeTurnId !== event.payload.turnId
+      thread.session?.activeTurnId != null &&
+      thread.session.activeTurnId !== event.payload.turnId
     ) {
       return;
     }
