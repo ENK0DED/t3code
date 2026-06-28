@@ -285,8 +285,20 @@ export interface GetThreadDiffResult {
   readonly threadId: ThreadId;
   readonly fromTurnCount: number;
   readonly toTurnCount: number;
+  /**
+   * The unified git diff. Empty string when the diff was dropped because it
+   * exceeded `maxCharacters` (see `truncated`); the `files` summary still
+   * reports what changed so the agent can re-request a narrower range.
+   */
   readonly diff: string;
   readonly files: ReadonlyArray<ThreadDiffFileSummary>;
+  /**
+   * Present and `true` when the unified `diff` was omitted because the full
+   * payload exceeded `maxCharacters`. The per-file `files` summary is retained.
+   */
+  readonly truncated?: true;
+  /** Human-readable note explaining the truncation, present only when truncated. */
+  readonly truncatedNote?: string;
 }
 
 export interface McpOrchestrationServiceShape {

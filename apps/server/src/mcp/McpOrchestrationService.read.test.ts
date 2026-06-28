@@ -178,6 +178,7 @@ const projectionQueryMock = (input?: {
           ? Option.some(input.threadDetail)
           : Option.none(),
       ),
+    getThreadTurnStateById: () => Effect.succeed(Option.none()),
     listProjectShells: () => Effect.succeed(input?.projects ?? []),
     listThreadShellsByProject: ({ projectId, archived }) =>
       Effect.succeed(

@@ -3,6 +3,7 @@ import {
   MessageId,
   type ModelSelection,
   type OrchestrationCheckpointSummary,
+  type OrchestrationLatestTurn,
   type OrchestrationMessage,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
@@ -18,6 +19,7 @@ import {
   ApprovalRequestId,
   ThreadCreatedVia,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import { buildProjectCreateCommand, resolveAddProjectPath } from "@t3tools/shared/addProject";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
@@ -459,6 +461,28 @@ function extractLatestResponse(thread: OrchestrationThread): LatestResponseExtra
   };
 }
 
+// Resolve the final assistant message of ONE specific turn, binding the answer to that
+// exact turn id (Decision 10) rather than to `thread.latestTurn`, which can point at a
+// later turn or be nulled by the projection. Prefer the turn's last assistant-tagged
+// message; fall back to a checkpoint's recorded assistantMessageId for that same turn.
+// Returns null when the turn produced no assistant text (edits-only / error / interrupted).
+function assistantMessageForTurn(
+  thread: OrchestrationThread,
+  turnId: string,
+): ReturnType<typeof serializeMessage> | null {
+  const tagged = lastMessageOfTurn(thread, turnId, "assistant");
+  if (tagged !== null) {
+    return serializeMessage(tagged);
+  }
+  const checkpoint = thread.checkpoints.find((entry) => entry.turnId === turnId) ?? null;
+  if (checkpoint === null || checkpoint.assistantMessageId === null) {
+    return null;
+  }
+  const byId =
+    thread.messages.find((message) => message.id === checkpoint.assistantMessageId) ?? null;
+  return byId === null ? null : serializeMessage(byId);
+}
+
 function toInternalError(message: string, detail?: unknown): McpOrchestrationError {
   return new McpOrchestrationError({
     code: "internal_error",
@@ -838,70 +862,137 @@ export const McpOrchestrationServiceLive = Layer.effect(
         .getThreadDetailById(threadId)
         .pipe(Effect.catch(() => Effect.succeed(Option.none<OrchestrationThread>())));
 
-    // True while the thread's latest turn is the *new* turn and still running. Used by the
-    // turn_timeout watcher to confirm there is still live work to cancel.
-    const isNewTurnRunning = (thread: OrchestrationThread, priorTurnId: string | null): boolean => {
-      const turn = thread.latestTurn;
-      return turn !== null && turn.state === "running" && turn.turnId !== priorTurnId;
-    };
+    // Non-failing read of ONE concrete turn's state by exact {threadId, turnId}. Unlike a
+    // detail-snapshot `latestTurn` read this resolves the turn's true state even after the
+    // projection nulled the thread's latest_turn_id (session went ready/idle/error), which
+    // is what makes a completed answer-only turn observable. Read failure => None.
+    const readTurnStateOption = (
+      threadId: ThreadId,
+      turnId: string,
+    ): Effect.Effect<Option.Option<OrchestrationLatestTurn>, never> =>
+      projectionSnapshotQuery
+        .getThreadTurnStateById({ threadId, turnId: TurnId.make(turnId) })
+        .pipe(Effect.catch(() => Effect.succeed(Option.none<OrchestrationLatestTurn>())));
 
-    const dispatchTurnInterrupt = (threadId: ThreadId, tag: string) =>
+    // True iff the EXACT armed turn (by id) is still running. Reads the turn row directly so
+    // a nulled latest_turn_id can't hide live work, and a NEWER turn can't be mistaken for it.
+    const isArmedTurnRunning = (
+      threadId: ThreadId,
+      armedTurnId: string,
+    ): Effect.Effect<boolean, never> =>
+      readTurnStateOption(threadId, armedTurnId).pipe(
+        Effect.map((option) =>
+          Option.match(option, {
+            onNone: () => false,
+            onSome: (turn) => turn.state === "running",
+          }),
+        ),
+      );
+
+    // Dispatch an interrupt carrying the EXACT turn id (Decision 8 / projection settles the
+    // right turn — ProjectionPipeline interrupt handling keys on payload.turnId). Passing the
+    // turnId is what prevents a timer that fired late from settling a newer turn.
+    const dispatchTurnInterrupt = (input: {
+      readonly threadId: ThreadId;
+      readonly turnId: string;
+      readonly tag: string;
+    }) =>
       Effect.gen(function* () {
         yield* orchestrationEngine
           .dispatch({
             type: "thread.turn.interrupt",
-            commandId: makeCommandId(tag),
-            threadId,
+            commandId: makeCommandId(input.tag),
+            threadId: input.threadId,
+            turnId: TurnId.make(input.turnId),
             createdAt: yield* currentIsoTimestamp(),
           })
           .pipe(Effect.ignoreCause({ log: true }));
       });
 
-    // Block until the thread's newly-dispatched turn reaches a terminal state, or until
-    // `timeoutMs` elapses (Decision 10). Returns the terminal answer extraction, or null on
-    // timeout (caller reports state: "running", answer: null and does NOT cancel the turn).
-    // Mechanism: subscribe to the engine's hot domain-event stream FIRST, then probe the
-    // current snapshot (covers a turn that already settled), then fold over events for this
-    // thread re-reading the snapshot each time. The projection is committed before an event
-    // is published, so a snapshot read on any event for the thread reflects that event.
-    const waitForTurnTerminal = (input: {
+    // Resolve the EXACT id of the turn a dispatch just started. The MCP call returns right
+    // after dispatching, so the new turn's id must be captured by observing the projection:
+    // poll briefly until latestTurn advances past priorTurnId. Returns that id, or null if no
+    // new turn appeared within the budget (then watchers/wait have nothing to act on — they
+    // no-op, never touching priorTurnId or a sibling). Bounded, low-frequency polling; this
+    // runs only when a per-turn knob is set.
+    const OBSERVE_ARMED_TURN_POLL_MS = 5;
+    const OBSERVE_ARMED_TURN_MAX_ATTEMPTS = 200; // ~1s ceiling; dispatch latency is far lower.
+    const observeArmedTurnId = (input: {
       readonly threadId: ThreadId;
       readonly priorTurnId: string | null;
+    }): Effect.Effect<string | null, never> =>
+      Effect.gen(function* () {
+        for (let attempt = 0; attempt < OBSERVE_ARMED_TURN_MAX_ATTEMPTS; attempt += 1) {
+          const option = yield* readThreadDetailOption(input.threadId);
+          const turn = Option.isSome(option) ? option.value.latestTurn : null;
+          if (turn !== null && turn.turnId !== input.priorTurnId) {
+            return turn.turnId;
+          }
+          yield* Effect.sleep(Duration.millis(OBSERVE_ARMED_TURN_POLL_MS));
+        }
+        return null;
+      });
+
+    // Block until the EXACT armed turn reaches a terminal state, or until `timeoutMs` elapses
+    // (Decision 10). Returns the terminal observation, or null on timeout (caller reports
+    // state: "running", answer: null and does NOT cancel the turn). Mechanism: subscribe to
+    // the engine's hot domain-event stream FIRST, then probe (covers a turn that already
+    // settled — subscribe-then-probe so no settle is missed), then re-probe on each event for
+    // this thread. The terminal state and answer are bound to `armedTurnId`: the turn row is
+    // read by id (survives a nulled latest_turn_id) and the answer comes only from that turn's
+    // own assistant message — never a prior turn's stale answer.
+    const waitForTurnTerminal = (input: {
+      readonly threadId: ThreadId;
+      readonly armedTurnId: string;
       readonly timeoutMs: number;
     }): Effect.Effect<TurnTerminalObservation | null, never> => {
-      // The new turn's terminal observation, carrying the ACTUAL terminal state
-      // (completed/interrupted/error) plus the answer extraction, or null if not yet
-      // terminal. The actual state matters: error/interrupted turns must report their real
-      // state, not the "completed" the answer-extraction would default to.
-      const observeTerminal = (thread: OrchestrationThread): TurnTerminalObservation | null => {
-        const turn = thread.latestTurn;
-        if (turn === null || turn.turnId === input.priorTurnId) {
-          return null;
-        }
+      const observeTerminal = (
+        turn: OrchestrationLatestTurn,
+        thread: OrchestrationThread,
+      ): TurnTerminalObservation | null => {
         if (turn.state !== "completed" && turn.state !== "interrupted" && turn.state !== "error") {
           return null;
         }
-        return { state: turn.state, extraction: extractLatestResponse(thread) };
+        // Bind the answer to THIS turn only: text exists solely for a completed turn whose own
+        // assistant message we can resolve; interrupted/error/edits-only => null answer.
+        const answer =
+          turn.state === "completed" ? assistantMessageForTurn(thread, turn.turnId) : null;
+        return {
+          state: turn.state,
+          extraction: {
+            inProgress: false,
+            turnId: turn.turnId,
+            turnState: turn.state === "completed" ? "completed" : null,
+            completedAt: turn.completedAt,
+            answer,
+          },
+        };
       };
 
-      // Probe the current snapshot for a terminal observation of the new turn, or null.
-      const probe: Effect.Effect<TurnTerminalObservation | null, never> = readThreadDetailOption(
-        input.threadId,
-      ).pipe(
-        Effect.map((option): TurnTerminalObservation | null =>
-          Option.match(option, { onNone: () => null, onSome: observeTerminal }),
-        ),
-      );
+      // Probe the current snapshot for a terminal observation of the ARMED turn, or null.
+      // Reads the turn state by id (authoritative even when latest_turn_id was nulled) and
+      // the detail snapshot for the answer message.
+      const probe: Effect.Effect<TurnTerminalObservation | null, never> = Effect.gen(function* () {
+        const turnOption = yield* readTurnStateOption(input.threadId, input.armedTurnId);
+        if (Option.isNone(turnOption)) {
+          return null;
+        }
+        const detailOption = yield* readThreadDetailOption(input.threadId);
+        if (Option.isNone(detailOption)) {
+          return null;
+        }
+        return observeTerminal(turnOption.value, detailOption.value);
+      });
 
       return Effect.gen(function* () {
         const settle: Effect.Effect<TurnTerminalObservation | null, never, never> =
           orchestrationEngine.streamDomainEvents.pipe(
             // Re-read on EVERY event for this thread (aggregateId carries the ThreadId for
-            // thread events); the terminal turn state is derived in the projection from
-            // session-set events, so we check derived state rather than guess the event type.
+            // thread events); the terminal turn state is derived in the projection, so we
+            // check derived state rather than guess the event type.
             Stream.filter((event) => event.aggregateId === input.threadId),
             Stream.mapEffect(() => probe),
-            // Keep the first event whose snapshot shows the new turn terminal.
+            // Keep the first event whose snapshot shows the armed turn terminal.
             Stream.filter(
               (observation): observation is TurnTerminalObservation => observation !== null,
             ),
@@ -911,16 +1002,13 @@ export const McpOrchestrationServiceLive = Layer.effect(
             Effect.catch(() => Effect.succeed<TurnTerminalObservation | null>(null)),
           );
 
-        const initial = yield* probe;
-        if (initial !== null) {
-          return initial;
-        }
-
-        // Race the settle stream against the wait timeout. On timeout the stream fiber is
-        // interrupted (it only holds a PubSub subscription) and we return null. We do NOT
-        // cancel the turn here — that is the distinct turn_timeout_ms/response_timeout_ms
-        // behavior. A second probe right before giving up closes the gap where the turn
-        // settled between the initial probe and the timeout firing.
+        // Race the settle stream against the wait timeout, starting the stream subscription
+        // BEFORE the initial probe so a completion landing in that window is not missed
+        // (subscribe-then-probe). The stream's own first action is the post-subscribe probe,
+        // so the initial snapshot is covered without a separate pre-subscribe read. On timeout
+        // the stream fiber is interrupted (it only holds a PubSub subscription) and we return
+        // null; we do NOT cancel the turn — that is the distinct turn/response_timeout_ms
+        // behavior. A final probe right before giving up closes the settle-vs-timeout gap.
         const raced = yield* Effect.race(
           settle,
           Effect.sleep(Duration.millis(input.timeoutMs)).pipe(
@@ -934,24 +1022,34 @@ export const McpOrchestrationServiceLive = Layer.effect(
       });
     };
 
-    // Arm a self-limiting watcher that cancels the turn if it is still running after
-    // `turnTimeoutMs` (Decision 8). Forked into the service-lifetime scope so it survives
-    // the MCP request return; it sleeps once, re-checks, conditionally interrupts, exits.
+    // Arm a self-limiting watcher that cancels the turn if the EXACT armed turn is still
+    // running after `turnTimeoutMs` (Decision 8). Forked into the service-lifetime scope so it
+    // survives the MCP request return — and so the MCP call does NOT block: the watcher itself
+    // observes which turn this dispatch started (it advances past priorTurnId), sleeps the
+    // budget, re-checks that exact turn by id, conditionally interrupts (passing that turn id),
+    // exits. If no new turn ever appears it no-ops.
     const armTurnTimeoutWatcher = (input: {
       readonly threadId: ThreadId;
       readonly priorTurnId: string | null;
       readonly turnTimeoutMs: number;
     }) =>
       Effect.gen(function* () {
-        yield* Effect.sleep(Duration.millis(input.turnTimeoutMs));
-        const option = yield* readThreadDetailOption(input.threadId);
-        if (Option.isNone(option)) {
+        const armedTurnId = yield* observeArmedTurnId({
+          threadId: input.threadId,
+          priorTurnId: input.priorTurnId,
+        });
+        if (armedTurnId === null) {
           return;
         }
-        // Only cancel if the *new* turn is still running; if it already completed (or a
-        // newer turn replaced it), do nothing — never cancel unrelated work.
-        if (isNewTurnRunning(option.value, input.priorTurnId)) {
-          yield* dispatchTurnInterrupt(input.threadId, "thread-turn-timeout-interrupt");
+        yield* Effect.sleep(Duration.millis(input.turnTimeoutMs));
+        // Only cancel if the ARMED turn is still running; if it already completed (or a newer
+        // turn replaced it), do nothing — never cancel unrelated work.
+        if (yield* isArmedTurnRunning(input.threadId, armedTurnId)) {
+          yield* dispatchTurnInterrupt({
+            threadId: input.threadId,
+            turnId: armedTurnId,
+            tag: "thread-turn-timeout-interrupt",
+          });
         }
       }).pipe(
         Effect.ignoreCause({ log: true }),
@@ -959,13 +1057,16 @@ export const McpOrchestrationServiceLive = Layer.effect(
         Effect.asVoid,
       );
 
-    // Arm a self-limiting watcher that cancels the turn if it is STILL blocked on the same
-    // pending request after `responseTimeoutMs` (Decision 3). It cancels — never approves.
-    // "Blocked on a pending request" is derived from the thread's activities exactly as
-    // get_thread_settings derives pendingRequests. Forked into the service-lifetime scope.
-    const armResponseTimeoutWatcher = (input: {
+    // Arm a self-limiting watcher that cancels the turn if a SPECIFIC pending request stays
+    // open ≥ `responseTimeoutMs` (Decision 3: "no single pending request unanswered longer
+    // than X"). It cancels — never approves. The set of open requests is derived from the
+    // thread's activities exactly as get_thread_settings derives pendingRequests; each open
+    // request gets its own watcher keyed by requestId, re-checking that that same request is
+    // still open at the deadline. Forked into the service-lifetime scope.
+    const armResponseTimeoutWatcherForRequest = (input: {
       readonly threadId: ThreadId;
-      readonly priorTurnId: string | null;
+      readonly armedTurnId: string;
+      readonly requestId: string;
       readonly responseTimeoutMs: number;
     }) =>
       Effect.gen(function* () {
@@ -975,13 +1076,88 @@ export const McpOrchestrationServiceLive = Layer.effect(
           return;
         }
         const thread = option.value;
-        // Cancel only when the new turn is still running AND still has an open request.
-        // If the request was answered (or the turn finished) within the window, do nothing.
-        const stillRunning = isNewTurnRunning(thread, input.priorTurnId);
-        const stillBlocked = derivePendingRequestsFromActivities(thread.activities).length > 0;
-        if (stillRunning && stillBlocked) {
-          yield* dispatchTurnInterrupt(input.threadId, "thread-response-timeout-interrupt");
+        // Cancel only when THIS request is still open AND the armed turn is still running. If
+        // the request was answered/resolved (or the turn finished) within the window, no-op.
+        const stillOpen = derivePendingRequestsFromActivities(thread.activities).some(
+          (request) => request.requestId === input.requestId,
+        );
+        if (!stillOpen) {
+          return;
         }
+        if (yield* isArmedTurnRunning(input.threadId, input.armedTurnId)) {
+          yield* dispatchTurnInterrupt({
+            threadId: input.threadId,
+            turnId: input.armedTurnId,
+            tag: "thread-response-timeout-interrupt",
+          });
+        }
+      }).pipe(
+        Effect.ignoreCause({ log: true }),
+        Effect.forkIn(turnTimeoutWatcherScope),
+        Effect.asVoid,
+      );
+
+    // Watch the armed turn's pending requests for a per-request response-timeout breach
+    // (Decision 3). Forked (non-blocking): it first observes which turn this dispatch started,
+    // then watches that turn's open requests. Each currently-open request is watched
+    // independently: a request open past the budget cancels the turn; one answered in time does
+    // not. Because a request can open AFTER dispatch (the model asks mid-turn), this re-scans
+    // for newly-opened requests on each domain event for the thread until the armed turn is no
+    // longer running, arming a per-request watcher the first time each requestId is seen.
+    const watchArmedTurnResponseTimeouts = (input: {
+      readonly threadId: ThreadId;
+      readonly priorTurnId: string | null;
+      readonly responseTimeoutMs: number;
+    }) =>
+      Effect.gen(function* () {
+        const armedTurnId = yield* observeArmedTurnId({
+          threadId: input.threadId,
+          priorTurnId: input.priorTurnId,
+        });
+        if (armedTurnId === null) {
+          return;
+        }
+        const armed = new Set<string>();
+        const armForOpenRequests = (thread: OrchestrationThread) =>
+          Effect.forEach(
+            derivePendingRequestsFromActivities(thread.activities).filter(
+              (request) => !armed.has(request.requestId),
+            ),
+            (request) => {
+              armed.add(request.requestId);
+              return armResponseTimeoutWatcherForRequest({
+                threadId: input.threadId,
+                armedTurnId,
+                requestId: request.requestId,
+                responseTimeoutMs: input.responseTimeoutMs,
+              });
+            },
+            { discard: true },
+          );
+
+        // Arm for any requests already open at dispatch time.
+        const initial = yield* readThreadDetailOption(input.threadId);
+        if (Option.isSome(initial)) {
+          yield* armForOpenRequests(initial.value);
+        }
+
+        // Then follow the thread's events, arming watchers for late-opening requests, until
+        // the armed turn is no longer running (terminal) — at which point no further request
+        // can open for it. streamDomainEvents has no failure channel in practice; defend it.
+        yield* orchestrationEngine.streamDomainEvents.pipe(
+          Stream.filter((event) => event.aggregateId === input.threadId),
+          Stream.takeUntilEffect(() =>
+            isArmedTurnRunning(input.threadId, armedTurnId).pipe(Effect.map((running) => !running)),
+          ),
+          Stream.runForEach(() =>
+            readThreadDetailOption(input.threadId).pipe(
+              Effect.flatMap((option) =>
+                Option.isSome(option) ? armForOpenRequests(option.value) : Effect.void,
+              ),
+            ),
+          ),
+          Effect.catch(() => Effect.void),
+        );
       }).pipe(
         Effect.ignoreCause({ log: true }),
         Effect.forkIn(turnTimeoutWatcherScope),
@@ -1030,9 +1206,12 @@ export const McpOrchestrationServiceLive = Layer.effect(
     };
 
     // Shared post-dispatch control loop for the per-turn options on send_thread_message and
-    // create_thread (Decisions 3, 8, 10). It (1) arms the auto-cancel watchers when
-    // turn_timeout_ms / response_timeout_ms are set, then (2) optionally blocks for
-    // wait_for_response. The three compose: watchers can cancel the turn while the wait
+    // create_thread (Decisions 3, 8, 10). It first resolves the EXACT id of the turn this
+    // dispatch started (observing the projection), then (1) arms the auto-cancel watchers
+    // against THAT turn when turn_timeout_ms / response_timeout_ms are set, and (2) optionally
+    // blocks for wait_for_response on THAT turn. Binding to the exact turn id is what keeps a
+    // late-firing timer from interrupting a newer turn, and the wait from returning a prior
+    // turn's stale answer. The three compose: watchers can cancel the turn while the wait
     // blocks; whichever terminal/timeout condition fires first wins. Returns the `wait`
     // fragment (or undefined when wait_for_response is off) to merge into the tool response.
     const applyTurnControlOptions = (input: {
@@ -1049,6 +1228,11 @@ export const McpOrchestrationServiceLive = Layer.effect(
       Effect.gen(function* () {
         const turnTimeoutMs = normalizeTimeoutMs(input.options.turnTimeoutMs);
         const responseTimeoutMs = normalizeTimeoutMs(input.options.responseTimeoutMs);
+        const wantsWait = input.options.waitForResponse === true;
+
+        // Arm the auto-cancel watchers WITHOUT blocking the MCP call: each forked watcher
+        // observes which turn this dispatch started (the turn that advances past priorTurnId)
+        // and binds to that exact id, so a late-firing timer never interrupts a newer turn.
         if (turnTimeoutMs !== null) {
           yield* armTurnTimeoutWatcher({
             threadId: input.threadId,
@@ -1057,35 +1241,44 @@ export const McpOrchestrationServiceLive = Layer.effect(
           });
         }
         if (responseTimeoutMs !== null) {
-          yield* armResponseTimeoutWatcher({
+          yield* watchArmedTurnResponseTimeouts({
             threadId: input.threadId,
             priorTurnId: input.priorTurnId,
             responseTimeoutMs,
           });
         }
 
-        if (input.options.waitForResponse !== true) {
+        if (!wantsWait) {
           return undefined;
         }
 
-        const waitTimeoutMs = normalizeTimeoutMs(input.options.waitTimeoutMs);
-        // wait_for_response requires a bound so the MCP call cannot hang indefinitely. When
-        // timeout_ms is omitted, fall back to turn_timeout_ms if set, else a conservative
-        // default ceiling, so the call always returns.
-        const effectiveWaitMs =
-          waitTimeoutMs ?? turnTimeoutMs ?? DEFAULT_WAIT_FOR_RESPONSE_TIMEOUT_MS;
-        const terminal = yield* waitForTurnTerminal({
+        // wait_for_response blocks: capture the exact turn this dispatch started, then wait for
+        // THAT turn (its answer is bound to that turn only — never a prior turn's stale answer).
+        const armedTurnId = yield* observeArmedTurnId({
           threadId: input.threadId,
           priorTurnId: input.priorTurnId,
-          timeoutMs: effectiveWaitMs,
         });
+        const waitTimeoutMs = normalizeTimeoutMs(input.options.waitTimeoutMs);
+        // wait_for_response requires a bound so the MCP call cannot hang indefinitely. When
+        // timeoutMs is omitted, fall back to turnTimeoutMs if set, else a conservative default
+        // ceiling, so the call always returns.
+        const effectiveWaitMs =
+          waitTimeoutMs ?? turnTimeoutMs ?? DEFAULT_WAIT_FOR_RESPONSE_TIMEOUT_MS;
+        const terminal =
+          armedTurnId === null
+            ? null
+            : yield* waitForTurnTerminal({
+                threadId: input.threadId,
+                armedTurnId,
+                timeoutMs: effectiveWaitMs,
+              });
         if (terminal === null) {
-          // Wait timed out: stop waiting, leave the turn running, return null answer. This
-          // is distinct from turn_timeout_ms/response_timeout_ms, which CANCEL the turn.
+          // Wait timed out (or no new turn was observed): stop waiting, leave any turn
+          // running, return null answer. Distinct from turn/responseTimeoutMs, which CANCEL.
           return {
             threadId: input.threadId,
             state: "running",
-            turnId: null,
+            turnId: armedTurnId,
             answer: null,
             timedOut: true as const,
           };
@@ -2380,24 +2573,43 @@ export const McpOrchestrationServiceLive = Layer.effect(
                   files,
                 };
 
-                // Shared maxCharacters -> payload_too_large guard (mirrors get_thread_messages):
-                // a large diff must not exceed one MCP response. The per-file summary still
-                // tells the agent what changed, so it can re-request with a tighter range.
-                const encoded = yield* encodeJsonString(payload).pipe(
-                  Effect.mapError((error) =>
-                    toInternalError("Failed to encode MCP thread diff payload.", error),
-                  ),
-                );
+                const encodeSize = (value: GetThreadDiffResult) =>
+                  encodeJsonString(value).pipe(
+                    Effect.mapError((error) =>
+                      toInternalError("Failed to encode MCP thread diff payload.", error),
+                    ),
+                    Effect.map((encoded) => Buffer.byteLength(encoded, "utf8")),
+                  );
+
+                // maxCharacters guard (mirrors get_thread_messages) — but the triage file
+                // summary must survive truncation (Decision 7). When the full payload (with the
+                // unified patch) exceeds the budget, drop the `diff`, keep the per-file `files`
+                // summary, and flag `truncated: true` so the agent still sees WHAT changed and
+                // can re-request a narrower range. Only when even the summary-only payload can't
+                // fit do we fall back to payload_too_large.
                 const budget = input.maxCharacters ?? MCP_STRUCTURED_RESPONSE_MAX_BYTES;
-                if (Buffer.byteLength(encoded, "utf8") > budget) {
-                  return yield* new McpOrchestrationError({
-                    code: "payload_too_large",
-                    message: `Thread '${input.threadId}' diff is too large for one MCP response.`,
-                    detail:
-                      "Retry with a narrower turn range or a larger maxCharacters; the file summary lists what changed.",
-                  });
+                if ((yield* encodeSize(payload)) <= budget) {
+                  return payload;
                 }
-                return payload;
+                const truncatedPayload: GetThreadDiffResult = {
+                  threadId: diffResult.threadId,
+                  fromTurnCount: diffResult.fromTurnCount,
+                  toTurnCount: diffResult.toTurnCount,
+                  diff: "",
+                  files,
+                  truncated: true,
+                  truncatedNote:
+                    "Unified diff omitted because it exceeded maxCharacters; the files summary lists what changed. Re-request a narrower turn range or a larger maxCharacters for the full patch.",
+                };
+                if ((yield* encodeSize(truncatedPayload)) <= budget) {
+                  return truncatedPayload;
+                }
+                return yield* new McpOrchestrationError({
+                  code: "payload_too_large",
+                  message: `Thread '${input.threadId}' diff is too large for one MCP response, and even its file summary exceeds maxCharacters.`,
+                  detail:
+                    "Retry with a narrower turn range or a larger maxCharacters; the file summary lists what changed.",
+                });
               }),
           ),
         ),
@@ -2580,13 +2792,37 @@ export const McpOrchestrationServiceLive = Layer.effect(
                       checkoutInheritanceThread.worktreePath !== null)
                   ? "new_worktree"
                   : "current_checkout");
-          const hasDeferredEmptyNewWorktree =
-            !input.message &&
-            input.checkoutMode === "new_worktree" &&
-            input.baseBranch === undefined;
-          const shouldPrepareWorktree =
-            input.message !== undefined &&
-            (input.checkoutMode === "new_worktree" || input.baseBranch !== undefined);
+          // A resolved `new_worktree` thread is satisfied by INHERITING an existing worktree
+          // only when checkout was OMITTED (an explicit new_worktree means a fresh checkout,
+          // never inheritance) and the inheritance thread (same project) already has one; then
+          // we point the new thread at that worktree rather than preparing a fresh one.
+          // Otherwise the resolved new_worktree has no worktree to inherit and the first turn
+          // must create one.
+          const inheritsExistingWorktree =
+            input.checkoutMode === undefined &&
+            !hasExplicitCheckoutMetadata &&
+            input.branch === undefined &&
+            isSameProjectTarget &&
+            (checkoutInheritanceThread.branch !== null ||
+              checkoutInheritanceThread.worktreePath !== null);
+          // Base the worktree-prep decision on the RESOLVED checkout mode, not the raw input
+          // (the #2 fix): when the safe default selected `new_worktree` and there is nothing to
+          // inherit, the first turn must still prepare a real worktree — otherwise the thread
+          // carries new_worktree metadata with no worktree behind it (Decision 4). Preparing a
+          // worktree needs a base ref; when the caller omits baseBranch under the safe default,
+          // branch off the project's current checkout (`HEAD`) so the isolated worktree is
+          // created from wherever the project currently sits. An explicit baseBranch is used
+          // verbatim. An explicit `new_worktree` (input.checkoutMode set) still requires
+          // baseBranch via validateCreateThreadCheckout, preserving that contract.
+          const willCreateFreshWorktree =
+            desiredCheckoutMode === "new_worktree" && !inheritsExistingWorktree;
+          const effectiveBaseBranch =
+            input.baseBranch ?? (willCreateFreshWorktree ? "HEAD" : undefined);
+          // A deferred (no-message) new_worktree thread records branch metadata now and prepares
+          // a FRESH worktree on its first message later — so it never prepares here, and only
+          // when it is not inheriting an existing checkout (otherwise it points at that one).
+          const hasDeferredEmptyNewWorktree = !input.message && willCreateFreshWorktree;
+          const shouldPrepareWorktree = input.message !== undefined && willCreateFreshWorktree;
           const bootstrapBranch = shouldPrepareWorktree
             ? (input.branch ?? buildTemporaryWorktreeBranchName(randomHex))
             : null;
@@ -2613,7 +2849,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           const title = sanitizeThreadTitle(input.title ?? input.message ?? "New thread");
           const createdAt = yield* currentIsoTimestamp();
           const threadId = makeThreadId();
-          const bootstrapBaseBranch = input.baseBranch;
+          const bootstrapBaseBranch = effectiveBaseBranch;
           const createdThread = {
             id: threadId,
             projectId: targetProjectId,
@@ -3087,6 +3323,22 @@ export const McpOrchestrationServiceLive = Layer.effect(
           };
           const thread = yield* requireThreadDetail(input.threadId);
           yield* requireThreadManageableByMcp(thread);
+          // Reject a stale/resolved/unknown requestId BEFORE dispatch (plan invariant): the
+          // open request set is derived from the thread's activities exactly as
+          // get_thread_settings.pendingRequests is. A missing approval requestId is a
+          // diagnosable error rather than a silently-dropped command. The downstream
+          // provider/projection race (the request resolving between this check and dispatch)
+          // is still handled by the existing stale-respond activity accounting.
+          const openRequests = derivePendingRequestsFromActivities(thread.activities);
+          const openApproval = openRequests.find(
+            (request) => request.kind === "approval" && request.requestId === input.requestId,
+          );
+          if (openApproval === undefined) {
+            return yield* new McpOrchestrationError({
+              code: "stale_request",
+              message: `stale_request: Approval request '${input.requestId}' is not open on thread '${input.threadId}'. Discover open requests via get_thread_settings (pendingRequests); it may already be resolved or interrupted.`,
+            });
+          }
           const accepted = yield* orchestrationEngine
             .dispatch({
               type: "thread.approval.respond",
@@ -3117,6 +3369,19 @@ export const McpOrchestrationServiceLive = Layer.effect(
           };
           const thread = yield* requireThreadDetail(input.threadId);
           yield* requireThreadManageableByMcp(thread);
+          // Reject a stale/resolved/unknown user-input requestId BEFORE dispatch (plan
+          // invariant), mirroring respond_to_approval. Open requests are derived from the
+          // thread's activities exactly as get_thread_settings.pendingRequests is.
+          const openRequests = derivePendingRequestsFromActivities(thread.activities);
+          const openUserInput = openRequests.find(
+            (request) => request.kind === "user-input" && request.requestId === input.requestId,
+          );
+          if (openUserInput === undefined) {
+            return yield* new McpOrchestrationError({
+              code: "stale_request",
+              message: `stale_request: User-input request '${input.requestId}' is not open on thread '${input.threadId}'. Discover open requests via get_thread_settings (pendingRequests); it may already be resolved or interrupted.`,
+            });
+          }
           const accepted = yield* orchestrationEngine
             .dispatch({
               type: "thread.user-input.respond",

@@ -145,6 +145,7 @@ const makeIntegrationLayer = (dispatchedCommands: Array<OrchestrationCommand>) =
             Effect.succeed(
               threadId === currentThreadId ? Option.some(currentThread) : Option.none(),
             ),
+          getThreadTurnStateById: () => Effect.succeed(Option.none()),
           searchThreadMessagesByProject: () => Effect.succeed([]),
         }),
       ),

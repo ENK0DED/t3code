@@ -204,6 +204,7 @@ describe("OrchestrationEngine", () => {
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadCreatorById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          getThreadTurnStateById: () => Effect.succeed(Option.none()),
           searchThreadMessagesByProject: () => Effect.succeed([]),
         }),
       ),

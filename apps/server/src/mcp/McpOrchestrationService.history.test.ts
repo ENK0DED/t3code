@@ -174,6 +174,7 @@ const projectionQueryMock = (input: {
           ? Option.some(input.threadDetail)
           : Option.none(),
       ),
+    getThreadTurnStateById: () => Effect.succeed(Option.none()),
     listProjectShells: () => Effect.succeed([] satisfies ReadonlyArray<OrchestrationProjectShell>),
     listThreadShellsByProject: () => Effect.succeed([]),
     searchThreadMessagesByProject: () => Effect.succeed([]),
@@ -1135,7 +1136,58 @@ it.effect("get_thread_diff passes an explicit turn range through to the turn-ran
   })(),
 );
 
-it.effect("get_thread_diff enforces maxCharacters with a payload_too_large error", () =>
+// #9 regression: when the unified diff exceeds maxCharacters but the per-file summary fits,
+// the diff is dropped (returned empty) with truncated: true and the files summary retained —
+// the triage summary survives truncation rather than the whole call erroring.
+it.effect("get_thread_diff drops the diff but keeps the file summary when over maxCharacters", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = (yield* service.getThreadDiff({
+      threadId: diffThreadId,
+      // Large enough for the small file summary + truncation note, far too small for the diff.
+      maxCharacters: 400,
+    })) as {
+      readonly diff: string;
+      readonly files: ReadonlyArray<{ readonly path: string }>;
+      readonly truncated?: boolean;
+    };
+
+    expect(result.truncated).toBe(true);
+    expect(result.diff).toBe("");
+    // The triage summary survived truncation.
+    expect(result.files).toEqual([
+      { path: "src/big.ts", kind: "modified", additions: 1, deletions: 0 },
+    ]);
+  }).pipe(
+    Effect.provide(
+      makeHistoryHarnessLayer({
+        threadDetail: diffThreadDetail,
+        checkpointContext: makeCheckpointContext({
+          threadId: diffThreadId,
+          checkpoints: [
+            makeCheckpointSummary({
+              checkpointTurnCount: 1,
+              files: [
+                { path: "src/big.ts", kind: "modified", additions: 1, deletions: 0 } as never,
+              ],
+            }),
+          ],
+        }),
+        diff: {
+          fullThreadDiff: {
+            threadId: diffThreadId,
+            fromTurnCount: 0,
+            toTurnCount: 1,
+            diff: "x".repeat(5_000),
+          },
+        },
+      }),
+    ),
+  ),
+);
+
+// #9 fallback: when even the file summary cannot fit the budget, payload_too_large is returned.
+it.effect("get_thread_diff returns payload_too_large when even the summary cannot fit", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;
     const exit = yield* Effect.exit(

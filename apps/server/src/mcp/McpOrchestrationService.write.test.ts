@@ -235,6 +235,7 @@ const projectionQueryMock = (input: {
           ? Option.some(input.threadDetailById[String(threadId)]!)
           : Option.none(),
       ),
+    getThreadTurnStateById: () => Effect.succeed(Option.none()),
     searchThreadMessagesByProject: () => Effect.succeed([]),
   });
 
@@ -1553,7 +1554,13 @@ it.effect(
 );
 
 it.effect(
-  "createThread in another project does not inherit the source thread checkout metadata",
+  // #2 regression: an omitted-checkout top-level create+message resolves the safe default
+  // new_worktree (Decision 4). Cross-project, there is no source checkout to inherit, so the
+  // first turn must PREPARE a fresh isolated worktree (off HEAD) rather than silently running
+  // unsupervised in the target project's shared tree — and it must NOT inherit the source
+  // thread's feature/current. Previously this set new_worktree-implying metadata but prepared
+  // no worktree (the shouldPrepareWorktree-vs-desiredCheckoutMode mismatch).
+  "createThread in another project prepares a fresh worktree instead of inheriting the source checkout",
   () =>
     (() => {
       const dispatchedCommands: Array<OrchestrationCommand> = [];
@@ -1581,31 +1588,20 @@ it.effect(
           status: "accepted",
           threadId: expect.any(String),
           messageId: expect.any(String),
-          sequence: 2,
         });
-        expect(dispatchedCommands.map((command) => command.type)).toEqual([
-          "thread.create",
-          "thread.turn.start",
-        ]);
-        expect(dispatchedCommands[0]).toMatchObject({
-          type: "thread.create",
-          parentThreadId: null,
-          projectId: "project-other",
-          title: "Cross-project follow-up",
-          branch: null,
-          worktreePath: null,
-        });
-        expect(dispatchedCommands[1]).toMatchObject({
-          type: "thread.turn.start",
-          threadId: result.threadId,
-          message: {
-            role: "user",
-            text: "Start this in the other project",
-            attachments: [],
+        // The first turn prepares a worktree, so a bootstrapped turn.start sequence is dispatched.
+        expect(dispatchedCommands.map((command) => command.type)).toContain("thread.turn.start");
+        // It did NOT inherit feature/current; instead it created a fresh branch off HEAD in the
+        // TARGET project's workspace.
+        expect(createWorktreeCalls).toEqual([
+          {
+            cwd: "/work/other",
+            refName: "HEAD",
+            newRefName: expect.any(String),
+            path: null,
           },
-        });
-        expect(createWorktreeCalls).toEqual([]);
-        expect(setupRunCalls).toEqual([]);
+        ]);
+        expect(createWorktreeCalls[0]?.newRefName).not.toBe("feature/current");
       }).pipe(
         Effect.provide(
           makeWriteHarnessLayer({
@@ -1622,6 +1618,63 @@ it.effect(
               }),
             ],
           }),
+        ),
+      );
+    })(),
+);
+
+it.effect(
+  // #2 regression (core case): a top-level create+message with checkout OMITTED, where the
+  // current credential thread is on current_checkout (no inheritable worktree), must PREPARE
+  // an isolated worktree on its first turn — the omitted default resolves new_worktree
+  // (Decision 4) and there is nothing to inherit. The bug set new_worktree metadata but the
+  // bootstrap carried no prepareWorktree, so the child silently ran in the shared tree.
+  "createThread top-level with omitted checkout prepares a worktree on the first turn",
+  () =>
+    (() => {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      const createWorktreeCalls: Array<{
+        readonly cwd: string;
+        readonly refName: string;
+        readonly newRefName?: string | undefined;
+        readonly path: string | null;
+      }> = [];
+      const setupRunCalls: Array<{
+        readonly threadId: string;
+        readonly projectId?: string;
+        readonly projectCwd?: string;
+        readonly worktreePath: string;
+      }> = [];
+      return Effect.gen(function* () {
+        const service = yield* McpOrchestrationService;
+        yield* service.createThread({
+          title: "Isolated top-level task",
+          message: "Do the thing in isolation",
+        });
+
+        // The first turn prepares a worktree: the bootstrap dispatcher runs createWorktree off
+        // HEAD with a derived branch (the bug prepared none), then dispatches the bootstrapped
+        // thread.create + thread.meta.update + thread.turn.start sequence.
+        expect(createWorktreeCalls).toEqual([
+          {
+            cwd: "/work/current",
+            refName: "HEAD",
+            newRefName: expect.any(String),
+            path: null,
+          },
+        ]);
+        expect(dispatchedCommands.map((command) => command.type)).toEqual([
+          "thread.create",
+          "thread.meta.update",
+          "thread.activity.append",
+          "thread.activity.append",
+          "thread.turn.start",
+        ]);
+        // A setup script ran in the freshly-prepared worktree (runSetupScript: true).
+        expect(setupRunCalls).toHaveLength(1);
+      }).pipe(
+        Effect.provide(
+          makeWriteHarnessLayer({ dispatchedCommands, createWorktreeCalls, setupRunCalls }),
         ),
       );
     })(),

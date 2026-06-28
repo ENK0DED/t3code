@@ -1162,6 +1162,84 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  // #5 regression: getThreadTurnStateById reads a concrete turn row by id DIRECTLY (not via
+  // latest_turn_id), so a completed turn is resolvable even after the projection nulled
+  // latest_turn_id when the session went ready — which is what keeps a completed answer-only
+  // turn observable to the MCP wait/watchers.
+  it.effect("getThreadTurnStateById resolves a turn by id even when latest_turn_id is null", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_turns`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        )
+        VALUES (
+          'project-1', 'Project 1', '/tmp/project-1',
+          '{"provider":"codex","model":"gpt-5-codex"}', '[]',
+          '2026-04-02T00:00:00.000Z', '2026-04-02T00:00:01.000Z', NULL
+        )
+      `;
+
+      // latest_turn_id is NULL (session went ready) even though a completed turn row exists.
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          branch, worktree_path, latest_turn_id, latest_user_message_at,
+          pending_approval_count, pending_user_input_count, has_actionable_proposed_plan,
+          created_at, updated_at, archived_at, deleted_at
+        )
+        VALUES (
+          'thread-1', 'project-1', 'Thread 1',
+          '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+          NULL, NULL, NULL, '2026-04-02T00:00:04.000Z',
+          0, 0, 0,
+          '2026-04-02T00:00:02.000Z', '2026-04-02T00:00:03.000Z', NULL, NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id, turn_id, pending_message_id, source_proposed_plan_thread_id,
+          source_proposed_plan_id, assistant_message_id, state, requested_at, started_at,
+          completed_at, checkpoint_turn_count, checkpoint_ref, checkpoint_status,
+          checkpoint_files_json
+        )
+        VALUES (
+          'thread-1', 'turn-done', 'message-user-1', NULL, NULL, 'message-assistant-1',
+          'completed', '2026-04-02T00:00:05.000Z', '2026-04-02T00:00:06.000Z',
+          '2026-04-02T00:00:20.000Z', 5, 'checkpoint-5', 'ready', '[]'
+        )
+      `;
+
+      // Resolves the completed turn by id despite latest_turn_id being NULL.
+      const completed = yield* snapshotQuery.getThreadTurnStateById({
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-done"),
+      });
+      assert.equal(completed._tag, "Some");
+      if (completed._tag === "Some") {
+        assert.equal(completed.value.turnId, asTurnId("turn-done"));
+        assert.equal(completed.value.state, "completed");
+        assert.equal(completed.value.completedAt, "2026-04-02T00:00:20.000Z");
+        assert.equal(completed.value.assistantMessageId, "message-assistant-1");
+      }
+
+      // An unknown turn id resolves to None.
+      const missing = yield* snapshotQuery.getThreadTurnStateById({
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-nope"),
+      });
+      assert.equal(missing._tag, "None");
+    }),
+  );
+
   it.effect("uses projection_threads.latest_turn_id for bulk command and shell snapshots", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

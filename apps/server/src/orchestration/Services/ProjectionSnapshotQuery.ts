@@ -9,6 +9,7 @@
 import type {
   CheckpointRef,
   OrchestrationCheckpointSummary,
+  OrchestrationLatestTurn,
   OrchestrationProject,
   OrchestrationProjectShell,
   OrchestrationReadModel,
@@ -18,6 +19,7 @@ import type {
   ThreadCreatedVia,
   ProjectId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Option from "effect/Option";
@@ -191,6 +193,22 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadDetailById: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
+
+  /**
+   * Read a single concrete turn's lifecycle state by `{threadId, turnId}`,
+   * reading the `projection_turns` row DIRECTLY (never via the thread's
+   * `latest_turn_id` pointer). The thread-shell projector nulls `latest_turn_id`
+   * when a session goes ready/idle/error (`activeTurnId` becomes null), which
+   * makes a just-completed answer-only turn invisible to `latestTurn`; this
+   * by-id lookup still resolves that turn's true terminal state. Used by the MCP
+   * per-turn watchers and `wait_for_response` to bind to the EXACT turn a
+   * dispatch started rather than whatever turn `latest_turn_id` happens to point
+   * at. Returns `None` for an unknown or pending-placeholder turn.
+   */
+  readonly getThreadTurnStateById: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+  }) => Effect.Effect<Option.Option<OrchestrationLatestTurn>, ProjectionRepositoryError>;
 
   /**
    * Search projected thread messages for a project.

@@ -943,6 +943,43 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
+  // Read a concrete turn row directly by {threadId, turnId}. Unlike the
+  // latest-turn helpers this does NOT join on threads.latest_turn_id, so it
+  // resolves a turn's true state even after the thread-shell projector nulled
+  // latest_turn_id (session went ready/idle/error). Pending placeholder rows
+  // carry turn_id = NULL and never match an equality on a concrete turn id.
+  const getThreadTurnRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ threadId: ThreadId, turnId: TurnId }),
+    Result: ProjectionLatestTurnDbRowSchema,
+    execute: ({ threadId, turnId }) =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          state,
+          requested_at AS "requestedAt",
+          started_at AS "startedAt",
+          completed_at AS "completedAt",
+          assistant_message_id AS "assistantMessageId",
+          source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
+          source_proposed_plan_id AS "sourceProposedPlanId"
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND turn_id = ${turnId}
+      `,
+  });
+
+  const getThreadTurnStateById: ProjectionSnapshotQueryShape["getThreadTurnStateById"] = (input) =>
+    getThreadTurnRow(input).pipe(
+      Effect.map(Option.map(mapLatestTurn)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getThreadTurnStateById:query",
+          "ProjectionSnapshotQuery.getThreadTurnStateById:decodeRow",
+        ),
+      ),
+    );
+
   const getActiveThreadRowById = SqlSchema.findOneOption({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadDbRowSchema,
@@ -2312,6 +2349,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadShellById,
     getThreadCreatorById,
     getThreadDetailById,
+    getThreadTurnStateById,
     searchThreadMessagesByProject,
   } satisfies ProjectionSnapshotQueryShape;
 });
