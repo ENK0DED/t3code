@@ -2583,6 +2583,56 @@ it.effect("createThread rejects branch without explicit new_worktree checkout mo
   }).pipe(Effect.provide(makeWriteHarnessLayer({}))),
 );
 
+it.effect(
+  "sendThreadMessage resumes a thread in any turn-ended session state (stopped/interrupted/error) but rejects an in-progress one (starting)",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      // Turn-ended sessions are resumable — the provider reactor re-establishes/reuses a
+      // session on the next turn-start — so the MCP write gate must admit them, not only
+      // idle/ready (mirroring the WS/UI path, which has no idle gate).
+      for (const status of ["stopped", "interrupted", "error"] as const) {
+        const result = yield* service.sendThreadMessage({
+          threadId: ThreadId.make(`thread-${status}`),
+          message: "Resume",
+        });
+        expect((result as { readonly status: string }).status).toBe("accepted");
+      }
+      // A session mid-turn ("starting") is still rejected.
+      const startingExit = yield* Effect.exit(
+        service.sendThreadMessage({
+          threadId: ThreadId.make("thread-starting"),
+          message: "Resume",
+        }),
+      );
+      expect(Exit.isFailure(startingExit)).toBe(true);
+      if (Exit.isFailure(startingExit)) {
+        expect(Cause.pretty(startingExit.cause)).toContain("non_idle_thread");
+      }
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          threadDetails: [
+            ...(["stopped", "interrupted", "error"] as const).map((status) =>
+              threadDetail({
+                id: ThreadId.make(`thread-${status}`),
+                branch: null,
+                worktreePath: null,
+                session: { status, activeTurnId: null } as never,
+                latestTurn: { state: status === "error" ? "error" : "completed" } as never,
+              }),
+            ),
+            threadDetail({
+              id: ThreadId.make("thread-starting"),
+              session: { status: "starting", activeTurnId: null } as never,
+              latestTurn: { state: "starting" } as never,
+            }),
+          ],
+        }),
+      ),
+    ),
+);
+
 it.effect("sendThreadMessage rejects running target threads", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;

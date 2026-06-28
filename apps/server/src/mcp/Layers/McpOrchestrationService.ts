@@ -641,8 +641,17 @@ function isThreadIdleReady(thread: {
   const hasActiveTurn =
     thread.session?.activeTurnId !== null && thread.session?.activeTurnId !== undefined;
   const sessionStatus = thread.session?.status ?? "idle";
-  const sessionReady =
-    thread.session === null || sessionStatus === "idle" || sessionStatus === "ready";
+  // A thread is writable whenever no turn is actively in progress. Only "starting" and
+  // "running" mean a turn is in flight (matching the projector's
+  // settledTurnStateForSessionStatus, which returns null for exactly those two); every
+  // other status ("idle"/"ready"/"stopped"/"interrupted"/"error") is a turn-ended state
+  // the provider reactor resumes on the next turn-start (it establishes a fresh session
+  // for "stopped" and reuses the live one otherwise). This matches the WS/UI path, which
+  // has no idle gate, and the single-active-turn decider invariant is the authoritative
+  // backstop — so this pre-check can safely admit every settled state. A null session is a
+  // brand-new thread (first turn).
+  const sessionInTurn = sessionStatus === "starting" || sessionStatus === "running";
+  const sessionReady = thread.session === null || !sessionInTurn;
   return !latestRunning && !hasActiveTurn && sessionReady;
 }
 
