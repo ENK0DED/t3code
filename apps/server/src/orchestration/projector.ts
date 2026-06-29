@@ -723,6 +723,9 @@ export function projectEvent(
         }),
       );
 
+    case "thread.turn-provider-signaled":
+      return Effect.succeed(nextBase);
+
     default:
       return Effect.succeed(nextBase);
   }

@@ -132,6 +132,16 @@ export type ThreadCreatedVia = typeof ThreadCreatedVia.Type;
 export const DEFAULT_THREAD_CREATED_VIA: ThreadCreatedVia = "user";
 export const ProviderRequestKind = Schema.Literals(["command", "file-read", "file-change"]);
 export type ProviderRequestKind = typeof ProviderRequestKind.Type;
+export const ThreadTurnProviderSignalKind = Schema.Literals([
+  "assistant_text",
+  "reasoning",
+  "tool",
+  "task",
+  "token_usage",
+  "request",
+  "lifecycle",
+]);
+export type ThreadTurnProviderSignalKind = typeof ThreadTurnProviderSignalKind.Type;
 export const AssistantDeliveryMode = Schema.Literals(["buffered", "streaming"]);
 export type AssistantDeliveryMode = typeof AssistantDeliveryMode.Type;
 export const ProviderApprovalDecision = Schema.Literals([
@@ -682,6 +692,16 @@ const ThreadSessionStopCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadTurnProviderSignalCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.provider-signal"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: TurnId,
+  signalKind: ThreadTurnProviderSignalKind,
+  signaledAt: IsoDateTime,
+  createdAt: IsoDateTime,
+});
+
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
@@ -699,6 +719,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
+  ThreadTurnProviderSignalCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -828,6 +849,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
+  "thread.turn-provider-signaled",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -1005,6 +1027,14 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
   activity: OrchestrationThreadActivity,
 });
 
+export const ThreadTurnProviderSignaledPayload = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  signalKind: ThreadTurnProviderSignalKind,
+  signaledAt: IsoDateTime,
+});
+export type ThreadTurnProviderSignaledPayload = typeof ThreadTurnProviderSignaledPayload.Type;
+
 export const OrchestrationEventMetadata = Schema.Struct({
   providerTurnId: Schema.optional(TrimmedNonEmptyString),
   providerItemId: Schema.optional(ProviderItemId),
@@ -1136,6 +1166,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.turn-provider-signaled"),
+    payload: ThreadTurnProviderSignaledPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;

@@ -14,6 +14,7 @@ import {
   OrchestrationProposedPlanId,
   OrchestrationCheckpointFile,
   OrchestrationCheckpointStatus,
+  ThreadTurnProviderSignalKind,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -44,6 +45,9 @@ export const ProjectionTurn = Schema.Struct({
   requestedAt: IsoDateTime,
   startedAt: Schema.NullOr(IsoDateTime),
   completedAt: Schema.NullOr(IsoDateTime),
+  lastProviderSignalAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  lastObservableProgressAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  lastSignalKind: Schema.optional(Schema.NullOr(ThreadTurnProviderSignalKind)),
   checkpointTurnCount: Schema.NullOr(NonNegativeInt),
   checkpointRef: Schema.NullOr(CheckpointRef),
   checkpointStatus: Schema.NullOr(OrchestrationCheckpointStatus),
@@ -62,6 +66,9 @@ export const ProjectionTurnById = Schema.Struct({
   requestedAt: IsoDateTime,
   startedAt: Schema.NullOr(IsoDateTime),
   completedAt: Schema.NullOr(IsoDateTime),
+  lastProviderSignalAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  lastObservableProgressAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  lastSignalKind: Schema.optional(Schema.NullOr(ThreadTurnProviderSignalKind)),
   checkpointTurnCount: Schema.NullOr(NonNegativeInt),
   checkpointRef: Schema.NullOr(CheckpointRef),
   checkpointStatus: Schema.NullOr(OrchestrationCheckpointStatus),
@@ -105,6 +112,14 @@ export const ClearCheckpointTurnConflictInput = Schema.Struct({
   checkpointTurnCount: NonNegativeInt,
 });
 export type ClearCheckpointTurnConflictInput = typeof ClearCheckpointTurnConflictInput.Type;
+
+export const RecordProviderSignalInput = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  signalKind: ThreadTurnProviderSignalKind,
+  signaledAt: IsoDateTime,
+});
+export type RecordProviderSignalInput = typeof RecordProviderSignalInput.Type;
 
 export interface ProjectionTurnRepositoryShape {
   /**
@@ -154,6 +169,10 @@ export interface ProjectionTurnRepositoryShape {
    */
   readonly clearCheckpointTurnConflict: (
     input: ClearCheckpointTurnConflictInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  readonly recordProviderSignal: (
+    input: RecordProviderSignalInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**

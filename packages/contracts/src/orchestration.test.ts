@@ -295,6 +295,59 @@ it.effect("accepts bootstrap metadata in thread.turn.start", () =>
   }),
 );
 
+it.effect("decodes thread.turn.provider-signal commands", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.turn.provider-signal",
+      commandId: "cmd-provider-signal",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      signalKind: "reasoning",
+      signaledAt: "2026-06-29T00:00:05.000Z",
+      createdAt: "2026-06-29T00:00:05.000Z",
+    });
+
+    assert.strictEqual(parsed.type, "thread.turn.provider-signal");
+    if (parsed.type !== "thread.turn.provider-signal") {
+      throw new Error("expected thread.turn.provider-signal command");
+    }
+    assert.strictEqual(parsed.signalKind, "reasoning");
+    assert.strictEqual(parsed.signaledAt, "2026-06-29T00:00:05.000Z");
+  }),
+);
+
+it.effect("decodes thread.turn-provider-signaled events", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationEvent({
+      sequence: 1,
+      eventId: "evt-provider-signal",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      occurredAt: "2026-06-29T00:00:05.000Z",
+      commandId: "cmd-provider-signal",
+      causationEventId: null,
+      correlationId: "cmd-provider-signal",
+      metadata: {},
+      type: "thread.turn-provider-signaled",
+      payload: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        signalKind: "reasoning",
+        signaledAt: "2026-06-29T00:00:05.000Z",
+      },
+    });
+
+    assert.strictEqual(parsed.type, "thread.turn-provider-signaled");
+    if (parsed.type !== "thread.turn-provider-signaled") {
+      throw new Error("expected thread.turn-provider-signaled event");
+    }
+    assert.strictEqual(parsed.payload.threadId, "thread-1");
+    assert.strictEqual(parsed.payload.turnId, "turn-1");
+    assert.strictEqual(parsed.payload.signalKind, "reasoning");
+    assert.strictEqual(parsed.payload.signaledAt, "2026-06-29T00:00:05.000Z");
+  }),
+);
+
 it.effect("decodes bootstrap createThread parent relationships in thread.turn.start", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadTurnStartCommand({

@@ -49,6 +49,7 @@ import Migration0033 from "./Migrations/033_ProjectionThreadsParentThreadId.ts";
 import Migration0034 from "./Migrations/034_ProjectionThreadMessagesFts.ts";
 import Migration0035 from "./Migrations/035_ProjectionThreadMessagesFtsContentlessRepair.ts";
 import Migration0036 from "./Migrations/036_ProjectionThreadProvenance.ts";
+import Migration0037 from "./Migrations/037_ProjectionTurnLiveness.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -97,6 +98,7 @@ export const migrationEntries = [
   [34, "ProjectionThreadMessagesFts", Migration0034],
   [35, "ProjectionThreadMessagesFtsContentlessRepair", Migration0035],
   [36, "ProjectionThreadProvenance", Migration0036],
+  [37, "ProjectionTurnLiveness", Migration0037],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

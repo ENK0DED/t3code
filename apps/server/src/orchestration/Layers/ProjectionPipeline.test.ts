@@ -2090,6 +2090,416 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("updates liveness only for the exact turn row on provider-signal events", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-06-29T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-provider-signal-exact");
+      const firstTurnId = TurnId.make("turn-provider-signal-1");
+      const secondTurnId = TurnId.make("turn-provider-signal-2");
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-ps-exact-1"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-ps-exact-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ps-exact-1"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-provider-signal-exact"),
+          title: "Provider signal exact row",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-ps-exact-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-06-29T00:00:01.000Z",
+        commandId: CommandId.make("cmd-ps-exact-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ps-exact-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: firstTurnId,
+            lastError: null,
+            updatedAt: "2026-06-29T00:00:01.000Z",
+          },
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-ps-exact-3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-06-29T00:00:02.000Z",
+        commandId: CommandId.make("cmd-ps-exact-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ps-exact-3"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: secondTurnId,
+            lastError: null,
+            updatedAt: "2026-06-29T00:00:02.000Z",
+          },
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.turn-provider-signaled",
+        eventId: EventId.make("evt-ps-exact-4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-06-29T00:00:05.000Z",
+        commandId: CommandId.make("cmd-ps-exact-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ps-exact-4"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnId: firstTurnId,
+          signalKind: "reasoning",
+          signaledAt: "2026-06-29T00:00:05.000Z",
+        },
+      });
+
+      const rows = yield* sql<{
+        readonly turnId: string;
+        readonly state: string;
+        readonly lastProviderSignalAt: string | null;
+        readonly lastObservableProgressAt: string | null;
+        readonly lastSignalKind: string | null;
+      }>`
+      SELECT
+        turn_id AS "turnId",
+        state,
+        last_provider_signal_at AS "lastProviderSignalAt",
+        last_observable_progress_at AS "lastObservableProgressAt",
+        last_signal_kind AS "lastSignalKind"
+      FROM projection_turns
+      WHERE thread_id = ${threadId}
+      ORDER BY requested_at ASC
+    `;
+      assert.deepEqual(rows, [
+        {
+          turnId: firstTurnId,
+          state: "completed",
+          lastProviderSignalAt: "2026-06-29T00:00:05.000Z",
+          lastObservableProgressAt: "2026-06-29T00:00:05.000Z",
+          lastSignalKind: "reasoning",
+        },
+        {
+          turnId: secondTurnId,
+          state: "running",
+          lastProviderSignalAt: null,
+          lastObservableProgressAt: null,
+          lastSignalKind: null,
+        },
+      ]);
+    }),
+  );
+
+  it.effect("does not move a terminal turn back to running after a provider-signal", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-06-29T00:10:00.000Z";
+      const threadId = ThreadId.make("thread-provider-signal-terminal");
+      const turnId = TurnId.make("turn-provider-signal-terminal");
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-ps-terminal-1"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-ps-terminal-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ps-terminal-1"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-provider-signal-terminal"),
+          title: "Provider signal terminal row",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-ps-terminal-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-06-29T00:10:01.000Z",
+        commandId: CommandId.make("cmd-ps-terminal-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ps-terminal-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: "2026-06-29T00:10:01.000Z",
+          },
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-ps-terminal-3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-06-29T00:10:02.000Z",
+        commandId: CommandId.make("cmd-ps-terminal-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ps-terminal-3"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-06-29T00:10:02.000Z",
+          },
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.turn-provider-signaled",
+        eventId: EventId.make("evt-ps-terminal-4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-06-29T00:10:05.000Z",
+        commandId: CommandId.make("cmd-ps-terminal-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ps-terminal-4"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnId,
+          signalKind: "tool",
+          signaledAt: "2026-06-29T00:10:05.000Z",
+        },
+      });
+
+      const rows = yield* sql<{
+        readonly state: string;
+        readonly completedAt: string | null;
+        readonly lastProviderSignalAt: string | null;
+        readonly lastObservableProgressAt: string | null;
+        readonly lastSignalKind: string | null;
+      }>`
+      SELECT
+        state,
+        completed_at AS "completedAt",
+        last_provider_signal_at AS "lastProviderSignalAt",
+        last_observable_progress_at AS "lastObservableProgressAt",
+        last_signal_kind AS "lastSignalKind"
+      FROM projection_turns
+      WHERE thread_id = ${threadId}
+        AND turn_id = ${turnId}
+    `;
+      assert.deepEqual(rows, [
+        {
+          state: "completed",
+          completedAt: "2026-06-29T00:10:02.000Z",
+          lastProviderSignalAt: "2026-06-29T00:10:05.000Z",
+          lastObservableProgressAt: "2026-06-29T00:10:05.000Z",
+          lastSignalKind: "tool",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("preserves liveness columns across later lifecycle upserts", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-06-29T00:20:00.000Z";
+      const threadId = ThreadId.make("thread-provider-signal-preserve");
+      const turnId = TurnId.make("turn-provider-signal-preserve");
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-ps-preserve-1"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-ps-preserve-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ps-preserve-1"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-provider-signal-preserve"),
+          title: "Provider signal preserve row",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-ps-preserve-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-06-29T00:20:01.000Z",
+        commandId: CommandId.make("cmd-ps-preserve-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ps-preserve-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: "2026-06-29T00:20:01.000Z",
+          },
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.turn-provider-signaled",
+        eventId: EventId.make("evt-ps-preserve-3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-06-29T00:20:05.000Z",
+        commandId: CommandId.make("cmd-ps-preserve-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ps-preserve-3"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnId,
+          signalKind: "assistant_text",
+          signaledAt: "2026-06-29T00:20:05.000Z",
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.session-set",
+        eventId: EventId.make("evt-ps-preserve-4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-06-29T00:20:10.000Z",
+        commandId: CommandId.make("cmd-ps-preserve-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ps-preserve-4"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-06-29T00:20:10.000Z",
+          },
+        },
+      });
+
+      const rows = yield* sql<{
+        readonly state: string;
+        readonly completedAt: string | null;
+        readonly lastProviderSignalAt: string | null;
+        readonly lastObservableProgressAt: string | null;
+        readonly lastSignalKind: string | null;
+      }>`
+      SELECT
+        state,
+        completed_at AS "completedAt",
+        last_provider_signal_at AS "lastProviderSignalAt",
+        last_observable_progress_at AS "lastObservableProgressAt",
+        last_signal_kind AS "lastSignalKind"
+      FROM projection_turns
+      WHERE thread_id = ${threadId}
+        AND turn_id = ${turnId}
+    `;
+      assert.deepEqual(rows, [
+        {
+          state: "completed",
+          completedAt: "2026-06-29T00:20:10.000Z",
+          lastProviderSignalAt: "2026-06-29T00:20:05.000Z",
+          lastObservableProgressAt: "2026-06-29T00:20:05.000Z",
+          lastSignalKind: "assistant_text",
+        },
+      ]);
+    }),
+  );
+
   it.effect("keeps accumulated assistant text when completion payload text is empty", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

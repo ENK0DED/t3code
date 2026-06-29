@@ -19,6 +19,7 @@ import {
   ProjectionTurnById,
   ProjectionTurnRepository,
   type ProjectionTurnRepositoryShape,
+  RecordProviderSignalInput,
 } from "../Services/ProjectionTurns.ts";
 
 const ProjectionTurnDbRowSchema = ProjectionTurn.mapFields(
@@ -58,6 +59,9 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           requested_at,
           started_at,
           completed_at,
+          last_provider_signal_at,
+          last_observable_progress_at,
+          last_signal_kind,
           checkpoint_turn_count,
           checkpoint_ref,
           checkpoint_status,
@@ -74,6 +78,9 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           ${row.requestedAt},
           ${row.startedAt},
           ${row.completedAt},
+          ${row.lastProviderSignalAt ?? null},
+          ${row.lastObservableProgressAt ?? null},
+          ${row.lastSignalKind ?? null},
           ${row.checkpointTurnCount},
           ${row.checkpointRef},
           ${row.checkpointStatus},
@@ -89,6 +96,18 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           requested_at = excluded.requested_at,
           started_at = excluded.started_at,
           completed_at = excluded.completed_at,
+          last_provider_signal_at = COALESCE(
+            excluded.last_provider_signal_at,
+            projection_turns.last_provider_signal_at
+          ),
+          last_observable_progress_at = COALESCE(
+            excluded.last_observable_progress_at,
+            projection_turns.last_observable_progress_at
+          ),
+          last_signal_kind = COALESCE(
+            excluded.last_signal_kind,
+            projection_turns.last_signal_kind
+          ),
           checkpoint_turn_count = excluded.checkpoint_turn_count,
           checkpoint_ref = excluded.checkpoint_ref,
           checkpoint_status = excluded.checkpoint_status,
@@ -185,6 +204,9 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           requested_at AS "requestedAt",
           started_at AS "startedAt",
           completed_at AS "completedAt",
+          last_provider_signal_at AS "lastProviderSignalAt",
+          last_observable_progress_at AS "lastObservableProgressAt",
+          last_signal_kind AS "lastSignalKind",
           checkpoint_turn_count AS "checkpointTurnCount",
           checkpoint_ref AS "checkpointRef",
           checkpoint_status AS "checkpointStatus",
@@ -218,6 +240,9 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           requested_at AS "requestedAt",
           started_at AS "startedAt",
           completed_at AS "completedAt",
+          last_provider_signal_at AS "lastProviderSignalAt",
+          last_observable_progress_at AS "lastObservableProgressAt",
+          last_signal_kind AS "lastSignalKind",
           checkpoint_turn_count AS "checkpointTurnCount",
           checkpoint_ref AS "checkpointRef",
           checkpoint_status AS "checkpointStatus",
@@ -242,6 +267,35 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
         WHERE thread_id = ${threadId}
           AND checkpoint_turn_count = ${checkpointTurnCount}
           AND (turn_id IS NULL OR turn_id <> ${turnId})
+      `,
+  });
+
+  const recordProviderSignalRow = SqlSchema.void({
+    Request: RecordProviderSignalInput,
+    execute: ({ threadId, turnId, signalKind, signaledAt }) =>
+      sql`
+        UPDATE projection_turns
+        SET
+          last_provider_signal_at =
+            CASE
+              WHEN last_provider_signal_at IS NULL OR last_provider_signal_at < ${signaledAt}
+              THEN ${signaledAt}
+              ELSE last_provider_signal_at
+            END,
+          last_observable_progress_at =
+            CASE
+              WHEN last_observable_progress_at IS NULL OR last_observable_progress_at < ${signaledAt}
+              THEN ${signaledAt}
+              ELSE last_observable_progress_at
+            END,
+          last_signal_kind =
+            CASE
+              WHEN last_provider_signal_at IS NULL OR last_provider_signal_at <= ${signaledAt}
+              THEN ${signalKind}
+              ELSE last_signal_kind
+            END
+        WHERE thread_id = ${threadId}
+          AND turn_id = ${turnId}
       `,
   });
 
@@ -337,6 +391,16 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("ProjectionTurnRepository.deleteByThreadId:query")),
     );
 
+  const recordProviderSignal: ProjectionTurnRepositoryShape["recordProviderSignal"] = (input) =>
+    recordProviderSignalRow(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionTurnRepository.recordProviderSignal:query",
+          "ProjectionTurnRepository.recordProviderSignal:encodeRequest",
+        ),
+      ),
+    );
+
   return {
     upsertByTurnId,
     replacePendingTurnStart,
@@ -345,6 +409,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
     listByThreadId,
     getByTurnId,
     clearCheckpointTurnConflict,
+    recordProviderSignal,
     deleteByThreadId,
   } satisfies ProjectionTurnRepositoryShape;
 });

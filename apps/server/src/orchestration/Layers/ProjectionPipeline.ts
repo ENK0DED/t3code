@@ -1267,6 +1267,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.turn-provider-signaled": {
+          yield* projectionTurnRepository.recordProviderSignal({
+            threadId: event.payload.threadId,
+            turnId: event.payload.turnId,
+            signalKind: event.payload.signalKind,
+            signaledAt: event.payload.signaledAt,
+          });
+          return;
+        }
+
         case "thread.message-sent": {
           if (event.payload.turnId === null || event.payload.role !== "assistant") {
             return;
