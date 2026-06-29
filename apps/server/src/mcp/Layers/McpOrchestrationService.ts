@@ -2491,12 +2491,20 @@ export const McpOrchestrationServiceLive = Layer.effect(
                   toInternalError("Failed to read orchestration threads.", error),
                 ),
                 Effect.flatMap((threads) => {
+                  const scopedThreads =
+                    input.parentThreadId === undefined
+                      ? threads
+                      : threads.filter((thread) => thread.parentThreadId === input.parentThreadId);
                   const terms = searchTerms(input.search);
                   if (terms.length === 0) {
-                    return Effect.succeed({ threads: threads.map(sanitizeThreadSelector) });
+                    return Effect.succeed({
+                      threads: scopedThreads.map(sanitizeThreadSelector),
+                    });
                   }
 
-                  const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
+                  const threadById = new Map(
+                    scopedThreads.map((thread) => [thread.id, thread] as const),
+                  );
 
                   return projectionSnapshotQuery
                     .searchThreadMessagesByProject({
@@ -2515,7 +2523,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
                           RankedSearchResult<(typeof threads)[number]>
                         >();
 
-                        for (const thread of threads) {
+                        for (const thread of scopedThreads) {
                           const score = scoreTermsAgainstValues(terms, [thread.title]);
                           if (score === null) continue;
                           rankedById.set(thread.id, {

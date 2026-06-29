@@ -98,9 +98,14 @@ const OptionalThreadIdInput = optionalInput(
   "Thread id returned by list_threads or create_thread. Omit to use the current MCP credential thread.",
 );
 
+const OptionalListParentThreadIdInput = optionalInput(
+  ThreadIdInput,
+  "Parent thread id returned by list_threads or get_thread_settings. When provided, list_threads returns only direct child threads whose parentThreadId matches this value. Use the current thread id to enumerate sub-threads for cleanup or review.",
+);
+
 const OptionalParentThreadIdInput = optionalInput(
   ThreadIdInput,
-  "Existing top-level thread id to use as the parent when placement is child_of_thread. The parent must be in the target project and must not already be a sub-thread. When parentThreadId is present and placement is omitted, placement is inferred as child_of_thread.",
+  "Existing top-level thread id to use as the parent when placement is child_of_thread. Prefer the current thread, or another directly relevant top-level thread, for related follow-up work. The parent must be in the target project and must not already be a sub-thread. When parentThreadId is present and placement is omitted, placement is inferred as child_of_thread.",
 );
 
 const OptionalModelSelectionInput = optionalInput(
@@ -291,7 +296,8 @@ export const ListProjectsTool = readTool(
 
 export const ListThreadsTool = readTool(
   Tool.make("list_threads", {
-    description: "Return threads for a project, optionally searched by title and message history.",
+    description:
+      "Return threads for a project, optionally searched by title/message history or filtered to direct child threads with parentThreadId.",
     success: Schema.Unknown,
     failure: McpOrchestrationError,
     parameters: Schema.Struct({
@@ -310,6 +316,7 @@ export const ListThreadsTool = readTool(
         }),
         "Archive filter. Defaults to exclude; use include to search active and archived threads or only for archived threads.",
       ),
+      parentThreadId: OptionalListParentThreadIdInput,
     }),
     dependencies,
   }),
@@ -576,7 +583,7 @@ export const ThreadPlacement = Schema.Literals(["top_level", "child_of_thread"])
 export const CreateThreadTool = writeTool(
   Tool.make("create_thread", {
     description:
-      "Create a T3Code thread, optionally as a child thread and optionally with a first message. When a first message is provided you may also pass the per-turn control options (waitForResponse, turnTimeoutMs, responseTimeoutMs) that send_thread_message accepts; they default OFF and apply to that first turn.",
+      "Create a T3Code thread, optionally as a child thread and optionally with a first message. Prefer child_of_thread for related follow-up work so related agents stay grouped under the existing workstream. Reserve top_level for independent workstreams that should stand apart from the current thread. When a first message is provided you may also pass the per-turn control options (waitForResponse, turnTimeoutMs, responseTimeoutMs) that send_thread_message accepts; they default OFF and apply to that first turn.",
     success: Schema.Unknown,
     failure: McpOrchestrationError,
     parameters: Schema.Struct({
@@ -584,9 +591,9 @@ export const CreateThreadTool = writeTool(
       placement: optionalInput(
         ThreadPlacement.annotate({
           description:
-            "Where to place the new thread. Defaults to top_level unless parentThreadId is supplied, in which case child_of_thread is inferred. Use child_of_thread with parentThreadId to pick a specific parent thread.",
+            "Where to place the new thread. Prefer child_of_thread for related follow-up work and pass parentThreadId for the current or directly relevant top-level thread. Reserve top_level for independent workstreams. Defaults to top_level unless parentThreadId is supplied, in which case child_of_thread is inferred.",
         }),
-        "Where to place the new thread. Defaults to top_level unless parentThreadId is supplied, in which case child_of_thread is inferred. Use child_of_thread with parentThreadId to pick a specific parent thread.",
+        "Where to place the new thread. Prefer child_of_thread for related follow-up work and pass parentThreadId for the current or directly relevant top-level thread. Reserve top_level for independent workstreams. Defaults to top_level unless parentThreadId is supplied, in which case child_of_thread is inferred.",
       ),
       parentThreadId: OptionalParentThreadIdInput,
       title: optionalInput(

@@ -139,6 +139,17 @@ it("exposes project settings tools separately from project selectors", () => {
   ).toContain("command");
 });
 
+it("exposes parentThreadId on list_threads for direct child enumeration", () => {
+  const tool = OrchestrationToolkit.tools.list_threads;
+  const schema = Tool.getJsonSchema(OrchestrationToolkit.tools.list_threads) as {
+    readonly properties?: Readonly<Record<string, unknown>>;
+  };
+
+  expect(tool.description).toContain("direct child threads");
+  expect(schema.properties?.parentThreadId).toBeDefined();
+  expect(JSON.stringify(schema.properties?.parentThreadId)).toContain("direct child threads");
+});
+
 it("exposes first-turn worktree bootstrap fields on send_thread_message", () => {
   const schema = Tool.getJsonSchema(OrchestrationToolkit.tools.send_thread_message) as {
     readonly properties?: Readonly<Record<string, unknown>>;
@@ -187,6 +198,18 @@ it("exposes only top_level and child_of_thread create_thread placements", () => 
   expect(serialized).not.toContain(legacyPlacement);
   expect(serialized).toContain("child_of_thread");
   expect(serialized).toContain("top_level");
+});
+
+it("guides agents to prefer child threads for related create_thread work", () => {
+  const createTool = OrchestrationToolkit.tools.create_thread;
+  const createSchema = Tool.getJsonSchema(createTool);
+  const serialized = JSON.stringify({
+    description: createTool.description,
+    schema: createSchema,
+  });
+
+  expect(serialized).toContain("Prefer child_of_thread for related follow-up work");
+  expect(serialized).toContain("Reserve top_level for independent workstreams");
 });
 
 it("trims and validates message inputs at the tool boundary", () => {

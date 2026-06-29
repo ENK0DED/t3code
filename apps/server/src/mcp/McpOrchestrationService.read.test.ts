@@ -647,6 +647,62 @@ it.effect("listThreads merges title matches with message-hit matches without dup
   ),
 );
 
+it.effect("listThreads filters to direct children when parentThreadId is supplied", () =>
+  Effect.gen(function* () {
+    const service = yield* McpOrchestrationService;
+    const result = yield* service.listThreads({
+      projectId: ProjectId.make("project-1"),
+      parentThreadId: ThreadId.make("thread-parent"),
+    });
+
+    expect(result.threads.map((thread) => thread.id)).toEqual([
+      ThreadId.make("thread-child-a"),
+      ThreadId.make("thread-child-b"),
+    ]);
+    expect(result.threads.map((thread) => thread.parentThreadId)).toEqual([
+      ThreadId.make("thread-parent"),
+      ThreadId.make("thread-parent"),
+    ]);
+  }).pipe(
+    Effect.provide(
+      makeReadHarnessLayer({
+        threads: [
+          makeThreadShell({
+            id: ThreadId.make("thread-parent"),
+            projectId: ProjectId.make("project-1"),
+            parentThreadId: null,
+            title: "Parent",
+          }),
+          makeThreadShell({
+            id: ThreadId.make("thread-child-a"),
+            projectId: ProjectId.make("project-1"),
+            parentThreadId: ThreadId.make("thread-parent"),
+            title: "Child A",
+          }),
+          makeThreadShell({
+            id: ThreadId.make("thread-child-b"),
+            projectId: ProjectId.make("project-1"),
+            parentThreadId: ThreadId.make("thread-parent"),
+            title: "Child B",
+          }),
+          makeThreadShell({
+            id: ThreadId.make("thread-other-child"),
+            projectId: ProjectId.make("project-1"),
+            parentThreadId: ThreadId.make("thread-other-parent"),
+            title: "Other Child",
+          }),
+          makeThreadShell({
+            id: ThreadId.make("thread-other-project-child"),
+            projectId: ProjectId.make("project-2"),
+            parentThreadId: ThreadId.make("thread-parent"),
+            title: "Other Project Child",
+          }),
+        ],
+      }),
+    ),
+  ),
+);
+
 it.effect("listThreads defaults to excluding archived threads", () =>
   Effect.gen(function* () {
     const service = yield* McpOrchestrationService;

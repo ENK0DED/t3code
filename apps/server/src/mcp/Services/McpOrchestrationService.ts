@@ -188,6 +188,7 @@ export interface ListThreadsInput {
   readonly projectId: ProjectId;
   readonly search?: string | undefined;
   readonly archived?: "exclude" | "include" | "only" | undefined;
+  readonly parentThreadId?: ThreadId | undefined;
 }
 
 export interface ListThreadsResult {
