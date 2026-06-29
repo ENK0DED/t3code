@@ -8,6 +8,9 @@ import type { ThreadTurnProviderSignal } from "../threadTurnLiveness.ts";
 export interface ThreadTurnSignalTrackerShape {
   readonly record: (
     input: ThreadTurnProviderSignal,
+    options?: {
+      readonly bypassCoalescing?: boolean;
+    },
   ) => Effect.Effect<{ readonly shouldPersist: boolean }, never>;
   readonly getLatest: (input: {
     readonly threadId: ThreadId;

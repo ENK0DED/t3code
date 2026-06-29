@@ -26,7 +26,6 @@ export interface ThreadTurnProviderSignal {
   readonly turnId: TurnId;
   readonly signalKind: ThreadTurnProviderSignalKind;
   readonly signaledAt: string;
-  readonly bypassCoalescing?: boolean;
 }
 
 export function runtimeEventSignalKind(

@@ -1259,6 +1259,7 @@ const make = Effect.gen(function* () {
           case "turn.started":
             return !conflictsWithActiveTurn || conflictingTurnStartIsPendingTurnStart;
           case "turn.completed":
+          case "turn.aborted":
             if (conflictsWithActiveTurn || missingTurnForActiveTurn) {
               return false;
             }
@@ -1272,19 +1273,34 @@ const make = Effect.gen(function* () {
             return true;
         }
       })();
+      const shouldApplyRuntimeError = !STRICT_PROVIDER_LIFECYCLE_GUARD
+        ? true
+        : activeTurnId === null || eventTurnId === undefined || sameId(activeTurnId, eventTurnId);
       const acceptedTurnStartedSourcePlan =
         event.type === "turn.started" && shouldApplyThreadLifecycle
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
           : null;
+      const shouldRecordProviderSignal =
+        eventTurnId !== undefined &&
+        eventSignalKind !== null &&
+        (event.type === "turn.completed" || event.type === "turn.aborted"
+          ? shouldApplyThreadLifecycle
+          : event.type === "runtime.error"
+            ? shouldApplyRuntimeError
+            : true);
 
-      if (eventTurnId && eventSignalKind) {
-        const { shouldPersist } = yield* threadTurnSignalTracker.record({
-          threadId: thread.id,
-          turnId: eventTurnId,
-          signalKind: eventSignalKind,
-          signaledAt: event.createdAt,
-          bypassCoalescing: isTurnBoundaryRuntimeEvent(event),
-        });
+      if (shouldRecordProviderSignal && eventTurnId && eventSignalKind) {
+        const { shouldPersist } = yield* threadTurnSignalTracker.record(
+          {
+            threadId: thread.id,
+            turnId: eventTurnId,
+            signalKind: eventSignalKind,
+            signaledAt: event.createdAt,
+          },
+          {
+            bypassCoalescing: isTurnBoundaryRuntimeEvent(event),
+          },
+        );
 
         if (shouldPersist) {
           yield* orchestrationEngine.dispatch({
@@ -1607,10 +1623,6 @@ const make = Effect.gen(function* () {
 
       if (event.type === "runtime.error") {
         const runtimeErrorMessage = event.payload.message;
-
-        const shouldApplyRuntimeError = !STRICT_PROVIDER_LIFECYCLE_GUARD
-          ? true
-          : activeTurnId === null || eventTurnId === undefined || sameId(activeTurnId, eventTurnId);
 
         if (shouldApplyRuntimeError) {
           yield* orchestrationEngine.dispatch({

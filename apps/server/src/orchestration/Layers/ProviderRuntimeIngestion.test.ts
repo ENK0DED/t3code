@@ -694,6 +694,51 @@ describe("ProviderRuntimeIngestion", () => {
     );
   });
 
+  it("does not record or persist provider signals for conflicting terminal lifecycle events", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-signal-guard"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-signal-guard-active"),
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-signal-guard-active",
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-signal-guard-conflict"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:05.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-signal-guard-conflict"),
+      status: "completed",
+    });
+
+    await harness.drain();
+
+    const conflictingSignal = await harness.getLatestSignal(
+      asThreadId("thread-1"),
+      asTurnId("turn-signal-guard-conflict"),
+    );
+    expect(Option.isNone(conflictingSignal)).toBe(true);
+
+    const providerSignalEvents = Array.from(await harness.readEvents()).filter(
+      (event) =>
+        event.type === "thread.turn-provider-signaled" &&
+        event.payload.turnId === asTurnId("turn-signal-guard-conflict"),
+    );
+    expect(providerSignalEvents).toHaveLength(0);
+  });
+
   it("maps canonical content delta/item completed into finalized assistant messages", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
