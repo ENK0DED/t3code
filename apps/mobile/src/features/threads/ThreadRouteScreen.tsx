@@ -1,28 +1,30 @@
+/* oxlint-disable react/no-unstable-nested-components */
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
-import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
-import { pipe } from "effect/Function";
 import { EnvironmentId, type ProjectScript } from "@t3tools/contracts";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import { Pressable, ScrollView, Text as RNText, View } from "react-native";
+import { useWorkspaceState } from "../../state/workspace";
 import { useThemeColor } from "../../lib/useThemeColor";
-import { useVcsStatus } from "../../state/use-vcs-status";
+import { useEnvironmentQuery } from "../../state/query";
 import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vcs-action-state";
+import { vcsEnvironment } from "../../state/vcs";
 
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingScreen } from "../../components/LoadingScreen";
 import { buildThreadRoutePath, buildThreadTerminalNavigation } from "../../lib/routes";
 import { scopedThreadKey } from "../../lib/scopedEntities";
+import { MOBILE_TYPOGRAPHY } from "../../lib/typography";
 import { connectionTone } from "../connection/connectionTone";
 
-import { useRemoteCatalog } from "../../state/use-remote-catalog";
 import {
+  useRemoteConnections,
   useRemoteConnectionStatus,
-  useRemoteEnvironmentState,
+  useRemoteEnvironmentRuntime,
 } from "../../state/use-remote-environment-registry";
 import { useKnownTerminalSessions } from "../../state/use-terminal-session";
-import { useSelectedThreadDetail } from "../../state/use-thread-detail";
+import { useSelectedThreadDetailState } from "../../state/use-thread-detail";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { GitActionProgressOverlay } from "./GitActionProgressOverlay";
 import {
@@ -38,12 +40,14 @@ import { terminalDebugLog } from "../terminal/terminalDebugLog";
 import { ThreadDetailScreen } from "./ThreadDetailScreen";
 import { ThreadGitControls } from "./ThreadGitControls";
 import { ThreadNavigationDrawer } from "./ThreadNavigationDrawer";
-import { useSelectedThreadCommands } from "../../state/use-selected-thread-commands";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { useSelectedThreadGitActions } from "../../state/use-selected-thread-git-actions";
 import { useSelectedThreadGitState } from "../../state/use-selected-thread-git-state";
 import { useSelectedThreadRequests } from "../../state/use-selected-thread-requests";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
+import { threadEnvironment } from "../../state/threads";
+import { projectThreadContentPresentation } from "./threadContentPresentation";
 
 function firstRouteParam(value: string | string[] | undefined): string | null {
   if (Array.isArray(value)) {
@@ -57,64 +61,20 @@ function OpeningThreadLoadingScreen() {
   return <LoadingScreen message="Opening thread…" messagePlacement="above-spinner" />;
 }
 
-function ThreadRouteHeaderTitle(props: {
-  readonly title: string;
-  readonly subtitle: string;
-  readonly foregroundColor: string;
-  readonly secondaryColor: string;
-}) {
-  return (
-    <Pressable
-      style={{ alignItems: "center", maxWidth: 200 }}
-      onLongPress={() => {
-        // TODO: trigger rename modal
-      }}
-    >
-      <RNText
-        numberOfLines={1}
-        style={{
-          fontFamily: "DMSans_700Bold",
-          fontSize: 18,
-          fontWeight: "900",
-          color: props.foregroundColor,
-          letterSpacing: -0.4,
-        }}
-      >
-        {props.title}
-      </RNText>
-      <RNText
-        numberOfLines={1}
-        style={{
-          fontFamily: "DMSans_700Bold",
-          fontSize: 12,
-          fontWeight: "700",
-          color: props.secondaryColor,
-          letterSpacing: 0.3,
-        }}
-      >
-        {props.subtitle}
-      </RNText>
-    </Pressable>
-  );
-}
-
 export function ThreadRouteScreen() {
-  const { isLoadingSavedConnection, environmentStateById, pendingConnectionError } =
-    useRemoteEnvironmentState();
-  const { connectionState, connectionError: aggregateConnectionError } =
-    useRemoteConnectionStatus();
-  const { projects, threads } = useRemoteCatalog();
+  const { state: workspaceState } = useWorkspaceState();
+  const { connectionState } = useRemoteConnectionStatus();
+  const { onReconnectEnvironment } = useRemoteConnections();
   const { selectedThread, selectedThreadProject, selectedEnvironmentConnection } =
     useThreadSelection();
-  const selectedThreadDetail = useSelectedThreadDetail();
+  const selectedThreadDetailState = useSelectedThreadDetailState();
+  const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const composer = useThreadComposerState();
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
-  const commands = useSelectedThreadCommands({
-    refreshSelectedThreadGitStatus: gitActions.refreshSelectedThreadGitStatus,
-  });
+  const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
   const router = useRouter();
   const params = useLocalSearchParams<{
     environmentId?: string | string[];
@@ -124,12 +84,22 @@ export function ThreadRouteScreen() {
   const environmentIdRaw = firstRouteParam(params.environmentId);
   const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;
   const threadId = firstRouteParam(params.threadId);
-  const routeEnvironmentRuntime = environmentId
-    ? (environmentStateById[environmentId] ?? null)
-    : null;
-  const routeConnectionState = routeEnvironmentRuntime?.connectionState ?? connectionState;
-  const routeConnectionError =
-    pendingConnectionError ?? routeEnvironmentRuntime?.connectionError ?? aggregateConnectionError;
+  const routeEnvironmentRuntime = useRemoteEnvironmentRuntime(environmentId);
+  const routeConnectionState =
+    routeEnvironmentRuntime?.connectionState ?? (environmentId ? "available" : connectionState);
+  const routeConnectionError = routeEnvironmentRuntime?.connectionError ?? null;
+  const selectedThreadWithDraftSettings = useMemo(
+    () =>
+      selectedThread
+        ? {
+            ...selectedThread,
+            modelSelection: composer.modelSelection ?? selectedThread.modelSelection,
+            runtimeMode: composer.runtimeMode ?? selectedThread.runtimeMode,
+            interactionMode: composer.interactionMode ?? selectedThread.interactionMode,
+          }
+        : null,
+    [composer.interactionMode, composer.modelSelection, composer.runtimeMode, selectedThread],
+  );
 
   /* ─── Native header theming ──────────────────────────────────────── */
   const iconColor = String(useThemeColor("--color-icon"));
@@ -137,10 +107,14 @@ export function ThreadRouteScreen() {
   const secondaryFg = String(useThemeColor("--color-foreground-secondary"));
 
   /* ─── Git status for native header trigger ───────────────────────── */
-  const gitStatus = useVcsStatus({
-    environmentId: selectedThread?.environmentId ?? null,
-    cwd: selectedThreadCwd,
-  });
+  const gitStatus = useEnvironmentQuery(
+    selectedThread !== null && selectedThreadCwd !== null
+      ? vcsEnvironment.status({
+          environmentId: selectedThread.environmentId,
+          input: { cwd: selectedThreadCwd },
+        })
+      : null,
+  );
   const knownTerminalSessions = useKnownTerminalSessions({
     environmentId: selectedThread?.environmentId ?? null,
     threadId: selectedThread?.id ?? null,
@@ -154,6 +128,12 @@ export function ThreadRouteScreen() {
     [knownTerminalSessions, selectedThreadProject?.workspaceRoot],
   );
   const selectedThreadDetailWorktreePath = selectedThreadDetail?.worktreePath ?? null;
+  const handleReconnectEnvironment = useCallback(() => {
+    if (!environmentId) {
+      return;
+    }
+    onReconnectEnvironment(environmentId);
+  }, [environmentId, onReconnectEnvironment]);
 
   /* ─── Git action progress (for overlay banner) ──────────────────── */
   const gitActionProgressTarget = useMemo(
@@ -172,6 +152,24 @@ export function ThreadRouteScreen() {
   const handleOpenConnectionEditor = useCallback(() => {
     void router.push("/connections");
   }, [router]);
+  const handleStopThread = useCallback(() => {
+    if (
+      !selectedThread ||
+      (selectedThread.session?.status !== "running" &&
+        selectedThread.session?.status !== "starting")
+    ) {
+      return;
+    }
+    return interruptThreadTurn({
+      environmentId: selectedThread.environmentId,
+      input: {
+        threadId: selectedThread.id,
+        ...(selectedThread.session.activeTurnId
+          ? { turnId: selectedThread.session.activeTurnId }
+          : {}),
+      },
+    });
+  }, [interruptThreadTurn, selectedThread]);
 
   const handleOpenTerminal = useCallback(
     (nextTerminalId?: string | null) => {
@@ -273,32 +271,13 @@ export function ThreadRouteScreen() {
     ],
   );
 
-  const headerSubtitle = [
-    selectedThreadProject?.title ?? null,
-    selectedEnvironmentConnection?.environmentLabel ?? null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const headerTitle = selectedThreadDetail?.title ?? "";
-  const renderHeaderTitle = useCallback(
-    () => (
-      <ThreadRouteHeaderTitle
-        title={headerTitle}
-        subtitle={headerSubtitle}
-        foregroundColor={foregroundColor}
-        secondaryColor={secondaryFg}
-      />
-    ),
-    [foregroundColor, headerSubtitle, headerTitle, secondaryFg],
-  );
-
   if (!environmentId || !threadId) {
     return <OpeningThreadLoadingScreen />;
   }
 
   if (!selectedThread) {
     const stillHydrating =
-      isLoadingSavedConnection ||
+      workspaceState.isLoadingConnections ||
       routeConnectionState === "connecting" ||
       routeConnectionState === "reconnecting";
 
@@ -325,19 +304,21 @@ export function ThreadRouteScreen() {
     );
   }
 
-  if (!selectedThreadDetail) {
-    return <OpeningThreadLoadingScreen />;
-  }
-
   const selectedThreadKey = scopedThreadKey(selectedThread.environmentId, selectedThread.id);
-  const serverConfig =
-    routeEnvironmentRuntime?.serverConfig ??
-    pipe(
-      Object.values(environmentStateById),
-      Arr.map((runtime) => runtime.serverConfig),
-      Arr.findFirst((value) => value !== null),
-      Option.getOrNull,
-    );
+  const contentPresentation = projectThreadContentPresentation({
+    hasDetail: selectedThreadDetail !== null,
+    detailError: Option.getOrNull(selectedThreadDetailState.error),
+    detailDeleted: selectedThreadDetailState.status === "deleted",
+    connectionState: routeConnectionState,
+  });
+  const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
+
+  const headerSubtitle = [
+    selectedThreadProject?.title ?? null,
+    selectedEnvironmentConnection?.environmentLabel ?? null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <>
@@ -349,15 +330,48 @@ export function ThreadRouteScreen() {
           headerShadowVisible: false,
           headerTintColor: iconColor,
           headerBackTitle: "",
-          headerTitle: renderHeaderTitle,
+          headerTitle: () => (
+            <Pressable
+              style={{ alignItems: "center", maxWidth: 200 }}
+              onLongPress={() => {
+                // TODO: trigger rename modal
+              }}
+            >
+              <RNText
+                numberOfLines={1}
+                style={{
+                  fontFamily: "DMSans_700Bold",
+                  fontSize: MOBILE_TYPOGRAPHY.headline.fontSize,
+                  fontWeight: "900",
+                  color: foregroundColor,
+                  letterSpacing: -0.4,
+                }}
+              >
+                {selectedThread.title}
+              </RNText>
+              <RNText
+                numberOfLines={1}
+                style={{
+                  fontFamily: "DMSans_700Bold",
+                  fontSize: MOBILE_TYPOGRAPHY.label.fontSize,
+                  fontWeight: "700",
+                  color: secondaryFg,
+                  letterSpacing: 0.3,
+                }}
+              >
+                {headerSubtitle}
+              </RNText>
+            </Pressable>
+          ),
         }}
       />
 
       <ThreadGitControls
-        currentBranch={selectedThreadDetail.branch}
+        currentBranch={selectedThread.branch}
         gitStatus={gitStatus.data}
         gitOperationLabel={gitState.gitOperationLabel}
         canOpenTerminal={Boolean(selectedThreadProject?.workspaceRoot)}
+        canOpenFiles={Boolean(selectedThreadProject?.workspaceRoot)}
         projectScripts={selectedThreadProject?.scripts ?? []}
         terminalSessions={terminalMenuSessions}
         onOpenTerminal={handleOpenTerminal}
@@ -371,11 +385,11 @@ export function ThreadRouteScreen() {
 
       <View className="flex-1 bg-screen">
         <ThreadDetailScreen
-          selectedThread={selectedThreadDetail}
+          selectedThread={selectedThreadWithDraftSettings ?? selectedThread}
+          contentPresentation={contentPresentation}
           screenTone={connectionTone(routeConnectionState)}
           connectionError={routeConnectionError}
-          httpBaseUrl={selectedEnvironmentConnection?.httpBaseUrl ?? null}
-          bearerToken={selectedEnvironmentConnection?.bearerToken ?? null}
+          environmentLabel={selectedEnvironmentConnection?.environmentLabel ?? null}
           selectedThreadFeed={composer.selectedThreadFeed}
           activeWorkStartedAt={composer.activeWorkStartedAt}
           activePendingApproval={requests.activePendingApproval}
@@ -390,6 +404,7 @@ export function ThreadRouteScreen() {
           activeThreadBusy={composer.activeThreadBusy}
           environmentId={selectedThread.environmentId}
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}
+          threadCwd={selectedThreadCwd}
           selectedThreadQueueCount={composer.selectedThreadQueueCount}
           onOpenDrawer={handleOpenDrawer}
           onOpenConnectionEditor={handleOpenConnectionEditor}
@@ -398,11 +413,12 @@ export function ThreadRouteScreen() {
           onNativePasteImages={composer.onNativePasteImages}
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
-          onStopThread={commands.onStopThread}
+          onStopThread={handleStopThread}
           onSendMessage={composer.onSendMessage}
-          onUpdateThreadModelSelection={commands.onUpdateThreadModelSelection}
-          onUpdateThreadRuntimeMode={commands.onUpdateThreadRuntimeMode}
-          onUpdateThreadInteractionMode={commands.onUpdateThreadInteractionMode}
+          onReconnectEnvironment={handleReconnectEnvironment}
+          onUpdateThreadModelSelection={composer.onUpdateModelSelection}
+          onUpdateThreadRuntimeMode={composer.onUpdateRuntimeMode}
+          onUpdateThreadInteractionMode={composer.onUpdateInteractionMode}
           onRespondToApproval={requests.onRespondToApproval}
           onSelectUserInputOption={requests.onSelectUserInputOption}
           onChangeUserInputCustomAnswer={requests.onChangeUserInputCustomAnswer}
@@ -411,8 +427,6 @@ export function ThreadRouteScreen() {
 
         <ThreadNavigationDrawer
           visible={drawerVisible}
-          projects={projects}
-          threads={threads}
           selectedThreadKey={selectedThreadKey}
           onClose={() => setDrawerVisible(false)}
           onSelectThread={(thread) => {

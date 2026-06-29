@@ -12,10 +12,10 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
-import { ProjectSetupScriptRunner } from "../../project/Services/ProjectSetupScriptRunner.ts";
+import { ProjectSetupScriptRunner } from "../../project/ProjectSetupScriptRunner.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { OrchestrationEngineService } from "./OrchestrationEngine.ts";
 
@@ -65,7 +65,7 @@ export const ThreadTurnStartBootstrapDispatcherLive = Layer.effect(
           });
     };
 
-    const randomUuidEffect = Effect.sync(() => randomUUID()).pipe(
+    const randomUuidEffect = Effect.sync(() => NodeCrypto.randomUUID()).pipe(
       Effect.mapError((cause) =>
         toDispatchCommandError(cause, "Failed to generate orchestration command identifier."),
       ),

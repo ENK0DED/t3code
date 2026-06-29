@@ -25,7 +25,7 @@ import * as Cause from "effect/Cause";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts";
 import { McpOrchestrationService } from "./Services/McpOrchestrationService.ts";
-import { CheckpointDiffQuery } from "../checkpointing/Services/CheckpointDiffQuery.ts";
+import { CheckpointDiffQuery } from "../checkpointing/CheckpointDiffQuery.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import {
   ProjectionSnapshotQuery,

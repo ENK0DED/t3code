@@ -30,7 +30,7 @@ import {
   McpOrchestrationError,
   McpOrchestrationService,
 } from "./Services/McpOrchestrationService.ts";
-import { CheckpointDiffQuery } from "../checkpointing/Services/CheckpointDiffQuery.ts";
+import { CheckpointDiffQuery } from "../checkpointing/CheckpointDiffQuery.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadTurnStartBootstrapDispatcherLive } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
@@ -42,7 +42,7 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import { TextGeneration } from "../textGeneration/TextGeneration.ts";
 import { GitWorkflowService } from "../git/GitWorkflowService.ts";
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
-import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
+import { ProjectSetupScriptRunner } from "../project/ProjectSetupScriptRunner.ts";
 import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
 
 const defaultModelSelection = (overrides?: Partial<ModelSelection>): ModelSelection => ({
@@ -445,6 +445,8 @@ const makeWriteHarnessLayer = (input?: {
           invalidateLocalStatus: () => Effect.void,
           invalidateRemoteStatus: () => Effect.void,
           invalidateStatus: () => Effect.void,
+          fetchRemote: () => unsupported("fetchRemote"),
+          resolveRemoteTrackingCommit: () => unsupported("resolveRemoteTrackingCommit"),
           pullCurrentBranch: () => unsupported("pullCurrentBranch"),
           runStackedAction: () => unsupported("runStackedAction"),
           resolvePullRequest: () => unsupported("resolvePullRequest"),

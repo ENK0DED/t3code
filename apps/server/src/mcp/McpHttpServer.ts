@@ -13,9 +13,6 @@ import packageJson from "../../package.json" with { type: "json" };
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
-import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts";
-import { OrchestrationToolkitHandlersLive } from "./toolkits/orchestration/handlers.ts";
-import { OrchestrationToolkit } from "./toolkits/orchestration/tools.ts";
 import {
   PreviewSnapshotToolkitHandlersLive,
   PreviewStandardToolkitHandlersLive,
@@ -91,6 +88,37 @@ const McpAuthMiddlewareLive = HttpRouter.middleware<{
   provides: McpInvocationContext.McpInvocationContext;
 }>()(makeMcpAuthMiddleware).layer;
 
+const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
+  if (Cause.hasInterrupts(cause) || cause.reasons.some(Cause.isDieReason)) {
+    return Effect.failCause(cause).pipe(Effect.orDie);
+  }
+  const failures = cause.reasons.filter(Cause.isFailReason);
+  const firstFailure = failures[0]?.error;
+  const errorTag =
+    typeof firstFailure === "object" &&
+    firstFailure !== null &&
+    "_tag" in firstFailure &&
+    typeof firstFailure._tag === "string"
+      ? firstFailure._tag
+      : "PreviewSnapshotError";
+  const result = new McpSchema.CallToolResult({
+    isError: true,
+    structuredContent: {
+      error: {
+        _tag: errorTag,
+        operation: "snapshot",
+        failureCount: failures.length,
+      },
+    },
+    content: [{ type: "text", text: "Preview snapshot failed." }],
+  });
+  return Effect.logWarning("preview snapshot failed", {
+    operation: "snapshot",
+    errorTag,
+    failureCount: failures.length,
+  }).pipe(Effect.as(result));
+};
+
 const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot")(function* () {
   const server = yield* McpServer.McpServer;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
@@ -125,12 +153,8 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
           Effect.flatMap(Effect.fromOption),
           Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-          Effect.matchCause({
-            onFailure: (cause) =>
-              new McpSchema.CallToolResult({
-                isError: true,
-                content: [{ type: "text", text: Cause.pretty(cause) }],
-              }),
+          Effect.matchCauseEffect({
+            onFailure: previewSnapshotFailure,
             onSuccess: ({ encodedResult }) => {
               const snapshot = encodedResult as {
                 readonly screenshot: {
@@ -150,18 +174,20 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
                   height: screenshot.height,
                 },
               };
-              return new McpSchema.CallToolResult({
-                isError: false,
-                structuredContent: metadata,
-                content: [
-                  { type: "text", text: JSON.stringify(metadata) },
-                  {
-                    type: "image",
-                    data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
-                    mimeType: screenshot.mimeType,
-                  },
-                ],
-              });
+              return Effect.succeed(
+                new McpSchema.CallToolResult({
+                  isError: false,
+                  structuredContent: metadata,
+                  content: [
+                    { type: "text", text: JSON.stringify(metadata) },
+                    {
+                      type: "image",
+                      data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
+                      mimeType: screenshot.mimeType,
+                    },
+                  ],
+                }),
+              );
             },
           }),
         );
@@ -177,18 +203,9 @@ const PreviewSnapshotRegistrationLive = Layer.effectDiscard(registerPreviewSnaps
   Layer.provide(PreviewSnapshotToolkitHandlersLive),
 );
 
-const OrchestrationToolkitRegistrationLive = McpServer.toolkit(OrchestrationToolkit).pipe(
-  Layer.provide(OrchestrationToolkitHandlersLive),
-);
-
 export const PreviewToolkitRegistrationLive = Layer.mergeAll(
   PreviewStandardToolkitRegistrationLive,
   PreviewSnapshotRegistrationLive,
-);
-
-export const McpToolkitRegistrationLive = Layer.mergeAll(
-  PreviewToolkitRegistrationLive,
-  OrchestrationToolkitRegistrationLive,
 );
 
 const McpTransportLive = McpServer.layerHttp({
@@ -197,8 +214,4 @@ const McpTransportLive = McpServer.layerHttp({
   path: "/mcp",
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
-export const layer = McpToolkitRegistrationLive.pipe(
-  Layer.provideMerge(McpTransportLive),
-  Layer.provide(McpOrchestrationServiceLive),
-  Layer.provide(PreviewAutomationBroker.layer),
-);
+export const layer = PreviewToolkitRegistrationLive.pipe(Layer.provideMerge(McpTransportLive));

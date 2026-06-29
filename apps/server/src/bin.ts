@@ -1,3 +1,4 @@
+// @effect-diagnostics anyUnknownInErrorContext:off - Effect CLI command helpers expose broad any channels at the process boundary.
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -54,9 +55,9 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
 export const cli = makeCli();
 
 if (import.meta.main) {
-  Command.run(cli, { version: packageJson.version }).pipe(
+  const main = Command.run(cli, { version: packageJson.version }).pipe(
     Effect.scoped,
     Effect.provide(CliRuntimeLayer),
-    NodeRuntime.runMain,
-  );
+  ) as Effect.Effect<void, unknown, never>;
+  NodeRuntime.runMain(main);
 }

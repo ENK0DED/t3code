@@ -12,14 +12,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { ServerConfig } from "../config.ts";
-import { WorkspacePathsLive } from "../workspace/Layers/WorkspacePaths.ts";
+import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { normalizeDispatchCommand } from "./Normalizer.ts";
 
 // The normalizer acquires FileSystem/Path/ServerConfig/WorkspacePaths up front; the
 // thread.create / bootstrap branches do not use them, but they must be in context.
 const NormalizerTestLayer = Layer.mergeAll(
   ServerConfig.layerTest(process.cwd(), { prefix: "normalizer-spoof-test" }),
-  WorkspacePathsLive,
+  WorkspacePaths.layer,
 ).pipe(Layer.provideMerge(NodeServices.layer));
 
 const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };

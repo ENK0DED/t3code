@@ -57,10 +57,10 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 import * as McpInvocationContext from "../McpInvocationContext.ts";
-import { CheckpointDiffQuery } from "../../checkpointing/Services/CheckpointDiffQuery.ts";
+import { CheckpointDiffQuery } from "../../checkpointing/CheckpointDiffQuery.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadTurnStartBootstrapDispatcher } from "../../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
@@ -665,23 +665,23 @@ function isThreadIdleReady(thread: {
 }
 
 function makeCommandId(tag: string): CommandId {
-  return CommandId.make(`mcp:${tag}:${randomUUID()}`);
+  return CommandId.make(`mcp:${tag}:${NodeCrypto.randomUUID()}`);
 }
 
 function makeThreadId(): ThreadId {
-  return ThreadId.make(`thread-${randomUUID()}`);
+  return ThreadId.make(`thread-${NodeCrypto.randomUUID()}`);
 }
 
 function makeProjectId(): ProjectId {
-  return ProjectId.make(`project-${randomUUID()}`);
+  return ProjectId.make(`project-${NodeCrypto.randomUUID()}`);
 }
 
 function makeMessageId(): MessageId {
-  return MessageId.make(`message-${randomUUID()}`);
+  return MessageId.make(`message-${NodeCrypto.randomUUID()}`);
 }
 
 function randomHex(byteLength: number): string {
-  return randomUUID()
+  return NodeCrypto.randomUUID()
     .replaceAll("-", "")
     .slice(0, byteLength * 2);
 }

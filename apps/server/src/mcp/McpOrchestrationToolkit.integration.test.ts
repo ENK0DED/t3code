@@ -25,9 +25,9 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpBody, HttpClient, HttpRouter } from "effect/unstable/http";
 
-import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
+import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { CheckpointDiffQuery } from "../checkpointing/Services/CheckpointDiffQuery.ts";
+import { CheckpointDiffQuery } from "../checkpointing/CheckpointDiffQuery.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadTurnStartBootstrapDispatcher } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import { ProjectionThreadMessageSearchRepository } from "../persistence/Services/ProjectionThreadMessageSearch.ts";
@@ -37,6 +37,7 @@ import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/provi
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TextGeneration } from "../textGeneration/TextGeneration.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import { OrchestrationToolkit } from "./toolkits/orchestration/tools.ts";
 
@@ -143,6 +144,17 @@ const makeIntegrationLayer = (
   McpHttpServer.layer.pipe(
     Layer.provideMerge(McpSessionRegistry.layer),
     Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(
+      Layer.succeed(
+        PreviewAutomationBroker.PreviewAutomationBroker,
+        PreviewAutomationBroker.PreviewAutomationBroker.of({
+          connect: () => Effect.die("unused"),
+          focusHost: () => Effect.die("unused"),
+          respond: () => Effect.die("unused"),
+          invoke: () => Effect.die("unused"),
+        }),
+      ),
+    ),
     Layer.provideMerge(
       Layer.succeed(
         ProjectionSnapshotQuery,
