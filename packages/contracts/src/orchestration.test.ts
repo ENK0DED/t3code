@@ -8,6 +8,7 @@ import {
   ModelSelection,
   OrchestrationCommand,
   OrchestrationEvent,
+  ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
@@ -52,6 +53,7 @@ const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPaylo
 const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
 const decodeOrchestrationThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
+const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
 
@@ -313,6 +315,24 @@ it.effect("decodes thread.turn.provider-signal commands", () =>
     }
     assert.strictEqual(parsed.signalKind, "reasoning");
     assert.strictEqual(parsed.signaledAt, "2026-06-29T00:00:05.000Z");
+  }),
+);
+
+it.effect("rejects thread.turn.provider-signal commands from the client union", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      decodeClientOrchestrationCommand({
+        type: "thread.turn.provider-signal",
+        commandId: "cmd-provider-signal",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        signalKind: "reasoning",
+        signaledAt: "2026-06-29T00:00:05.000Z",
+        createdAt: "2026-06-29T00:00:05.000Z",
+      }),
+    );
+
+    assert.strictEqual(result._tag, "Failure");
   }),
 );
 
