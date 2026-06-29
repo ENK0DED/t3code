@@ -3,8 +3,11 @@ import * as Schema from "effect/Schema";
 
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
+  ClientSettingsPatch,
   ClientSettingsSchema,
   DEFAULT_SERVER_SETTINGS,
+  DEFAULT_TERMINAL_FONT_FAMILY,
+  MAX_TERMINAL_FONT_FAMILY_LENGTH,
   ServerSettings,
   ServerSettingsPatch,
 } from "./settings.ts";
@@ -12,6 +15,7 @@ import {
 const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
+const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 
 describe("ClientSettings word wrap", () => {
@@ -184,5 +188,35 @@ describe("ServerSettingsPatch string normalization", () => {
 
     expect(encoded.addProjectBaseDirectory).toBe("~/Development");
     expect(encoded.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
+  });
+});
+
+describe("ClientSettings terminalFontFamily", () => {
+  it("defaults missing terminalFontFamily to the current terminal stack", () => {
+    const decoded = decodeClientSettings({});
+
+    expect(decoded.terminalFontFamily).toBe(DEFAULT_TERMINAL_FONT_FAMILY);
+  });
+
+  it("trims custom terminal font settings while decoding settings and patches", () => {
+    const decoded = decodeClientSettings({
+      terminalFontFamily: '  "Berkeley Mono", "JetBrains Mono", monospace  ',
+    });
+    const patch = decodeClientSettingsPatch({
+      terminalFontFamily: '  "Cascadia Code", Consolas, monospace  ',
+    });
+
+    expect(decoded.terminalFontFamily).toBe('"Berkeley Mono", "JetBrains Mono", monospace');
+    expect(patch.terminalFontFamily).toBe('"Cascadia Code", Consolas, monospace');
+  });
+
+  it("rejects blank, control-character, and overlong terminal font values", () => {
+    expect(() => decodeClientSettings({ terminalFontFamily: "   " })).toThrow();
+    expect(() => decodeClientSettings({ terminalFontFamily: '"Bad Font"\nmonospace' })).toThrow();
+    expect(() =>
+      decodeClientSettings({
+        terminalFontFamily: "a".repeat(MAX_TERMINAL_FONT_FAMILY_LENGTH + 1),
+      }),
+    ).toThrow();
   });
 });
