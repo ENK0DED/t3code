@@ -1288,8 +1288,21 @@ const make = Effect.gen(function* () {
           : event.type === "runtime.error"
             ? shouldApplyRuntimeError
             : true);
+      const shouldBypassProviderSignalCoalescing =
+        shouldRecordProviderSignal &&
+        shouldApplyThreadLifecycle &&
+        (event.type === "turn.started" ||
+          event.type === "turn.completed" ||
+          event.type === "turn.aborted");
 
       if (shouldRecordProviderSignal && eventTurnId && eventSignalKind) {
+        if (shouldBypassProviderSignalCoalescing) {
+          yield* threadTurnSignalTracker.clear({
+            threadId: thread.id,
+            turnId: eventTurnId,
+          });
+        }
+
         const { shouldPersist } = yield* threadTurnSignalTracker.record({
           threadId: thread.id,
           turnId: eventTurnId,
