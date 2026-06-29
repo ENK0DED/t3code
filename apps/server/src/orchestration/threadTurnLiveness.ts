@@ -26,6 +26,7 @@ export interface ThreadTurnProviderSignal {
   readonly turnId: TurnId;
   readonly signalKind: ThreadTurnProviderSignalKind;
   readonly signaledAt: string;
+  readonly bypassCoalescing?: boolean;
 }
 
 export function runtimeEventSignalKind(
@@ -77,5 +78,16 @@ export function runtimeEventSignalKind(
       return "lifecycle";
     default:
       return null;
+  }
+}
+
+export function isTurnBoundaryRuntimeEvent(event: ProviderRuntimeEvent): boolean {
+  switch (event.type) {
+    case "turn.started":
+    case "turn.completed":
+    case "turn.aborted":
+      return true;
+    default:
+      return false;
   }
 }

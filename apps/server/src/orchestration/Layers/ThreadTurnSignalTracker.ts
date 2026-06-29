@@ -16,11 +16,6 @@ interface ThreadTurnSignalTrackerEntry {
   readonly lastPersistedAt: string | null;
 }
 
-const isLifecycleAdjacentSignal = (
-  current: ThreadTurnProviderSignal,
-  previous: ThreadTurnSignalTrackerEntry | undefined,
-): boolean => current.signalKind === "lifecycle" && previous?.latest.signalKind !== "lifecycle";
-
 export const ThreadTurnSignalTrackerLive = Layer.effect(
   ThreadTurnSignalTracker,
   Effect.sync(() => {
@@ -41,7 +36,7 @@ export const ThreadTurnSignalTrackerLive = Layer.effect(
           (Number.isFinite(currentSignaledAtMs) &&
             Number.isFinite(lastPersistedAtMs) &&
             currentSignaledAtMs - (lastPersistedAtMs as number) >= PROVIDER_SIGNAL_COALESCE_MS) ||
-          isLifecycleAdjacentSignal(input, previous);
+          (input.bypassCoalescing === true && input.signalKind === "lifecycle");
 
         signals.set(key, {
           latest: input,

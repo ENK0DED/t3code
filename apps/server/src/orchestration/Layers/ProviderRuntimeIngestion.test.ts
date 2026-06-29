@@ -843,6 +843,89 @@ describe("ProviderRuntimeIngestion", () => {
     expect(latestSignal.value.signaledAt).toBe("2026-01-01T00:00:10.000Z");
   });
 
+  it("keeps non-boundary lifecycle signals coalesced while persisting turn boundary lifecycle signals", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-lifecycle-gate-base"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-lifecycle-gate"),
+      itemId: asItemId("item-lifecycle-gate"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "base",
+      },
+    });
+    await harness.drain();
+
+    harness.emit({
+      type: "runtime.warning",
+      eventId: asEventId("evt-lifecycle-gate-warning"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:10.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-lifecycle-gate"),
+      payload: {
+        message: "brief warning",
+      },
+    });
+    await harness.drain();
+
+    const warningSignal = await harness.getLatestSignal(
+      asThreadId("thread-1"),
+      asTurnId("turn-lifecycle-gate"),
+    );
+    expect(Option.isSome(warningSignal)).toBe(true);
+    if (Option.isNone(warningSignal)) {
+      throw new Error("Expected warning signal");
+    }
+    expect(warningSignal.value.signalKind).toBe("lifecycle");
+    expect(warningSignal.value.signaledAt).toBe("2026-01-01T00:00:10.000Z");
+
+    let events = Array.from(await harness.readEvents()).filter(
+      (event) => event.type === "thread.turn-provider-signaled",
+    );
+    expect(events).toHaveLength(1);
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-lifecycle-gate-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:20.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-lifecycle-gate"),
+      status: "completed",
+    });
+    await harness.drain();
+
+    const completedSignal = await harness.getLatestSignal(
+      asThreadId("thread-1"),
+      asTurnId("turn-lifecycle-gate"),
+    );
+    expect(Option.isSome(completedSignal)).toBe(true);
+    if (Option.isNone(completedSignal)) {
+      throw new Error("Expected completed signal");
+    }
+    expect(completedSignal.value.signalKind).toBe("lifecycle");
+    expect(completedSignal.value.signaledAt).toBe("2026-01-01T00:00:20.000Z");
+
+    events = Array.from(await harness.readEvents()).filter(
+      (event) => event.type === "thread.turn-provider-signaled",
+    );
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({
+      type: "thread.turn-provider-signaled",
+      payload: {
+        signalKind: "lifecycle",
+        signaledAt: "2026-01-01T00:00:20.000Z",
+        turnId: asTurnId("turn-lifecycle-gate"),
+      },
+    });
+  });
+
   it("persists another reasoning provider-signal after the 30 second coalescing window", async () => {
     const harness = await createHarness();
 
