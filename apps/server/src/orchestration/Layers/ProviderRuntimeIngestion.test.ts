@@ -34,6 +34,8 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
+import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import {
   ProviderService,
@@ -44,12 +46,16 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import { ThreadTurnSignalTrackerLive } from "./ThreadTurnSignalTracker.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { ThreadTurnSignalTracker } from "../Services/ThreadTurnSignalTracker.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Option from "effect/Option";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
   return ServerSettingsService.layerTest(overrides);
@@ -191,7 +197,12 @@ async function waitForThread(
 
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderRuntimeIngestionService | ProjectionSnapshotQuery,
+    | OrchestrationEngineService
+    | ProviderRuntimeIngestionService
+    | ProjectionSnapshotQuery
+    | OrchestrationEventStore
+    | ThreadTurnSignalTracker
+    | ProjectionTurnRepository,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -234,6 +245,9 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const layer = ProviderRuntimeIngestionLive.pipe(
+      Layer.provideMerge(ThreadTurnSignalTrackerLive),
+      Layer.provideMerge(OrchestrationEventStoreLive),
+      Layer.provideMerge(ProjectionTurnRepositoryLive),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
@@ -246,6 +260,11 @@ describe("ProviderRuntimeIngestion", () => {
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
+    const eventStore = await runtime.runPromise(Effect.service(OrchestrationEventStore));
+    const signalTracker = await runtime.runPromise(Effect.service(ThreadTurnSignalTracker));
+    const projectionTurnRepository = await runtime.runPromise(
+      Effect.service(ProjectionTurnRepository),
+    );
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
@@ -313,6 +332,18 @@ describe("ProviderRuntimeIngestion", () => {
     return {
       engine,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
+      readEvents: () => Effect.runPromise(Stream.runCollect(eventStore.readAll())),
+      appendEvent: (event: Omit<Parameters<typeof eventStore.append>[0], "sequence">) =>
+        Effect.runPromise(eventStore.append(event)),
+      seedPendingTurnStart: (
+        input: Parameters<typeof projectionTurnRepository.replacePendingTurnStart>[0],
+      ) => Effect.runPromise(projectionTurnRepository.replacePendingTurnStart(input)),
+      getPendingTurnStart: (threadId: ThreadId) =>
+        Effect.runPromise(projectionTurnRepository.getPendingTurnStartByThreadId({ threadId })),
+      getLatestSignal: (threadId: ThreadId, turnId: TurnId) =>
+        Effect.runPromise(signalTracker.getLatest({ threadId, turnId })),
+      dispatch: (command: Parameters<typeof engine.dispatch>[0]) =>
+        Effect.runPromise(engine.dispatch(command)),
       emit: provider.emit,
       setProviderSession: provider.setSession,
       drain,
@@ -718,6 +749,143 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(message?.text).toBe("hello world");
     expect(message?.streaming).toBe(false);
+  });
+
+  it("dispatches reasoning provider signals without appending reasoning text to messages", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      itemId: asItemId("item-reasoning"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "thinking through the plan",
+      },
+    });
+
+    await harness.drain();
+
+    const snapshot = await harness.readModel();
+    const thread = snapshot.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    expect(
+      thread?.messages.some(
+        (message: ProviderRuntimeTestMessage) => message.turnId === "turn-reasoning",
+      ) ?? false,
+    ).toBe(false);
+
+    const events = Array.from(await harness.readEvents());
+    const providerSignalEvents = events.filter(
+      (event) => event.type === "thread.turn-provider-signaled",
+    );
+    expect(providerSignalEvents).toHaveLength(1);
+    const providerSignalEvent = providerSignalEvents[0];
+    if (!providerSignalEvent || providerSignalEvent.type !== "thread.turn-provider-signaled") {
+      throw new Error("Expected thread.turn-provider-signaled event");
+    }
+    expect(providerSignalEvent.payload.threadId).toBe(asThreadId("thread-1"));
+    expect(providerSignalEvent.payload.turnId).toBe(asTurnId("turn-reasoning"));
+    expect(providerSignalEvent.payload.signalKind).toBe("reasoning");
+    expect(providerSignalEvent.payload.signaledAt).toBe(now);
+  });
+
+  it("coalesces repeated reasoning provider-signal persistence inside 30 seconds while keeping the latest in memory", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-coalesce-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning-coalesce"),
+      itemId: asItemId("item-reasoning-coalesce"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "first chunk",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-coalesce-2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:10.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning-coalesce"),
+      itemId: asItemId("item-reasoning-coalesce"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "second chunk",
+      },
+    });
+
+    await harness.drain();
+
+    const events = Array.from(await harness.readEvents()).filter(
+      (event) => event.type === "thread.turn-provider-signaled",
+    );
+    expect(events).toHaveLength(1);
+
+    const latestSignal = await harness.getLatestSignal(
+      asThreadId("thread-1"),
+      asTurnId("turn-reasoning-coalesce"),
+    );
+    expect(Option.isSome(latestSignal)).toBe(true);
+    if (Option.isNone(latestSignal)) {
+      throw new Error("Expected latest signal");
+    }
+    expect(latestSignal.value.signalKind).toBe("reasoning");
+    expect(latestSignal.value.signaledAt).toBe("2026-01-01T00:00:10.000Z");
+  });
+
+  it("persists another reasoning provider-signal after the 30 second coalescing window", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-window-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning-window"),
+      itemId: asItemId("item-reasoning-window"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "first chunk",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-window-2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:31.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning-window"),
+      itemId: asItemId("item-reasoning-window"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "second chunk",
+      },
+    });
+
+    await harness.drain();
+
+    const providerSignalEvents = Array.from(await harness.readEvents()).filter(
+      (event) => event.type === "thread.turn-provider-signaled",
+    );
+    expect(providerSignalEvents).toHaveLength(2);
+    const signaledAtValues = providerSignalEvents.map((event) => {
+      if (event.type !== "thread.turn-provider-signaled") {
+        throw new Error("Expected thread.turn-provider-signaled event");
+      }
+      return event.payload.signaledAt;
+    });
+    expect(signaledAtValues).toEqual(["2026-01-01T00:00:00.000Z", "2026-01-01T00:00:31.000Z"]);
   });
 
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {
@@ -1214,26 +1382,19 @@ describe("ProviderRuntimeIngestion", () => {
       throw new Error("Expected source plan to exist.");
     }
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-plan-target-guarded"),
-        threadId: targetThreadId,
-        message: {
-          messageId: asMessageId("msg-plan-target-guarded"),
-          role: "user",
-          text: "PLEASE IMPLEMENT THIS PLAN:\n# Source plan",
-          attachments: [],
-        },
-        sourceProposedPlan: {
-          threadId: sourceThreadId,
-          planId: sourcePlan.id,
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: "2026-01-01T00:00:00.000Z",
-      }),
-    );
+    await harness.seedPendingTurnStart({
+      threadId: targetThreadId,
+      messageId: asMessageId("msg-plan-target-guarded"),
+      sourceProposedPlanThreadId: sourceThreadId,
+      sourceProposedPlanId: sourcePlan.id,
+      requestedAt: createdAt,
+    });
+    expect(await harness.getPendingTurnStart(targetThreadId)).toMatchObject({
+      _tag: "Some",
+      value: {
+        messageId: "msg-plan-target-guarded",
+      },
+    });
 
     harness.emit({
       type: "turn.started",
@@ -1301,22 +1462,19 @@ describe("ProviderRuntimeIngestion", () => {
     );
 
     // The steer: a user-requested turn start while the old turn still runs.
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-steer"),
-        threadId,
-        message: {
-          messageId: asMessageId("msg-steer"),
-          role: "user",
-          text: "actually, do 15 instead",
-          attachments: [],
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt,
-      }),
-    );
+    await harness.seedPendingTurnStart({
+      threadId,
+      messageId: asMessageId("msg-steer"),
+      sourceProposedPlanThreadId: null,
+      sourceProposedPlanId: null,
+      requestedAt: createdAt,
+    });
+    expect(await harness.getPendingTurnStart(threadId)).toMatchObject({
+      _tag: "Some",
+      value: {
+        messageId: "msg-steer",
+      },
+    });
 
     // The provider session tracks the new turn before emitting turn.started
     // (sendTurn updates the session first).
@@ -1464,26 +1622,24 @@ describe("ProviderRuntimeIngestion", () => {
       throw new Error("Expected source plan to exist.");
     }
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-plan-target-unrelated"),
-        threadId: targetThreadId,
-        message: {
-          messageId: asMessageId("msg-plan-target-unrelated"),
-          role: "user",
-          text: "PLEASE IMPLEMENT THIS PLAN:\n# Source plan",
-          attachments: [],
-        },
-        sourceProposedPlan: {
-          threadId: sourceThreadId,
-          planId: sourcePlan.id,
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: "2026-01-01T00:00:00.000Z",
-      }),
-    );
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-turn-start-plan-target-unrelated"),
+      threadId: targetThreadId,
+      message: {
+        messageId: asMessageId("msg-plan-target-unrelated"),
+        role: "user",
+        text: "PLEASE IMPLEMENT THIS PLAN:\n# Source plan",
+        attachments: [],
+      },
+      sourceProposedPlan: {
+        threadId: sourceThreadId,
+        planId: sourcePlan.id,
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
 
     harness.setProviderSession({
       provider: ProviderDriverKind.make("codex"),
@@ -1944,11 +2100,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resumedMessage?.text).toBe(" second half");
     expect(resumedMessage?.streaming).toBe(false);
 
-    const events = await Effect.runPromise(
-      Stream.runCollect(harness.engine.readEvents(0)).pipe(
-        Effect.map((chunk) => Array.from(chunk)),
-      ),
-    );
+    const events = Array.from(await harness.readEvents());
     const assistantEvents = events.filter(
       (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
         event.type === "thread.message-sent" &&
@@ -2082,22 +2234,20 @@ describe("ProviderRuntimeIngestion", () => {
     const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
     const now = "2026-01-01T00:00:00.000Z";
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-streaming-mode"),
-        threadId: ThreadId.make("thread-1"),
-        message: {
-          messageId: asMessageId("message-streaming-mode"),
-          role: "user",
-          text: "stream please",
-          attachments: [],
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: now,
-      }),
-    );
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-turn-start-streaming-mode"),
+      threadId: ThreadId.make("thread-1"),
+      message: {
+        messageId: asMessageId("message-streaming-mode"),
+        role: "user",
+        text: "stream please",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: now,
+    });
     await harness.drain();
 
     harness.emit({
@@ -2300,11 +2450,7 @@ describe("ProviderRuntimeIngestion", () => {
         ),
     );
 
-    const events = await Effect.runPromise(
-      Stream.runCollect(harness.engine.readEvents(0)).pipe(
-        Effect.map((chunk) => Array.from(chunk)),
-      ),
-    );
+    const events = Array.from(await harness.readEvents());
     const completionEvents = events.filter((event) => {
       if (event.type !== "thread.message-sent") {
         return false;
@@ -2951,6 +3097,76 @@ describe("ProviderRuntimeIngestion", () => {
         (entry: ProviderRuntimeTestProposedPlan) => entry.id === "plan:thread-1:turn:turn-task-1",
       )?.planMarkdown,
     ).toBe("# Plan title");
+  });
+
+  it("maps task progress and thread token usage into task and token_usage provider signals", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-signal-kinds");
+
+    harness.emit({
+      type: "task.progress",
+      eventId: asEventId("evt-signal-kind-task"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {
+        taskId: "turn-signal-kinds",
+        description: "Reviewing",
+        summary: "Reviewing",
+      },
+    });
+    harness.emit({
+      type: "thread.token-usage.updated",
+      eventId: asEventId("evt-signal-kind-token"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:31.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {
+        usage: {
+          inputTokens: 100,
+          outputTokens: 25,
+          usedTokens: 125,
+          contextWindowTokens: 1000,
+        },
+      },
+    });
+
+    await harness.drain();
+
+    const providerSignalEvents = Array.from(await harness.readEvents()).filter(
+      (event) => event.type === "thread.turn-provider-signaled",
+    );
+    const signalKinds = providerSignalEvents.map((event) => {
+      if (event.type !== "thread.turn-provider-signaled") {
+        throw new Error("Expected thread.turn-provider-signaled event");
+      }
+      return event.payload.signalKind;
+    });
+    expect(signalKinds).toEqual(["task", "token_usage"]);
+  });
+
+  it("does not create turn liveness signals for runtime events without a turn id", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-signal-no-turn-id"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      payload: {
+        state: "running",
+      },
+    });
+
+    await harness.drain();
+
+    const providerSignalEvents = Array.from(await harness.readEvents()).filter(
+      (event) => event.type === "thread.turn-provider-signaled",
+    );
+    expect(providerSignalEvents).toHaveLength(0);
   });
 
   it("projects structured user input request and resolution as thread activities", async () => {

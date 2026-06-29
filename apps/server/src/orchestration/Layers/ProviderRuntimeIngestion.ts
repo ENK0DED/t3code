@@ -37,6 +37,8 @@ import {
   ProviderRuntimeIngestionService,
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
+import { ThreadTurnSignalTracker } from "../Services/ThreadTurnSignalTracker.ts";
+import { runtimeEventSignalKind } from "../threadTurnLiveness.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
@@ -633,6 +635,7 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  const threadTurnSignalTracker = yield* ThreadTurnSignalTracker;
   const serverSettingsService = yield* ServerSettingsService;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
@@ -1221,6 +1224,7 @@ const make = Effect.gen(function* () {
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
+      const eventSignalKind = runtimeEventSignalKind(event);
 
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
@@ -1272,6 +1276,27 @@ const make = Effect.gen(function* () {
         event.type === "turn.started" && shouldApplyThreadLifecycle
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
           : null;
+
+      if (eventTurnId && eventSignalKind) {
+        const { shouldPersist } = yield* threadTurnSignalTracker.record({
+          threadId: thread.id,
+          turnId: eventTurnId,
+          signalKind: eventSignalKind,
+          signaledAt: event.createdAt,
+        });
+
+        if (shouldPersist) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.turn.provider-signal",
+            commandId: yield* providerCommandId(event, "thread-turn-provider-signal"),
+            threadId: thread.id,
+            turnId: eventTurnId,
+            signalKind: eventSignalKind,
+            signaledAt: event.createdAt,
+            createdAt: event.createdAt,
+          });
+        }
+      }
 
       if (
         event.type === "session.started" ||
