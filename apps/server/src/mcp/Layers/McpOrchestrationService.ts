@@ -23,7 +23,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import { buildProjectCreateCommand, resolveAddProjectPath } from "@t3tools/shared/addProject";
-import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
+import { buildTemporaryWorktreeBranchName, isTemporaryWorktreeBranch } from "@t3tools/shared/git";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { isModelEnabledForMcp } from "@t3tools/shared/mcpModels";
 import { getProviderOptionCurrentLabel, getProviderOptionDescriptors } from "@t3tools/shared/model";
@@ -545,12 +545,14 @@ function assistantMessageForTurn(
 }
 
 function toInternalError(message: string, detail?: unknown): McpOrchestrationError {
+  const detailText =
+    detail instanceof Error ? detail.message : detail === undefined ? undefined : String(detail);
   return new McpOrchestrationError({
     code: "internal_error",
-    message,
-    ...(detail !== undefined
+    message: detailText === undefined ? message : `${message} ${detailText}`,
+    ...(detailText !== undefined
       ? {
-          detail: detail instanceof Error ? detail.message : String(detail),
+          detail: detailText,
         }
       : {}),
   });
@@ -1825,7 +1827,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
         }
 
         const hasBootstrapFields =
-          input.checkoutMode !== undefined ||
+          input.checkoutMode === "new_worktree" ||
           input.branch !== undefined ||
           input.baseBranch !== undefined ||
           input.worktreePath !== undefined;
@@ -3342,6 +3344,23 @@ export const McpOrchestrationServiceLive = Layer.effect(
               input.checkoutMode !== "current_checkout";
             const prepareNewWorktree =
               input.checkoutMode === "new_worktree" || isDeferredNewWorktree;
+            const usesStoredDeferredBranch =
+              isDeferredNewWorktree &&
+              input.checkoutMode !== "new_worktree" &&
+              thread.branch !== null &&
+              isTemporaryWorktreeBranch(thread.branch);
+            const prepareWorktreeBaseBranch =
+              isDeferredNewWorktree &&
+              input.checkoutMode !== "new_worktree" &&
+              thread.branch !== null &&
+              !usesStoredDeferredBranch
+                ? thread.branch
+                : (input.baseBranch ?? "HEAD");
+            const prepareWorktreeBranch = usesStoredDeferredBranch
+              ? thread.branch!
+              : isDeferredNewWorktree && input.checkoutMode !== "new_worktree"
+                ? buildTemporaryWorktreeBranchName(randomHex)
+                : (input.branch ?? thread.branch ?? buildTemporaryWorktreeBranchName(randomHex));
             const accepted = prepareNewWorktree
               ? yield* requireProject(thread.projectId).pipe(
                   Effect.flatMap((project) =>
@@ -3361,14 +3380,14 @@ export const McpOrchestrationServiceLive = Layer.effect(
                       bootstrap: {
                         prepareWorktree: {
                           projectCwd: project.workspaceRoot,
-                          // Explicit new_worktree requires baseBranch (validated above); the
-                          // deferred safe-default path branches off the project's current
-                          // checkout (HEAD) when the caller gave none.
-                          baseBranch: input.baseBranch ?? "HEAD",
-                          branch:
-                            input.branch ??
-                            thread.branch ??
-                            buildTemporaryWorktreeBranchName(randomHex),
+                          // Explicit new_worktree requires baseBranch (validated above). Deferred
+                          // generated branches are created from HEAD; deferred existing refs become
+                          // the base for a fresh temporary branch because Git rejects checking out
+                          // an already-active local branch into another worktree.
+                          baseBranch: prepareWorktreeBaseBranch,
+                          ...(prepareWorktreeBranch !== undefined
+                            ? { branch: prepareWorktreeBranch }
+                            : {}),
                         },
                         runSetupScript: true,
                       },

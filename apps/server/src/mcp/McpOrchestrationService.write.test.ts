@@ -41,6 +41,7 @@ import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/provi
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TextGeneration } from "../textGeneration/TextGeneration.ts";
 import { GitWorkflowService } from "../git/GitWorkflowService.ts";
+import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
 import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
 import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
 
@@ -291,6 +292,7 @@ const makeWriteHarnessLayer = (input?: {
     readonly worktreePath: string;
   }>;
   readonly refreshStatusCalls?: Array<string>;
+  readonly dispatchError?: OrchestrationCommandInvariantError;
 }) => {
   const projects = input?.projects ?? [
     makeProjectShell({
@@ -401,8 +403,11 @@ const makeWriteHarnessLayer = (input?: {
         OrchestrationEngineService,
         OrchestrationEngineService.of({
           dispatch: (command) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               dispatchedCommands.push(command);
+              if (input?.dispatchError) {
+                return yield* input.dispatchError;
+              }
               return { sequence: dispatchedCommands.length };
             }),
           readEvents: () => Stream.empty,
@@ -2828,7 +2833,7 @@ it.effect(
           {
             cwd: "/work/current",
             refName: "HEAD",
-            newRefName: "t3code/deferred-xyz",
+            newRefName: "t3code/abc123ef",
             path: null,
           },
         ]);
@@ -2849,7 +2854,7 @@ it.effect(
                 title: "Deferred new_worktree thread",
                 createdVia: "mcp",
                 createdByThreadId: ThreadId.make("thread-current"),
-                branch: "t3code/deferred-xyz",
+                branch: "t3code/abc123ef",
                 worktreePath: null,
               }),
             ],
@@ -2857,6 +2862,121 @@ it.effect(
         ),
       );
     })(),
+);
+
+it.effect(
+  "sendThreadMessage current_checkout skips deferred new_worktree bootstrap on non-empty threads",
+  () =>
+    (() => {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      const createWorktreeCalls: Array<{
+        readonly cwd: string;
+        readonly refName: string;
+        readonly newRefName?: string | undefined;
+        readonly path: string | null;
+      }> = [];
+      return Effect.gen(function* () {
+        const service = yield* McpOrchestrationService;
+        const result = yield* service.sendThreadMessage({
+          threadId: ThreadId.make("thread-deferred"),
+          message: "Use the shared checkout",
+          checkoutMode: "current_checkout",
+        });
+
+        expect(result).toMatchObject({ status: "accepted" });
+        expect(createWorktreeCalls).toEqual([]);
+        expect(dispatchedCommands).toHaveLength(1);
+        expect(dispatchedCommands[0]).toMatchObject({
+          type: "thread.turn.start",
+          threadId: "thread-deferred",
+        });
+      }).pipe(
+        Effect.provide(
+          makeWriteHarnessLayer({
+            dispatchedCommands,
+            createWorktreeCalls,
+            threadDetails: [
+              threadDetail({
+                id: ThreadId.make("thread-current"),
+                projectId: ProjectId.make("project-current"),
+                title: "Current Thread",
+              }),
+              threadDetail({
+                id: ThreadId.make("thread-deferred"),
+                projectId: ProjectId.make("project-current"),
+                title: "Deferred new_worktree thread",
+                createdVia: "mcp",
+                createdByThreadId: ThreadId.make("thread-current"),
+                branch: "main",
+                worktreePath: null,
+                messages: [
+                  {
+                    id: "message-existing" as never,
+                    role: "user",
+                    text: "existing",
+                    attachments: [],
+                    turnId: null,
+                    streaming: false,
+                    createdAt: "2026-01-01T00:00:00.000Z",
+                    updatedAt: "2026-01-01T00:00:00.000Z",
+                  },
+                ],
+              }),
+            ],
+          }),
+        ),
+      );
+    })(),
+);
+
+it.effect("sendThreadMessage creates a temporary branch from non-temporary deferred refs", () =>
+  (() => {
+    const createWorktreeCalls: Array<{
+      readonly cwd: string;
+      readonly refName: string;
+      readonly newRefName?: string | undefined;
+      readonly path: string | null;
+    }> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.sendThreadMessage({
+        threadId: ThreadId.make("thread-deferred-existing"),
+        message: "Begin work",
+      });
+
+      expect(result).toMatchObject({ status: "accepted" });
+      expect(createWorktreeCalls).toEqual([
+        {
+          cwd: "/work/current",
+          refName: "main",
+          newRefName: expect.stringMatching(/^t3code\/[0-9a-f]{8}$/),
+          path: null,
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          createWorktreeCalls,
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              projectId: ProjectId.make("project-current"),
+              title: "Current Thread",
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-deferred-existing"),
+              projectId: ProjectId.make("project-current"),
+              title: "Deferred existing branch thread",
+              createdVia: "mcp",
+              createdByThreadId: ThreadId.make("thread-current"),
+              branch: "main",
+              worktreePath: null,
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
 );
 
 it.effect("sendThreadMessage rejects checkout bootstrap fields on non-empty threads", () =>
@@ -2968,6 +3088,44 @@ it.effect(
         }
       }).pipe(Effect.provide(makeWriteHarnessLayer({ dispatchedCommands })));
     })(),
+);
+
+it.effect("sendThreadMessage surfaces orchestration dispatch failure detail", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const exit = yield* Effect.exit(
+        service.sendThreadMessage({
+          threadId: ThreadId.make("thread-current"),
+          message: "Continue",
+        }),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause) as {
+          readonly code: string;
+          readonly message: string;
+          readonly detail?: string;
+        };
+        expect(error.code).toBe("internal_error");
+        expect(error.message).toContain("turn start rejected because provider bootstrap failed");
+        expect(error.detail).toContain("turn start rejected because provider bootstrap failed");
+      }
+      expect(dispatchedCommands.map((command) => command.type)).toEqual(["thread.turn.start"]);
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          dispatchError: new OrchestrationCommandInvariantError({
+            commandType: "thread.turn.start",
+            detail: "turn start rejected because provider bootstrap failed",
+          }),
+        }),
+      ),
+    );
+  })(),
 );
 
 it.effect("sendThreadMessage persists a modelSelection change before starting the turn", () =>
