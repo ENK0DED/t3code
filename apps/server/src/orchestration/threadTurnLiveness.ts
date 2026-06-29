@@ -79,14 +79,3 @@ export function runtimeEventSignalKind(
       return null;
   }
 }
-
-export function isTurnBoundaryRuntimeEvent(event: ProviderRuntimeEvent): boolean {
-  switch (event.type) {
-    case "turn.started":
-    case "turn.completed":
-    case "turn.aborted":
-      return true;
-    default:
-      return false;
-  }
-}

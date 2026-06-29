@@ -38,7 +38,7 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadTurnSignalTracker } from "../Services/ThreadTurnSignalTracker.ts";
-import { isTurnBoundaryRuntimeEvent, runtimeEventSignalKind } from "../threadTurnLiveness.ts";
+import { runtimeEventSignalKind } from "../threadTurnLiveness.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
@@ -1290,17 +1290,12 @@ const make = Effect.gen(function* () {
             : true);
 
       if (shouldRecordProviderSignal && eventTurnId && eventSignalKind) {
-        const { shouldPersist } = yield* threadTurnSignalTracker.record(
-          {
-            threadId: thread.id,
-            turnId: eventTurnId,
-            signalKind: eventSignalKind,
-            signaledAt: event.createdAt,
-          },
-          {
-            bypassCoalescing: isTurnBoundaryRuntimeEvent(event),
-          },
-        );
+        const { shouldPersist } = yield* threadTurnSignalTracker.record({
+          threadId: thread.id,
+          turnId: eventTurnId,
+          signalKind: eventSignalKind,
+          signaledAt: event.createdAt,
+        });
 
         if (shouldPersist) {
           yield* orchestrationEngine.dispatch({

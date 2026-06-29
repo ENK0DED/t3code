@@ -50,12 +50,43 @@ import { ThreadTurnSignalTrackerLive } from "./ThreadTurnSignalTracker.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
-import { ThreadTurnSignalTracker } from "../Services/ThreadTurnSignalTracker.ts";
+import {
+  ThreadTurnSignalTracker,
+  type ThreadTurnSignalTrackerShape,
+} from "../Services/ThreadTurnSignalTracker.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Option from "effect/Option";
+import type * as EffectType from "effect/Effect";
+import type * as OptionType from "effect/Option";
+import type { ThreadTurnProviderSignal } from "../threadTurnLiveness.ts";
+
+type Assert<T extends true> = T;
+type IsEqual<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+
+type _ThreadTurnSignalTrackerRecordMatchesBrief = Assert<
+  IsEqual<
+    ThreadTurnSignalTrackerShape["record"],
+    (
+      input: ThreadTurnProviderSignal,
+    ) => EffectType.Effect<{ readonly shouldPersist: boolean }, never>
+  >
+>;
+type _ThreadTurnSignalTrackerRecordHasSingleParameter = Assert<
+  IsEqual<Parameters<ThreadTurnSignalTrackerShape["record"]>, [ThreadTurnProviderSignal]>
+>;
+type _ThreadTurnSignalTrackerGetLatestMatchesBrief = Assert<
+  IsEqual<
+    ThreadTurnSignalTrackerShape["getLatest"],
+    (input: {
+      readonly threadId: ThreadId;
+      readonly turnId: TurnId;
+    }) => EffectType.Effect<OptionType.Option<ThreadTurnProviderSignal>, never>
+  >
+>;
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
   return ServerSettingsService.layerTest(overrides);
@@ -888,7 +919,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(latestSignal.value.signaledAt).toBe("2026-01-01T00:00:10.000Z");
   });
 
-  it("keeps non-boundary lifecycle signals coalesced while persisting turn boundary lifecycle signals", async () => {
+  it("keeps lifecycle provider signals coalesced while updating the latest in-memory signal", async () => {
     const harness = await createHarness();
 
     harness.emit({
@@ -960,15 +991,7 @@ describe("ProviderRuntimeIngestion", () => {
     events = Array.from(await harness.readEvents()).filter(
       (event) => event.type === "thread.turn-provider-signaled",
     );
-    expect(events).toHaveLength(2);
-    expect(events[1]).toMatchObject({
-      type: "thread.turn-provider-signaled",
-      payload: {
-        signalKind: "lifecycle",
-        signaledAt: "2026-01-01T00:00:20.000Z",
-        turnId: asTurnId("turn-lifecycle-gate"),
-      },
-    });
+    expect(events).toHaveLength(1);
   });
 
   it("persists another reasoning provider-signal after the 30 second coalescing window", async () => {
