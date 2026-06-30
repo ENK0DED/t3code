@@ -808,6 +808,129 @@ it.live("send_thread_message wait_for_response timeout returns running and does 
   }),
 );
 
+it.live("parent stale-cleanup loop waits for provider progress before guarded cancellation", () =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make("turn-parent-loop");
+    const harness = yield* makeHarness(
+      [thread({ id: TARGET, latestTurn: null })],
+      (command, api) =>
+        command.type === "thread.turn.start"
+          ? api.setThread(managedRunningThread("turn-parent-loop"))
+          : Effect.void,
+      {
+        livenessRows: [
+          livenessRow({
+            turnId,
+            lastProviderSignalAt: freshIso(),
+            lastSignalKind: "reasoning",
+          }),
+        ],
+      },
+    );
+
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const sendResult = (yield* service.sendThreadMessage({
+        threadId: TARGET,
+        message: "work silently",
+        waitForResponse: true,
+        timeoutMs: 40,
+      })) as {
+        readonly wait?: {
+          readonly state: string;
+          readonly answer: unknown;
+          readonly timedOut?: boolean;
+        };
+      };
+      expect(sendResult.wait?.state).toBe("running");
+      expect(sendResult.wait?.answer).toBeNull();
+      expect(sendResult.wait?.timedOut).toBe(true);
+      expect(
+        harness.dispatched.filter((command) => command.type === "thread.turn.interrupt"),
+      ).toEqual([]);
+
+      const status = yield* service.getThreadTurnStatus({ threadId: TARGET, turnId });
+      const signaledAt = futureIso(1_000);
+      const progressWaiter = yield* service
+        .waitForThreadUpdate({
+          threadId: TARGET,
+          turnId,
+          since: status.cursor,
+          timeoutMs: 1_000,
+          includeStatus: true,
+        })
+        .pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* harness.updateLivenessRow(
+        livenessRow({
+          turnId,
+          lastProviderSignalAt: signaledAt,
+          lastObservableProgressAt: signaledAt,
+          lastSignalKind: "reasoning",
+        }),
+      );
+      yield* harness.setSnapshotSequence(2);
+      yield* harness.emit(
+        providerSignalEvent({
+          threadId: TARGET,
+          turnId,
+          signaledAt,
+          sequence: 2,
+        }),
+      );
+
+      const progress = yield* Fiber.join(progressWaiter);
+      expect(progress.reason).toBe("progress");
+      expect(progress.liveness?.lastProviderSignalAt).toBe(signaledAt);
+      expect(
+        harness.dispatched.filter((command) => command.type === "thread.turn.interrupt"),
+      ).toEqual([]);
+
+      yield* harness.updateLivenessRow(
+        livenessRow({
+          turnId,
+          requestedAt: STALE_SIGNAL_AT,
+          startedAt: STALE_SIGNAL_AT,
+          lastProviderSignalAt: STALE_SIGNAL_AT,
+          lastObservableProgressAt: STALE_SIGNAL_AT,
+          lastSignalKind: "reasoning",
+        }),
+      );
+      const stale = yield* service.waitForThreadUpdate({
+        threadId: TARGET,
+        turnId,
+        since: progress.cursor,
+        timeoutMs: 1_000,
+        includeStatus: true,
+      });
+      expect(stale.reason).toBe("stale");
+      expect(stale.liveness?.safeToInterrupt).toBe(true);
+
+      const cancel = yield* service.cancelStaleThreadTurn({
+        threadId: TARGET,
+        turnId,
+        ifNoProgressSince: stale.cursor,
+      });
+      expect(cancel).toMatchObject({
+        status: "interrupt_requested",
+        threadId: TARGET,
+        turnId,
+        forced: false,
+      });
+      const interrupts = harness.dispatched.filter(
+        (command) => command.type === "thread.turn.interrupt",
+      );
+      expect(interrupts).toHaveLength(1);
+      expect(interrupts[0]).toMatchObject({
+        type: "thread.turn.interrupt",
+        threadId: TARGET,
+        turnId,
+      });
+    }).pipe(Effect.scoped, Effect.provide(harness.layer));
+  }),
+);
+
 // --- wait_for_response: provider turn-start failure before a turn id exists is reported as error ---
 it.live("send_thread_message wait_for_response reports provider start failure", () =>
   Effect.gen(function* () {
@@ -933,6 +1056,62 @@ it.live("turn_timeout_ms cancels the turn when it is still running after the tim
   }),
 );
 
+it.live("turn_timeout_ms still cancels while provider signals continue", () =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make("turn-signal-budget");
+    const harness = yield* makeHarness(
+      [thread({ id: TARGET, latestTurn: null })],
+      (command, api) =>
+        command.type === "thread.turn.start"
+          ? api.setThread(managedRunningThread("turn-signal-budget"))
+          : Effect.void,
+      {
+        livenessRows: [
+          livenessRow({
+            turnId,
+            lastProviderSignalAt: freshIso(),
+            lastSignalKind: "reasoning",
+          }),
+        ],
+      },
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* service.sendThreadMessage({
+        threadId: TARGET,
+        message: "respect hard budget",
+        turnTimeoutMs: 30,
+      });
+      const signaledAt = futureIso(1_000);
+      yield* harness.updateLivenessRow(
+        livenessRow({
+          turnId,
+          lastProviderSignalAt: signaledAt,
+          lastObservableProgressAt: signaledAt,
+          lastSignalKind: "reasoning",
+        }),
+      );
+      yield* harness.setSnapshotSequence(2);
+      yield* harness.emit(
+        providerSignalEvent({
+          threadId: TARGET,
+          turnId,
+          signaledAt,
+          sequence: 2,
+        }),
+      );
+      yield* Effect.sleep("120 millis");
+      const interrupts = harness.dispatched.filter((c) => c.type === "thread.turn.interrupt");
+      expect(interrupts).toHaveLength(1);
+      expect(interrupts[0]).toMatchObject({
+        type: "thread.turn.interrupt",
+        threadId: TARGET,
+        turnId,
+      });
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 // --- turn_timeout_ms watcher: does NOT interrupt when the turn already completed ---
 it.live("turn_timeout_ms does NOT cancel when the turn completed first", () =>
   Effect.gen(function* () {
@@ -992,6 +1171,77 @@ it.live("response_timeout_ms cancels when the turn is still blocked on a pending
       yield* Effect.sleep("120 millis");
       const interrupts = harness.dispatched.filter((c) => c.type === "thread.turn.interrupt");
       expect(interrupts).toHaveLength(1);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.live("response_timeout_ms still cancels an open request while provider signals continue", () =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make("turn-request-signal-budget");
+    const harness = yield* makeHarness(
+      [thread({ id: TARGET, latestTurn: null })],
+      (command, api) =>
+        command.type === "thread.turn.start"
+          ? api.setThread(managedRunningThread("turn-request-signal-budget"))
+          : Effect.void,
+      {
+        livenessRows: [
+          livenessRow({
+            turnId,
+            lastProviderSignalAt: freshIso(),
+            lastSignalKind: "reasoning",
+          }),
+        ],
+      },
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* service.sendThreadMessage({
+        threadId: TARGET,
+        message: "needs approval",
+        responseTimeoutMs: 30,
+      });
+      yield* harness.setThread(
+        managedRunningThread("turn-request-signal-budget", {
+          activities: [
+            {
+              id: "evt-signal-req" as never,
+              tone: "approval",
+              kind: "approval.requested",
+              summary: "approval requested",
+              payload: { requestId: "req-signal", requestKind: "command", detail: "deploy" },
+              turnId,
+              createdAt: "2026-01-01T00:00:00.500Z",
+            },
+          ],
+        }),
+      );
+      const signaledAt = futureIso(1_000);
+      yield* harness.updateLivenessRow(
+        livenessRow({
+          turnId,
+          lastProviderSignalAt: signaledAt,
+          lastObservableProgressAt: signaledAt,
+          lastSignalKind: "reasoning",
+        }),
+      );
+      yield* harness.setSnapshotSequence(2);
+      yield* harness.emit(
+        providerSignalEvent({
+          threadId: TARGET,
+          turnId,
+          signaledAt,
+          sequence: 2,
+        }),
+      );
+      yield* Effect.sleep("120 millis");
+      const interrupts = harness.dispatched.filter((c) => c.type === "thread.turn.interrupt");
+      expect(interrupts).toHaveLength(1);
+      expect(interrupts[0]).toMatchObject({
+        type: "thread.turn.interrupt",
+        threadId: TARGET,
+        turnId,
+      });
     }).pipe(Effect.provide(harness.layer));
   }),
 );

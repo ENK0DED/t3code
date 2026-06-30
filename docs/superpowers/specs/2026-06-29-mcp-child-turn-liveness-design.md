@@ -162,16 +162,22 @@ Add a read-only tool:
 
 ```ts
 get_thread_turn_status({
-  threadId: ThreadId
+  threadId: ThreadId,
+  turnId?: TurnId
 }) => {
   threadId,
+  cursor: string,
   liveness: ThreadTurnLiveness
 }
 ```
 
 This is the cheap status query parents use after any non-cancelling wait timeout.
 It avoids forcing agents to fetch full settings, messages, or diffs just to know
-whether a child is still alive.
+whether a child is still alive. When `turnId` is supplied, status is scoped to
+that exact turn. When it is omitted, the server resolves the pending, active, or
+latest turn for the thread. `idle` means the thread exists, has no pending turn
+start, and has no active turn in the requested scope; it is not equivalent to
+`completed`.
 
 ### `wait_for_thread_update`
 
@@ -180,11 +186,13 @@ Add a read-only, non-cancelling wait tool:
 ```ts
 wait_for_thread_update({
   threadId: ThreadId,
+  turnId?: TurnId,
   since?: string,
   timeoutMs?: number,
   includeStatus?: boolean
 }) => {
   threadId,
+  turnId: TurnId | null,
   reason:
     | "terminal"
     | "progress"
@@ -208,10 +216,16 @@ Behavior:
 - Returns `timeout` when no relevant update occurs before `timeoutMs`.
 - Never interrupts the child turn.
 - Always returns a new cursor that can be fed back as `since`.
+- Bounds `timeoutMs` to `1..120_000` milliseconds.
 
-The cursor may initially be the latest relevant timestamp plus a tie-breaker.
-It must be opaque to callers so the server can later replace it with a sequence
-or event id without changing the tool contract.
+The cursor is an opaque server value. It currently encodes a versioned sequence
+plus the last observed progress timestamp, but callers must not parse or modify
+it. Cursors returned from `get_thread_turn_status` or `wait_for_thread_update`
+can be passed back as `since` or
+`cancel_stale_thread_turn.ifNoProgressSince`.
+
+Terminal turn states (`completed`, `interrupted`, `error`) are never stale and
+are never safe to interrupt. They return `terminal` from waits when in scope.
 
 ### Stale-Aware Cancellation
 
@@ -245,8 +259,7 @@ is the stale-cleanup path, not a normal control operation.
 Default behavior:
 
 - Reject if the target turn is no longer active.
-- Reject if `ifNoProgressSince` is older than the current
-  `lastObservableProgressAt`.
+- Reject if the current liveness cursor is newer than `ifNoProgressSince`.
 - Reject unless `safeToInterrupt` is true.
 - Allow `force: true` only as an explicit override and record that override in
   the resulting activity.
@@ -339,7 +352,7 @@ content.
 
 - `unknown_thread`: thread does not exist or is not visible to the credential.
 - `invalid_cursor`: `since` cannot be decoded.
-- `invalid_input`: timeout is non-positive or too large.
+- `invalid_timeout`: timeout is non-positive or greater than `120_000`.
 - On timeout, return a structured `reason: "timeout"` result rather than an
   error.
 
@@ -387,12 +400,11 @@ Regression tests:
 
 1. Add liveness projection and query module.
 2. Add `get_thread_turn_status`.
-3. Add `wait_for_thread_update`.
+3. Add `wait_for_thread_update` and stale-aware cancellation together so callers
+   do not discover stale status before the safe cleanup path exists.
 4. Update tool descriptions and MCP guidance to discourage silence-based
    interruption.
-5. Add stale-aware cancellation.
-6. Optionally surface liveness in the UI tree as a child-thread status detail.
+5. Optionally surface liveness in the UI tree as a child-thread status detail.
 
-Steps 1-4 provide the core safety improvement without changing existing
-cancellation behavior. Step 5 hardens cleanup workflows after the status surface
-is available.
+Steps 1-4 provide the core safety improvement while keeping guarded cleanup
+available through a purpose-built tool rather than the manual interrupt path.
