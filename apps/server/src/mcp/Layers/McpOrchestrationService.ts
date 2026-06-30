@@ -68,6 +68,10 @@ import {
   resolveCurrentSessionModelSelectionForCompatibility,
   validateProviderSessionModelSelectionCompatibility,
 } from "../../orchestration/providerSessionCompatibility.ts";
+import {
+  derivePendingRequestsForTurn,
+  derivePendingRequestsFromActivities,
+} from "../../orchestration/pendingRequests.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -79,7 +83,6 @@ import {
   type AddProjectInput,
   type GetThreadDiffInput,
   type GetThreadDiffResult,
-  type PendingRequest,
   type ProjectActionSummary,
   type ThreadDiffFileSummary,
 } from "../Services/McpOrchestrationService.ts";
@@ -198,188 +201,6 @@ function latestCompletedCheckpoint(
   thread: OrchestrationThread,
 ): OrchestrationCheckpointSummary | null {
   return thread.checkpoints.length > 0 ? thread.checkpoints[thread.checkpoints.length - 1]! : null;
-}
-
-function activityRequestId(payload: unknown): string | null {
-  if (typeof payload !== "object" || payload === null) {
-    return null;
-  }
-  const requestId = (payload as Record<string, unknown>).requestId;
-  return typeof requestId === "string" ? requestId : null;
-}
-
-function activityDetailLower(payload: unknown): string | null {
-  if (typeof payload !== "object" || payload === null) {
-    return null;
-  }
-  const detail = (payload as Record<string, unknown>).detail;
-  return typeof detail === "string" ? detail.toLowerCase() : null;
-}
-
-// Mirrors the server-side stale-request handling that
-// `derivePendingUserInputCountFromActivities` / the pending-approval projection use:
-// a failed respond whose detail says the request was already gone closes the request.
-function isStaleApprovalFailure(detail: string | null): boolean {
-  return (
-    detail !== null &&
-    (detail.includes("stale pending approval request") ||
-      detail.includes("unknown pending approval request") ||
-      detail.includes("unknown pending permission request"))
-  );
-}
-
-function isStaleUserInputFailure(detail: string | null): boolean {
-  return (
-    detail !== null &&
-    (detail.includes("stale pending user-input request") ||
-      detail.includes("unknown pending user-input request") ||
-      detail.includes("unknown pending user input request") ||
-      detail.includes("unknown pending codex user input request"))
-  );
-}
-
-type PendingUserInputFields = Extract<PendingRequest, { kind: "user-input" }>["fields"];
-
-function userInputFieldsFromPayload(payload: unknown): PendingUserInputFields {
-  const questions =
-    typeof payload === "object" && payload !== null
-      ? (payload as Record<string, unknown>).questions
-      : undefined;
-  if (!Array.isArray(questions)) {
-    return [];
-  }
-  return questions.flatMap((question) => {
-    if (typeof question !== "object" || question === null) {
-      return [];
-    }
-    const record = question as Record<string, unknown>;
-    const id = typeof record.id === "string" ? record.id : null;
-    if (id === null) {
-      return [];
-    }
-    const options = Array.isArray(record.options)
-      ? record.options.flatMap((option) => {
-          if (typeof option !== "object" || option === null) {
-            return [];
-          }
-          const optionRecord = option as Record<string, unknown>;
-          const label = typeof optionRecord.label === "string" ? optionRecord.label : null;
-          if (label === null) {
-            return [];
-          }
-          return [
-            {
-              label,
-              ...(typeof optionRecord.description === "string"
-                ? { description: optionRecord.description }
-                : {}),
-            },
-          ];
-        })
-      : undefined;
-    return [
-      {
-        id,
-        ...(typeof record.header === "string" ? { header: record.header } : {}),
-        ...(typeof record.question === "string" ? { question: record.question } : {}),
-        ...(options ? { options } : {}),
-        ...(typeof record.multiSelect === "boolean" ? { multiSelect: record.multiSelect } : {}),
-      },
-    ];
-  });
-}
-
-// Derive the set of currently-open requests directly from the thread's activities at
-// read time. A `*.requested` activity opens a request; a later matching `*.resolved`
-// (or a stale-request respond failure) closes it. This unifies approval and user-input
-// tracking in a single ordered pass and matches the authoritative server-side accounting
-// (ProjectionPipeline: pending-approval projection + derivePendingUserInputCountFromActivities).
-// `detail` is already bounded by `truncateDetail` at ingestion, so no further capping here.
-function derivePendingRequestsFromActivities(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
-): ReadonlyArray<PendingRequest> {
-  const ordered = [...activities].toSorted(
-    (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-  );
-
-  // Insertion-ordered map keyed by requestId so the output preserves request order.
-  const open = new Map<string, PendingRequest>();
-
-  for (const activity of ordered) {
-    const requestId = activityRequestId(activity.payload);
-    if (requestId === null) {
-      continue;
-    }
-    const payload = activity.payload as Record<string, unknown>;
-    const detail = activityDetailLower(activity.payload);
-
-    switch (activity.kind) {
-      case "approval.requested": {
-        open.set(requestId, {
-          kind: "approval",
-          requestId,
-          ...(payload.requestKind === "command" ||
-          payload.requestKind === "file-read" ||
-          payload.requestKind === "file-change"
-            ? { requestKind: payload.requestKind }
-            : {}),
-          ...(typeof payload.requestType === "string" ? { requestType: payload.requestType } : {}),
-          ...(typeof payload.detail === "string" ? { detail: payload.detail } : {}),
-        });
-        break;
-      }
-      case "approval.resolved": {
-        open.delete(requestId);
-        break;
-      }
-      case "user-input.requested": {
-        open.set(requestId, {
-          kind: "user-input",
-          requestId,
-          ...(typeof payload.prompt === "string" ? { prompt: payload.prompt } : {}),
-          fields: userInputFieldsFromPayload(activity.payload),
-        });
-        break;
-      }
-      case "user-input.resolved": {
-        open.delete(requestId);
-        break;
-      }
-      case "provider.approval.respond.failed": {
-        if (isStaleApprovalFailure(detail)) {
-          open.delete(requestId);
-        }
-        break;
-      }
-      case "provider.user-input.respond.failed": {
-        if (isStaleUserInputFailure(detail)) {
-          open.delete(requestId);
-        }
-        break;
-      }
-      default:
-        break;
-    }
-  }
-
-  return [...open.values()];
-}
-
-function derivePendingRequestsForTurn(
-  thread: OrchestrationThread,
-  turnId: string,
-): ReadonlyArray<PendingRequest> {
-  // Scope the response-timeout's pending-request set to THIS turn (review B7): a request
-  // left open by an OLDER turn must not trip a new turn's response timeout. Requests open
-  // mid-turn, so their activities carry that turn's id. Do NOT broaden this to include
-  // null/unattributed turnIds (e.g. `|| activity.turnId == null`) — that would let a stale
-  // unattributed request cancel an unrelated turn, reintroducing B7. A request that somehow
-  // opens without a turn id is intentionally not response-timeout-scoped here; the per-turn
-  // turn_timeout_ms remains its backstop.
-  return derivePendingRequestsFromActivities(
-    thread.activities.filter((activity) => activity.turnId === TurnId.make(turnId)),
-  );
 }
 
 function activityDetail(activity: OrchestrationThreadActivity): string | null {

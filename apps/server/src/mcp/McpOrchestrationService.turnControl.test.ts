@@ -347,6 +347,7 @@ const makeHarness = (
       // nulled). Resolve from the stored thread's latestTurn when it matches, else from a
       // checkpoint for that turn id (checkpoints exist only for completed turns).
       getThreadTurnStateById: readTurnStateById,
+      getThreadTurnLivenessRowById: () => Effect.succeed(Option.none()),
       getThreadTurnStateByPendingMessageId: ({ threadId, messageId }) =>
         Effect.gen(function* () {
           const turnIdsByMessageId = yield* Ref.get(turnIdsByMessageIdRef);

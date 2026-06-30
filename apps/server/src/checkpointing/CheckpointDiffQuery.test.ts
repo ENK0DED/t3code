@@ -63,6 +63,7 @@ function makeProjectionSnapshotQueryStub(
     getThreadCreatorById: () => Effect.succeed(Option.none()),
     getThreadDetailById: () => Effect.succeed(Option.none()),
     getThreadTurnStateById: () => Effect.succeed(Option.none()),
+    getThreadTurnLivenessRowById: () => Effect.succeed(Option.none()),
     getThreadTurnStateByPendingMessageId: () => Effect.succeed(Option.none()),
     searchThreadMessagesByProject: () => Effect.succeed([]),
     ...overrides,

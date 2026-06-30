@@ -10,6 +10,7 @@ import {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   ProjectScript,
+  ThreadTurnProviderSignalKind,
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationLatestTurn,
@@ -57,6 +58,7 @@ import {
   type ProjectionFullThreadDiffContext,
   type ProjectionSnapshotCounts,
   type ProjectionThreadCheckpointContext,
+  type ProjectionThreadTurnLivenessRow,
   type ProjectionSnapshotQueryShape,
 } from "../Services/ProjectionSnapshotQuery.ts";
 
@@ -103,6 +105,18 @@ const ProjectionLatestTurnDbRowSchema = Schema.Struct({
   assistantMessageId: Schema.NullOr(MessageId),
   sourceProposedPlanThreadId: Schema.NullOr(ThreadId),
   sourceProposedPlanId: Schema.NullOr(OrchestrationProposedPlanId),
+});
+const ProjectionThreadTurnLivenessRowDbSchema = Schema.Struct({
+  threadId: ProjectionThread.fields.threadId,
+  turnId: TurnId,
+  pendingMessageId: Schema.NullOr(MessageId),
+  state: Schema.Literals(["running", "interrupted", "completed", "error"]),
+  requestedAt: IsoDateTime,
+  startedAt: Schema.NullOr(IsoDateTime),
+  completedAt: Schema.NullOr(IsoDateTime),
+  lastProviderSignalAt: Schema.NullOr(IsoDateTime),
+  lastObservableProgressAt: Schema.NullOr(IsoDateTime),
+  lastSignalKind: Schema.NullOr(ThreadTurnProviderSignalKind),
 });
 const ProjectionStateDbRowSchema = ProjectionState;
 const ProjectionCountsRowSchema = Schema.Struct({
@@ -981,6 +995,29 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           turns.assistant_message_id AS "assistantMessageId",
           turns.source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
           turns.source_proposed_plan_id AS "sourceProposedPlanId"
+        FROM projection_turns AS turns
+        WHERE turns.thread_id = ${threadId}
+          AND turns.turn_id = ${turnId}
+        LIMIT 1
+      `,
+  });
+
+  const getThreadTurnLivenessRow = SqlSchema.findOneOption({
+    Request: ThreadTurnStateByIdInput,
+    Result: ProjectionThreadTurnLivenessRowDbSchema,
+    execute: ({ threadId, turnId }) =>
+      sql`
+        SELECT
+          turns.thread_id AS "threadId",
+          turns.turn_id AS "turnId",
+          turns.pending_message_id AS "pendingMessageId",
+          turns.state,
+          turns.requested_at AS "requestedAt",
+          turns.started_at AS "startedAt",
+          turns.completed_at AS "completedAt",
+          turns.last_provider_signal_at AS "lastProviderSignalAt",
+          turns.last_observable_progress_at AS "lastObservableProgressAt",
+          turns.last_signal_kind AS "lastSignalKind"
         FROM projection_turns AS turns
         WHERE turns.thread_id = ${threadId}
           AND turns.turn_id = ${turnId}
@@ -2295,6 +2332,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       Effect.map(Option.map(mapLatestTurn)),
     );
 
+  const getThreadTurnLivenessRowById: ProjectionSnapshotQueryShape["getThreadTurnLivenessRowById"] =
+    (input) =>
+      getThreadTurnLivenessRow(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.getThreadTurnLivenessRowById:query",
+            "ProjectionSnapshotQuery.getThreadTurnLivenessRowById:decodeRow",
+          ),
+        ),
+        Effect.map(Option.map((row): ProjectionThreadTurnLivenessRow => row)),
+      );
+
   const getThreadTurnStateByPendingMessageId: ProjectionSnapshotQueryShape["getThreadTurnStateByPendingMessageId"] =
     (input) =>
       getTurnStateRowByPendingMessageId(input).pipe(
@@ -2328,6 +2377,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadCreatorById,
     getThreadDetailById,
     getThreadTurnStateById,
+    getThreadTurnLivenessRowById,
     getThreadTurnStateByPendingMessageId,
     searchThreadMessagesByProject,
   } satisfies ProjectionSnapshotQueryShape;

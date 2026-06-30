@@ -4,6 +4,7 @@ import {
   type ThreadTurnProviderSignalKind,
   type TurnId,
 } from "@t3tools/contracts";
+import * as NodeBuffer from "node:buffer";
 
 export const DEFAULT_STALE_AFTER_MS = 10 * 60_000;
 export const CLAUDE_HIGH_REASONING_STALE_AFTER_MS = 20 * 60_000;
@@ -26,6 +27,48 @@ export interface ThreadTurnProviderSignal {
   readonly turnId: TurnId;
   readonly signalKind: ThreadTurnProviderSignalKind;
   readonly signaledAt: string;
+}
+
+export interface ThreadUpdateCursor {
+  readonly sequence: number;
+  readonly observedAt: string | null;
+}
+
+interface ThreadUpdateCursorV1 extends ThreadUpdateCursor {
+  readonly v: 1;
+}
+
+export function encodeThreadUpdateCursor(input: ThreadUpdateCursor): string {
+  return NodeBuffer.Buffer.from(
+    JSON.stringify({ v: 1, ...input } satisfies ThreadUpdateCursorV1),
+  ).toString("base64url");
+}
+
+export function decodeThreadUpdateCursor(input: string): ThreadUpdateCursor | null {
+  try {
+    const decoded = JSON.parse(
+      NodeBuffer.Buffer.from(input, "base64url").toString("utf8"),
+    ) as unknown;
+    if (typeof decoded !== "object" || decoded === null) {
+      return null;
+    }
+    const record = decoded as Record<string, unknown>;
+    if (record.v !== 1) {
+      return null;
+    }
+    if (!Number.isInteger(record.sequence) || (record.sequence as number) < 0) {
+      return null;
+    }
+    if (record.observedAt !== null && typeof record.observedAt !== "string") {
+      return null;
+    }
+    return {
+      sequence: record.sequence as number,
+      observedAt: record.observedAt,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function runtimeEventSignalKind(
