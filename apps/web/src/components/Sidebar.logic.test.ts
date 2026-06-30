@@ -18,8 +18,10 @@ import {
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarStageBadgeLabel,
+  resolveSidebarThreadTreeDisplay,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
+  shouldShowMcpCreatedThreadIcon,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
@@ -1004,6 +1006,94 @@ describe("buildThreadTreeRows", () => {
     });
 
     expect(rows.map((row) => row.thread.id)).toEqual(["thread-root", "thread-b", "thread-a"]);
+  });
+});
+
+describe("resolveSidebarThreadTreeDisplay", () => {
+  it("returns rendered tree rows instead of flattening parent and child threads", () => {
+    const threadExpansionId = (thread: SidebarThreadTestSummary) =>
+      `${thread.environmentId}:${thread.id}`;
+    const result = resolveSidebarThreadTreeDisplay({
+      threads: [
+        sidebarThread({
+          id: "thread-parent",
+          environmentId: "environment-a",
+          parentThreadId: null,
+          updatedAt: "2026-01-03T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-child",
+          environmentId: "environment-a",
+          parentThreadId: "thread-parent",
+          updatedAt: "2026-01-04T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-other",
+          environmentId: "environment-a",
+          parentThreadId: null,
+          updatedAt: "2026-01-02T00:00:00.000Z",
+        }),
+      ],
+      expandedThreadIds: new Set(["environment-a:thread-parent"]),
+      activeThreadId: undefined,
+      projectExpanded: true,
+      isThreadListExpanded: true,
+      previewLimit: 6,
+      sortOrder: "updated_at",
+      getThreadExpansionId: threadExpansionId,
+      getThreadOutputId: threadExpansionId,
+    });
+
+    expect(result.renderedThreadRows.map((row) => [row.thread.id, row.depth])).toEqual([
+      ["thread-parent", 0],
+      ["thread-child", 1],
+      ["thread-other", 0],
+    ]);
+    expect(result.orderedThreadIds).toEqual([
+      "environment-a:thread-parent",
+      "environment-a:thread-child",
+      "environment-a:thread-other",
+    ]);
+  });
+
+  it("pins the active child thread when its project is collapsed", () => {
+    const threadExpansionId = (thread: SidebarThreadTestSummary) =>
+      `${thread.environmentId}:${thread.id}`;
+    const result = resolveSidebarThreadTreeDisplay({
+      threads: [
+        sidebarThread({
+          id: "thread-parent",
+          environmentId: "environment-a",
+          parentThreadId: null,
+        }),
+        sidebarThread({
+          id: "thread-child",
+          environmentId: "environment-a",
+          parentThreadId: "thread-parent",
+        }),
+      ],
+      expandedThreadIds: new Set(),
+      activeThreadId: "environment-a:thread-child",
+      projectExpanded: false,
+      isThreadListExpanded: false,
+      previewLimit: 6,
+      sortOrder: "updated_at",
+      getThreadExpansionId: threadExpansionId,
+      getThreadOutputId: threadExpansionId,
+    });
+
+    expect(result.shouldShowThreadPanel).toBe(true);
+    expect(result.renderedThreadRows.map((row) => [row.thread.id, row.depth])).toEqual([
+      ["thread-child", 0],
+    ]);
+  });
+});
+
+describe("shouldShowMcpCreatedThreadIcon", () => {
+  it("marks only MCP-created threads", () => {
+    expect(shouldShowMcpCreatedThreadIcon({ createdVia: "mcp" })).toBe(true);
+    expect(shouldShowMcpCreatedThreadIcon({ createdVia: "user" })).toBe(false);
+    expect(shouldShowMcpCreatedThreadIcon({})).toBe(false);
   });
 });
 

@@ -47,6 +47,16 @@ export interface SidebarThreadTreeRow<TThread> {
   readonly descendantStatus: ThreadStatusPill | null;
 }
 
+export interface SidebarThreadTreeDisplay<TThread> {
+  readonly visibleThreadRows: readonly SidebarThreadTreeRow<TThread>[];
+  readonly renderedThreadRows: readonly SidebarThreadTreeRow<TThread>[];
+  readonly hiddenThreadRows: readonly SidebarThreadTreeRow<TThread>[];
+  readonly orderedThreadIds: readonly string[];
+  readonly hasOverflowingThreads: boolean;
+  readonly showEmptyThreadState: boolean;
+  readonly shouldShowThreadPanel: boolean;
+}
+
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   "Pending Approval": 5,
   "Awaiting Input": 4,
@@ -643,6 +653,89 @@ export function buildThreadTreeRows<TThread extends ThreadTreeInput>(input: {
     visit(thread, 0, new Set(), true);
   }
   return rows;
+}
+
+export function resolveSidebarThreadTreeDisplay<TThread extends ThreadTreeInput>(input: {
+  readonly threads: readonly TThread[];
+  readonly expandedThreadIds: ReadonlySet<string>;
+  readonly activeThreadId: string | undefined;
+  readonly projectExpanded: boolean;
+  readonly isThreadListExpanded: boolean;
+  readonly previewLimit: number;
+  readonly sortOrder: SidebarThreadSortOrder;
+  readonly getThreadExpansionId?: ((thread: TThread) => string) | undefined;
+  readonly getThreadOutputId?: ((thread: TThread) => string) | undefined;
+}): SidebarThreadTreeDisplay<TThread> {
+  const getThreadExpansionId = input.getThreadExpansionId ?? ((thread: TThread) => thread.id);
+  const getThreadOutputId = input.getThreadOutputId ?? getThreadExpansionId;
+  const visibleThreadRows = buildThreadTreeRows({
+    threads: input.threads,
+    expandedThreadIds: input.expandedThreadIds,
+    activeThreadId: input.activeThreadId,
+    sortOrder: input.sortOrder,
+    getThreadExpansionId,
+  });
+  const pinnedCollapsedThreadRow = (() => {
+    if (!input.activeThreadId || input.projectExpanded) {
+      return null;
+    }
+    const thread =
+      input.threads.find((candidate) => getThreadOutputId(candidate) === input.activeThreadId) ??
+      null;
+    if (!thread) {
+      return null;
+    }
+    const threadExpansionId = getThreadExpansionId(thread);
+    return {
+      thread,
+      depth: 0,
+      hasChildren: input.threads.some((candidate) => {
+        if (candidate.parentThreadId === null) {
+          return false;
+        }
+        const candidateParentId = getThreadExpansionId({
+          ...candidate,
+          id: candidate.parentThreadId,
+        });
+        return candidateParentId === threadExpansionId;
+      }),
+      expanded: false,
+      descendantStatus: null,
+    } satisfies SidebarThreadTreeRow<TThread>;
+  })();
+  const hasOverflowingThreads = visibleThreadRows.length > input.previewLimit;
+  const previewThreadRows =
+    input.isThreadListExpanded || !hasOverflowingThreads
+      ? visibleThreadRows
+      : visibleThreadRows.slice(0, input.previewLimit);
+  const visibleThreadIds = new Set(
+    [
+      ...previewThreadRows.map((row) => row.thread),
+      ...(pinnedCollapsedThreadRow ? [pinnedCollapsedThreadRow.thread] : []),
+    ].map(getThreadOutputId),
+  );
+  const renderedThreadRows = pinnedCollapsedThreadRow
+    ? [pinnedCollapsedThreadRow]
+    : visibleThreadRows.filter((row) => visibleThreadIds.has(getThreadOutputId(row.thread)));
+  const hiddenThreadRows = visibleThreadRows.filter(
+    (row) => !visibleThreadIds.has(getThreadOutputId(row.thread)),
+  );
+
+  return {
+    visibleThreadRows,
+    renderedThreadRows,
+    hiddenThreadRows,
+    orderedThreadIds: visibleThreadRows.map((row) => getThreadOutputId(row.thread)),
+    hasOverflowingThreads,
+    showEmptyThreadState: input.projectExpanded && input.threads.length === 0,
+    shouldShowThreadPanel: input.projectExpanded || pinnedCollapsedThreadRow !== null,
+  };
+}
+
+export function shouldShowMcpCreatedThreadIcon(input: {
+  readonly createdVia?: string | undefined;
+}): boolean {
+  return input.createdVia === "mcp";
 }
 
 export function getVisibleThreadsForProject<T extends Pick<Thread, "id">>(input: {
