@@ -28,6 +28,7 @@ import { McpOrchestrationService } from "./Services/McpOrchestrationService.ts";
 import { CheckpointDiffQuery } from "../checkpointing/CheckpointDiffQuery.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadTurnLivenessQuery } from "../orchestration/Services/ThreadTurnLivenessQuery.ts";
 import { ThreadTurnStartBootstrapDispatcher } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import { ProjectionThreadMessageSearchRepository } from "../persistence/Services/ProjectionThreadMessageSearch.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
@@ -234,6 +235,12 @@ const providerRegistryMock = (providers: ReadonlyArray<ServerProvider>) =>
     streamChanges: Stream.empty,
   });
 
+const threadTurnLivenessQueryUnused = ThreadTurnLivenessQuery.of({
+  getThreadTurnStatus: () => Effect.die("unused"),
+  getCurrentCursor: () => Effect.die("unused"),
+  waitForThreadUpdate: () => Effect.die("unused"),
+});
+
 const makeReadHarnessLayer = (input?: {
   providers?: ReadonlyArray<ServerProvider>;
   settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
@@ -296,6 +303,7 @@ const makeReadHarnessLayer = (input?: {
         }),
       ),
     ),
+    Layer.provideMerge(Layer.succeed(ThreadTurnLivenessQuery, threadTurnLivenessQueryUnused)),
     Layer.provideMerge(ServerSettingsService.layerTest(input?.settings ?? {})),
     Layer.provideMerge(
       Layer.succeed(

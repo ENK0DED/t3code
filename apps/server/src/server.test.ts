@@ -113,6 +113,7 @@ import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as Data from "effect/Data";
+import { McpOrchestrationService } from "./mcp/Services/McpOrchestrationService.ts";
 
 const defaultProjectId = ProjectId.make("project-default");
 const defaultThreadId = ThreadId.make("thread-default");
@@ -313,6 +314,35 @@ const makeBrowserOtlpPayload = (spanName: string) =>
     // @effect-diagnostics-next-line preferSchemaOverJson:off
     return JSON.parse(request.body) as OtlpTracer.TraceData;
   });
+
+const unusedMcpOrchestrationService = McpOrchestrationService.of({
+  listMcpModels: () => Effect.die("unused MCP orchestration service"),
+  listProjects: () => Effect.die("unused MCP orchestration service"),
+  getProjectDetails: () => Effect.die("unused MCP orchestration service"),
+  getProjectSettings: () => Effect.die("unused MCP orchestration service"),
+  updateProjectSettings: () => Effect.die("unused MCP orchestration service"),
+  listProjectActions: () => Effect.die("unused MCP orchestration service"),
+  createProjectAction: () => Effect.die("unused MCP orchestration service"),
+  updateProjectAction: () => Effect.die("unused MCP orchestration service"),
+  deleteProjectAction: () => Effect.die("unused MCP orchestration service"),
+  listThreads: () => Effect.die("unused MCP orchestration service"),
+  getThreadMessages: () => Effect.die("unused MCP orchestration service"),
+  getThreadDiff: () => Effect.die("unused MCP orchestration service"),
+  getThreadSettings: () => Effect.die("unused MCP orchestration service"),
+  addProject: () => Effect.die("unused MCP orchestration service"),
+  createThread: () => Effect.die("unused MCP orchestration service"),
+  sendThreadMessage: () => Effect.die("unused MCP orchestration service"),
+  updateThreadSettings: () => Effect.die("unused MCP orchestration service"),
+  getThreadTurnStatus: () => Effect.die("unused MCP orchestration service"),
+  waitForThreadUpdate: () => Effect.die("unused MCP orchestration service"),
+  cancelStaleThreadTurn: () => Effect.die("unused MCP orchestration service"),
+  interruptThreadTurn: () => Effect.die("unused MCP orchestration service"),
+  respondToApproval: () => Effect.die("unused MCP orchestration service"),
+  respondToUserInput: () => Effect.die("unused MCP orchestration service"),
+  deleteThread: () => Effect.die("unused MCP orchestration service"),
+  archiveThread: () => Effect.die("unused MCP orchestration service"),
+  unarchiveThread: () => Effect.die("unused MCP orchestration service"),
+});
 
 const buildAppUnderTest = (options?: {
   config?: Partial<ServerConfig.ServerConfig["Service"]>;
@@ -525,218 +555,221 @@ const buildAppUnderTest = (options?: {
     const servedRoutesLayer = HttpRouter.serve(makeRoutesLayer, {
       disableListenLog: true,
       disableLogger: true,
-    }).pipe(
-      Layer.provide(
-        Layer.mock(Keybindings.Keybindings)({
-          loadConfigState: Effect.succeed({
-            keybindings: [],
-            issues: [],
-          }),
-          streamChanges: Stream.empty,
-          ...options?.layers?.keybindings,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getProviders: Effect.succeed([]),
-          refresh: () => Effect.succeed([]),
-          refreshInstance: () => Effect.succeed([]),
-          getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
-            Effect.succeed(
-              makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
-            ),
-          setProviderMaintenanceActionState: () => Effect.succeed([]),
-          streamChanges: Stream.empty,
-          ...options?.layers?.providerRegistry,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ServerSettings.ServerSettingsService)({
-          start: Effect.void,
-          ready: Effect.void,
-          getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
-          updateSettings: () => Effect.succeed(DEFAULT_SERVER_SETTINGS),
-          streamChanges: Stream.empty,
-          ...options?.layers?.serverSettings,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ExternalLauncher.ExternalLauncher)({
-          resolveAvailableEditors: () => Effect.succeed([]),
-          ...options?.layers?.externalLauncher,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ProcessDiagnostics.ProcessDiagnostics)({
-          read: Effect.succeed({
-            serverPid: process.pid,
-            readAt: TEST_EPOCH,
-            processCount: 0,
-            totalRssBytes: 0,
-            totalCpuPercent: 0,
-            processes: [],
-            error: Option.none(),
-          }),
-          signal: (input) =>
-            Effect.succeed({
-              pid: input.pid,
-              signal: input.signal,
-              signaled: true,
-              message: Option.none(),
+    })
+      .pipe(
+        Layer.provide(
+          Layer.mock(Keybindings.Keybindings)({
+            loadConfigState: Effect.succeed({
+              keybindings: [],
+              issues: [],
             }),
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
-          readHistory: (input) =>
-            Effect.succeed({
-              readAt: TEST_EPOCH,
-              windowMs: input.windowMs,
-              bucketMs: input.bucketMs,
-              sampleIntervalMs: 5_000,
-              retainedSampleCount: 0,
-              totalCpuSecondsApprox: 0,
-              buckets: [],
-              topProcesses: [],
-              error: Option.none(),
-            }),
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(TraceDiagnostics.TraceDiagnostics)({
-          read: () =>
-            Effect.succeed({
-              traceFilePath: "",
-              scannedFilePaths: [],
-              readAt: TEST_EPOCH,
-              recordCount: 0,
-              parseErrorCount: 0,
-              firstSpanAt: Option.none(),
-              lastSpanAt: Option.none(),
-              failureCount: 0,
-              interruptionCount: 0,
-              slowSpanThresholdMs: 1_000,
-              slowSpanCount: 0,
-              logLevelCounts: {},
-              topSpansByCount: [],
-              slowestSpans: [],
-              commonFailures: [],
-              latestFailures: [],
-              latestWarningAndErrorLogs: [],
-              partialFailure: Option.none(),
-              error: Option.none(),
-            }),
-        }),
-      ),
-      Layer.provide(gitManagerLayer),
-      Layer.provide(gitVcsDriverLayer),
-      Layer.provide(gitWorkflowLayer),
-      Layer.provide(reviewLayer),
-      Layer.provide(vcsProvisioningLayer),
-      Layer.provide(
-        Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
-          ...options?.layers?.sourceControlRepositoryService,
-        }),
-      ),
-      Layer.provideMerge(vcsStatusBroadcasterLayer),
-      Layer.provide(
-        Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
-          runForThread: () => Effect.succeed({ status: "no-script" as const }),
-          ...options?.layers?.projectSetupScriptRunner,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(TerminalManager.TerminalManager)({
-          ...options?.layers?.terminalManager,
-        }),
-      ),
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(PreviewManager.PreviewManager)({
-            open: () => Effect.die("PreviewManager not stubbed in this test"),
-            navigate: () => Effect.die("PreviewManager not stubbed in this test"),
-            resize: () => Effect.die("PreviewManager not stubbed in this test"),
-            reportStatus: () => Effect.void,
-            refresh: () => Effect.void,
-            close: () => Effect.void,
-            list: () => Effect.succeed({ sessions: [] }),
-            events: Stream.empty,
-            subscribeEvents: Effect.flatMap(PubSub.unbounded<PreviewEvent>(), (pubsub) =>
-              PubSub.subscribe(pubsub),
-            ),
-          }),
-          Layer.mock(PortScanner.PortDiscovery)({
-            scan: () => Effect.succeed([]),
-            subscribe: () => Effect.void,
-            retain: Effect.void,
-            registerTerminalProcesses: () => Effect.void,
-            unregisterTerminal: () => Effect.void,
+            streamChanges: Stream.empty,
+            ...options?.layers?.keybindings,
           }),
         ),
-      ),
-      Layer.provide(
-        Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
-          readEvents: () => Stream.empty,
-          dispatch: () => Effect.succeed({ sequence: 0 }),
-          streamDomainEvents: Stream.empty,
-          ...options?.layers?.orchestrationEngine,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
-          getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
-          getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
-          getShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 0,
-              projects: [],
-              threads: [],
-              updatedAt: "1970-01-01T00:00:00.000Z",
+        Layer.provide(
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([]),
+            refresh: () => Effect.succeed([]),
+            refreshInstance: () => Effect.succeed([]),
+            getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
+              Effect.succeed(
+                makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
+              ),
+            setProviderMaintenanceActionState: () => Effect.succeed([]),
+            streamChanges: Stream.empty,
+            ...options?.layers?.providerRegistry,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ServerSettings.ServerSettingsService)({
+            start: Effect.void,
+            ready: Effect.void,
+            getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+            updateSettings: () => Effect.succeed(DEFAULT_SERVER_SETTINGS),
+            streamChanges: Stream.empty,
+            ...options?.layers?.serverSettings,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ExternalLauncher.ExternalLauncher)({
+            resolveAvailableEditors: () => Effect.succeed([]),
+            ...options?.layers?.externalLauncher,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ProcessDiagnostics.ProcessDiagnostics)({
+            read: Effect.succeed({
+              serverPid: process.pid,
+              readAt: TEST_EPOCH,
+              processCount: 0,
+              totalRssBytes: 0,
+              totalCpuPercent: 0,
+              processes: [],
+              error: Option.none(),
             }),
-          getArchivedShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 0,
-              projects: [],
-              threads: [],
-              updatedAt: "1970-01-01T00:00:00.000Z",
+            signal: (input) =>
+              Effect.succeed({
+                pid: input.pid,
+                signal: input.signal,
+                signaled: true,
+                message: Option.none(),
+              }),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
+            readHistory: (input) =>
+              Effect.succeed({
+                readAt: TEST_EPOCH,
+                windowMs: input.windowMs,
+                bucketMs: input.bucketMs,
+                sampleIntervalMs: 5_000,
+                retainedSampleCount: 0,
+                totalCpuSecondsApprox: 0,
+                buckets: [],
+                topProcesses: [],
+                error: Option.none(),
+              }),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(TraceDiagnostics.TraceDiagnostics)({
+            read: () =>
+              Effect.succeed({
+                traceFilePath: "",
+                scannedFilePaths: [],
+                readAt: TEST_EPOCH,
+                recordCount: 0,
+                parseErrorCount: 0,
+                firstSpanAt: Option.none(),
+                lastSpanAt: Option.none(),
+                failureCount: 0,
+                interruptionCount: 0,
+                slowSpanThresholdMs: 1_000,
+                slowSpanCount: 0,
+                logLevelCounts: {},
+                topSpansByCount: [],
+                slowestSpans: [],
+                commonFailures: [],
+                latestFailures: [],
+                latestWarningAndErrorLogs: [],
+                partialFailure: Option.none(),
+                error: Option.none(),
+              }),
+          }),
+        ),
+        Layer.provide(gitManagerLayer),
+        Layer.provide(gitVcsDriverLayer),
+        Layer.provide(gitWorkflowLayer),
+        Layer.provide(reviewLayer),
+        Layer.provide(vcsProvisioningLayer),
+        Layer.provide(
+          Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
+            ...options?.layers?.sourceControlRepositoryService,
+          }),
+        ),
+        Layer.provideMerge(vcsStatusBroadcasterLayer),
+        Layer.provide(
+          Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
+            runForThread: () => Effect.succeed({ status: "no-script" as const }),
+            ...options?.layers?.projectSetupScriptRunner,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(TerminalManager.TerminalManager)({
+            ...options?.layers?.terminalManager,
+          }),
+        ),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(PreviewManager.PreviewManager)({
+              open: () => Effect.die("PreviewManager not stubbed in this test"),
+              navigate: () => Effect.die("PreviewManager not stubbed in this test"),
+              resize: () => Effect.die("PreviewManager not stubbed in this test"),
+              reportStatus: () => Effect.void,
+              refresh: () => Effect.void,
+              close: () => Effect.void,
+              list: () => Effect.succeed({ sessions: [] }),
+              events: Stream.empty,
+              subscribeEvents: Effect.flatMap(PubSub.unbounded<PreviewEvent>(), (pubsub) =>
+                PubSub.subscribe(pubsub),
+              ),
             }),
-          getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
-          listProjectShells: () => Effect.succeed([]),
-          getProjectShellById: () => Effect.succeed(Option.none()),
-          getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
-          listThreadShellsByProject: () => Effect.succeed([]),
-          getThreadShellById: () => Effect.succeed(Option.none()),
-          getThreadCreatorById: () => Effect.succeed(Option.none()),
-          getThreadDetailById: () => Effect.succeed(Option.none()),
-          getThreadTurnStateById: () => Effect.succeed(Option.none()),
-          getThreadTurnStateByPendingMessageId: () => Effect.succeed(Option.none()),
-          searchThreadMessagesByProject: () => Effect.succeed([]),
-          getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
-          getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
-          getThreadCheckpointContext: () => Effect.succeed(Option.none()),
-          ...options?.layers?.projectionSnapshotQuery,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({
-          getTurnDiff: () =>
-            Effect.succeed({
-              threadId: defaultThreadId,
-              fromTurnCount: 0,
-              toTurnCount: 0,
-              diff: "",
+            Layer.mock(PortScanner.PortDiscovery)({
+              scan: () => Effect.succeed([]),
+              subscribe: () => Effect.void,
+              retain: Effect.void,
+              registerTerminalProcesses: () => Effect.void,
+              unregisterTerminal: () => Effect.void,
             }),
-          getFullThreadDiff: () =>
-            Effect.succeed({
-              threadId: defaultThreadId,
-              fromTurnCount: 0,
-              toTurnCount: 0,
-              diff: "",
-            }),
-          ...options?.layers?.checkpointDiffQuery,
-        }),
-      ),
-    );
+          ),
+        ),
+        Layer.provide(
+          Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
+            readEvents: () => Stream.empty,
+            dispatch: () => Effect.succeed({ sequence: 0 }),
+            streamDomainEvents: Stream.empty,
+            ...options?.layers?.orchestrationEngine,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+            getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
+            getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 0,
+                projects: [],
+                threads: [],
+                updatedAt: "1970-01-01T00:00:00.000Z",
+              }),
+            getArchivedShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 0,
+                projects: [],
+                threads: [],
+                updatedAt: "1970-01-01T00:00:00.000Z",
+              }),
+            getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
+            listProjectShells: () => Effect.succeed([]),
+            getProjectShellById: () => Effect.succeed(Option.none()),
+            getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+            listThreadShellsByProject: () => Effect.succeed([]),
+            getThreadShellById: () => Effect.succeed(Option.none()),
+            getThreadCreatorById: () => Effect.succeed(Option.none()),
+            getThreadDetailById: () => Effect.succeed(Option.none()),
+            getThreadTurnStateById: () => Effect.succeed(Option.none()),
+            getThreadTurnLivenessRowById: () => Effect.succeed(Option.none()),
+            getThreadTurnStateByPendingMessageId: () => Effect.succeed(Option.none()),
+            searchThreadMessagesByProject: () => Effect.succeed([]),
+            getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
+            getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+            getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+            ...options?.layers?.projectionSnapshotQuery,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({
+            getTurnDiff: () =>
+              Effect.succeed({
+                threadId: defaultThreadId,
+                fromTurnCount: 0,
+                toTurnCount: 0,
+                diff: "",
+              }),
+            getFullThreadDiff: () =>
+              Effect.succeed({
+                threadId: defaultThreadId,
+                fromTurnCount: 0,
+                toTurnCount: 0,
+                diff: "",
+              }),
+            ...options?.layers?.checkpointDiffQuery,
+          }),
+        ),
+      )
+      .pipe(Layer.provide(Layer.succeed(McpOrchestrationService, unusedMcpOrchestrationService)));
 
     const appLayer = servedRoutesLayer.pipe(
       Layer.provide(

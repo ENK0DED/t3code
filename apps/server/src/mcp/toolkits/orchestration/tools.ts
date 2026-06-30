@@ -93,9 +93,34 @@ const ThreadIdInput = Schema.String.annotate({
   .check(Schema.isNonEmpty())
   .pipe(Schema.brand("ThreadId"));
 
+const TurnIdInput = Schema.String.annotate({
+  description:
+    "Turn id returned by get_thread_turn_status, wait_for_thread_update, or message reads.",
+})
+  .check(Schema.isTrimmed())
+  .check(Schema.isNonEmpty())
+  .pipe(Schema.brand("TurnId"));
+
+const CursorInput = Schema.String.annotate({
+  description:
+    "Opaque thread-update cursor returned by get_thread_turn_status or wait_for_thread_update. Pass it back unchanged; do not parse or edit it.",
+})
+  .check(Schema.isTrimmed())
+  .check(Schema.isNonEmpty());
+
 const OptionalThreadIdInput = optionalInput(
   ThreadIdInput,
   "Thread id returned by list_threads or create_thread. Omit to use the current MCP credential thread.",
+);
+
+const OptionalTurnIdInput = optionalInput(
+  TurnIdInput,
+  "Exact turn id to scope the liveness read or wait. Omit to observe the thread's current active or latest turn.",
+);
+
+const OptionalCursorInput = optionalInput(
+  CursorInput,
+  "Opaque cursor from get_thread_turn_status or wait_for_thread_update. Omit to start from the current projection point.",
 );
 
 const OptionalListParentThreadIdInput = optionalInput(
@@ -238,6 +263,14 @@ const RESPONSE_TIMEOUT_MS_DESCRIPTION =
 const OptionalResponseTimeoutMsInput = optionalInput(
   PositiveInt.annotate({ description: RESPONSE_TIMEOUT_MS_DESCRIPTION }),
   RESPONSE_TIMEOUT_MS_DESCRIPTION,
+);
+
+const THREAD_UPDATE_TIMEOUT_MS_DESCRIPTION =
+  "Maximum milliseconds for wait_for_thread_update to wait for relevant thread progress, terminal state, pending request, or stale status. On timeout the tool returns reason: timeout and never interrupts; the child may still be running. Maximum is enforced server-side.";
+
+const OptionalThreadUpdateTimeoutMsInput = optionalInput(
+  PositiveInt.annotate({ description: THREAD_UPDATE_TIMEOUT_MS_DESCRIPTION }),
+  THREAD_UPDATE_TIMEOUT_MS_DESCRIPTION,
 );
 
 const WAIT_MAX_CHARACTERS_DESCRIPTION =
@@ -680,10 +713,68 @@ const RequestIdInput = Schema.String.annotate({
   .check(Schema.isNonEmpty())
   .pipe(Schema.brand("ApprovalRequestId"));
 
+export const GetThreadTurnStatusTool = readTool(
+  Tool.make("get_thread_turn_status", {
+    description:
+      "Read server-observed liveness for a thread turn and return an opaque cursor for later wait_for_thread_update or cancel_stale_thread_turn calls. Use this instead of treating transcript silence as stale work.",
+    success: Schema.Unknown,
+    failure: McpOrchestrationError,
+    parameters: Schema.Struct({
+      threadId: ThreadIdInput,
+      turnId: OptionalTurnIdInput,
+    }),
+    dependencies,
+  }),
+);
+
+export const WaitForThreadUpdateTool = readTool(
+  Tool.make("wait_for_thread_update", {
+    description:
+      "Wait for relevant server-observed progress, terminal state, pending request, or stale status on a thread turn. This tool never interrupts. A timeout means no relevant update arrived before timeoutMs; the child may still be running. waitForResponse.timeoutMs is not stale: it only stops waiting and does not cancel. For high-reasoning or Claude children, prefer wait_for_thread_update loops over fixed transcript-output deadlines. Use cancel_stale_thread_turn, not interrupt_thread_turn, for stale cleanup.",
+    success: Schema.Unknown,
+    failure: McpOrchestrationError,
+    parameters: Schema.Struct({
+      threadId: ThreadIdInput,
+      turnId: OptionalTurnIdInput,
+      since: OptionalCursorInput,
+      timeoutMs: OptionalThreadUpdateTimeoutMsInput,
+      includeStatus: optionalInput(
+        Schema.Boolean.annotate({
+          description: "When true, include the current liveness object in the result.",
+        }),
+        "When true, include the current liveness object in the result.",
+      ),
+    }),
+    dependencies,
+  }),
+);
+
+export const CancelStaleThreadTurnTool = destructiveTool(
+  Tool.make("cancel_stale_thread_turn", {
+    description:
+      "Guarded stale cleanup for an MCP-managed running turn. Use cancel_stale_thread_turn, not interrupt_thread_turn, when get_thread_turn_status or wait_for_thread_update reports stale liveness. Requires the exact turnId and ifNoProgressSince opaque cursor so the server can reject cancellation if newer progress arrived. force bypasses not_stale and progress_observed guards, but never a non-active turn.",
+    success: Schema.Unknown,
+    failure: McpOrchestrationError,
+    parameters: Schema.Struct({
+      threadId: ThreadIdInput,
+      turnId: TurnIdInput,
+      ifNoProgressSince: CursorInput,
+      force: optionalInput(
+        Schema.Boolean.annotate({
+          description:
+            "When true, request cancellation even if current liveness is no longer stale or progress was observed after ifNoProgressSince. It still cannot target a non-active turn.",
+        }),
+        "When true, request cancellation even if current liveness is no longer stale or progress was observed after ifNoProgressSince. It still cannot target a non-active turn.",
+      ),
+    }),
+    dependencies,
+  }),
+);
+
 export const InterruptThreadTurnTool = destructiveTool(
   Tool.make("interrupt_thread_turn", {
     description:
-      "Interrupt the running turn of an MCP-managed sub-thread. Cancels any pending approval/user-input requests and returns the thread to idle so you can send a corrective message. Use to stop a runaway or misdirected sub-thread.",
+      "Use as a manual stop tool for the running turn of an MCP-managed sub-thread; it is not a stale detector. Cancels any pending approval/user-input requests and returns the thread to idle so you can send a corrective message. Use to stop a runaway or misdirected sub-thread. For stale cleanup, use cancel_stale_thread_turn so progress races and exact turn identity are guarded.",
     success: Schema.Unknown,
     failure: McpOrchestrationError,
     parameters: Schema.Struct({
@@ -785,6 +876,9 @@ export const OrchestrationToolkit = Toolkit.make(
   CreateThreadTool,
   SendThreadMessageTool,
   UpdateThreadSettingsTool,
+  GetThreadTurnStatusTool,
+  WaitForThreadUpdateTool,
+  CancelStaleThreadTurnTool,
   InterruptThreadTurnTool,
   RespondToApprovalTool,
   RespondToUserInputTool,

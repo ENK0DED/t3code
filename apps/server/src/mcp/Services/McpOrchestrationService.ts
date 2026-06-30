@@ -9,12 +9,17 @@ import type {
   ProviderOptionDescriptor,
   RuntimeMode,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as McpInvocationContext from "../McpInvocationContext.ts";
 import type { PendingTurnRequest as PendingRequest } from "../../orchestration/pendingRequests.ts";
+import type {
+  ThreadTurnLiveness,
+  WaitForThreadUpdateResult as OrchestrationWaitForThreadUpdateResult,
+} from "../../orchestration/Services/ThreadTurnLivenessQuery.ts";
 
 export type { PendingTurnRequest as PendingRequest } from "../../orchestration/pendingRequests.ts";
 
@@ -292,6 +297,42 @@ export interface GetThreadDiffResult {
   readonly truncatedNote?: string;
 }
 
+export interface ThreadTurnStatusInput {
+  readonly threadId: ThreadId;
+  readonly turnId?: TurnId | undefined;
+}
+
+export interface ThreadTurnStatusResult {
+  readonly threadId: ThreadId;
+  readonly cursor: string;
+  readonly liveness: ThreadTurnLiveness;
+}
+
+export interface WaitForThreadUpdateInput {
+  readonly threadId: ThreadId;
+  readonly turnId?: TurnId | undefined;
+  readonly since?: string | undefined;
+  readonly timeoutMs?: number | undefined;
+  readonly includeStatus?: boolean | undefined;
+}
+
+export type WaitForThreadUpdateResult = OrchestrationWaitForThreadUpdateResult;
+
+export interface CancelStaleThreadTurnInput {
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId;
+  readonly ifNoProgressSince: string;
+  readonly force?: boolean | undefined;
+}
+
+export interface CancelStaleThreadTurnResult {
+  readonly status: "interrupt_requested";
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId;
+  readonly sequence: number;
+  readonly forced: boolean;
+}
+
 export interface McpOrchestrationServiceShape {
   readonly listMcpModels: () => Effect.Effect<
     ListMcpModelsResult,
@@ -394,6 +435,27 @@ export interface McpOrchestrationServiceShape {
   readonly updateThreadSettings: (
     input: unknown,
   ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;
+  readonly getThreadTurnStatus: (
+    input: ThreadTurnStatusInput,
+  ) => Effect.Effect<
+    ThreadTurnStatusResult,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext
+  >;
+  readonly waitForThreadUpdate: (
+    input: WaitForThreadUpdateInput,
+  ) => Effect.Effect<
+    WaitForThreadUpdateResult,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext
+  >;
+  readonly cancelStaleThreadTurn: (
+    input: CancelStaleThreadTurnInput,
+  ) => Effect.Effect<
+    CancelStaleThreadTurnResult,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext
+  >;
   readonly interruptThreadTurn: (
     input: unknown,
   ) => Effect.Effect<unknown, McpOrchestrationError, McpInvocationContext.McpInvocationContext>;

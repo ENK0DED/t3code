@@ -23,11 +23,13 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -35,8 +37,13 @@ import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts
 import { McpOrchestrationService } from "./Services/McpOrchestrationService.ts";
 import { CheckpointDiffQuery } from "../checkpointing/CheckpointDiffQuery.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import {
+  ProjectionSnapshotQuery,
+  type ProjectionThreadTurnLivenessRow,
+} from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadTurnStartBootstrapDispatcherLive } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
+import { ThreadTurnLivenessQueryLive } from "../orchestration/Layers/ThreadTurnLivenessQuery.ts";
+import { ThreadTurnSignalTrackerLive } from "../orchestration/Layers/ThreadTurnSignalTracker.ts";
 import { ProjectionThreadMessageSearchRepository } from "../persistence/Services/ProjectionThreadMessageSearch.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
@@ -49,6 +56,13 @@ import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
 
 const CURRENT = ThreadId.make("thread-current");
 const TARGET = ThreadId.make("thread-target");
+const STALE_SIGNAL_AT = "1970-01-01T00:00:00.000Z";
+const FRESH_SIGNAL_AT = "2999-01-01T00:00:00.000Z";
+const encodeUnknownJsonString = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
+
+const freshIso = () => FRESH_SIGNAL_AT;
+const futureIso = (offsetMs: number) =>
+  `2999-01-01T00:00:${String(Math.max(1, Math.ceil(offsetMs / 1_000))).padStart(2, "0")}.000Z`;
 
 const modelSelection = (): ModelSelection => ({
   instanceId: ProviderInstanceId.make("codex"),
@@ -131,6 +145,14 @@ const expectForbiddenExit = (name: string, exit: Exit.Exit<unknown, unknown>) =>
   }
 };
 
+const expectMcpErrorCode = (name: string, exit: Exit.Exit<unknown, unknown>, code: string) => {
+  expect(Exit.isFailure(exit), name).toBe(true);
+  if (Exit.isFailure(exit)) {
+    const error = Cause.squash(exit.cause) as { readonly code: string };
+    expect(error.code, name).toBe(code);
+  }
+};
+
 const completedTurn = (turnId: string, assistantMessageId: string): OrchestrationLatestTurn => ({
   turnId: TurnId.make(turnId),
   state: "completed",
@@ -149,6 +171,46 @@ const assistantMessage = (id: string, turnId: string, text: string): Orchestrati
   createdAt: "2026-01-01T00:00:01.000Z",
   updatedAt: "2026-01-01T00:00:01.000Z",
 });
+
+const managedRunningThread = (
+  turnId: string,
+  input?: Partial<OrchestrationThread>,
+): OrchestrationThread =>
+  thread({
+    id: TARGET,
+    latestTurn: runningTurn(turnId),
+    session: {
+      threadId: TARGET,
+      status: "running",
+      providerName: "codex",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeMode: "auto-accept-edits",
+      activeTurnId: TurnId.make(turnId),
+      lastError: null,
+      updatedAt: freshIso(),
+    },
+    ...input,
+  });
+
+const livenessRow = (
+  input: Partial<ProjectionThreadTurnLivenessRow> & Pick<ProjectionThreadTurnLivenessRow, "turnId">,
+): ProjectionThreadTurnLivenessRow => {
+  const requestedAt = input.requestedAt ?? freshIso();
+  const startedAt = input.startedAt ?? requestedAt;
+  const lastProviderSignalAt = input.lastProviderSignalAt ?? null;
+  return {
+    threadId: input.threadId ?? TARGET,
+    turnId: input.turnId,
+    pendingMessageId: input.pendingMessageId ?? null,
+    state: input.state ?? "running",
+    requestedAt,
+    startedAt,
+    completedAt: input.completedAt ?? null,
+    lastProviderSignalAt,
+    lastObservableProgressAt: input.lastObservableProgressAt ?? lastProviderSignalAt ?? startedAt,
+    lastSignalKind: input.lastSignalKind ?? null,
+  };
+};
 
 // A completed turn's checkpoint, as the projection records for EVERY completed turn (even
 // answer-only ones — CheckpointReactor captures on turn.completed). Used to model a turn that
@@ -172,11 +234,31 @@ const checkpoint = (
 const threadEvent = (threadId: ThreadId): OrchestrationEvent =>
   ({ aggregateId: threadId, type: "thread.activity-appended" }) as unknown as OrchestrationEvent;
 
+const providerSignalEvent = (input: {
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId;
+  readonly signaledAt: string;
+  readonly sequence: number;
+}): OrchestrationEvent =>
+  ({
+    aggregateId: input.threadId,
+    sequence: input.sequence,
+    type: "thread.turn-provider-signaled",
+    payload: {
+      threadId: input.threadId,
+      turnId: input.turnId,
+      signalKind: "reasoning",
+      signaledAt: input.signaledAt,
+    },
+  }) as OrchestrationEvent;
+
 type Harness = {
   readonly layer: Layer.Layer<
     McpOrchestrationService | McpInvocationContext.McpInvocationContext | FileSystem.FileSystem
   >;
   readonly setThread: (next: OrchestrationThread) => Effect.Effect<void>;
+  readonly updateLivenessRow: (row: ProjectionThreadTurnLivenessRow) => Effect.Effect<void>;
+  readonly setSnapshotSequence: (sequence: number) => Effect.Effect<void>;
   readonly emit: (event: OrchestrationEvent) => Effect.Effect<void>;
   readonly dispatched: Array<OrchestrationCommand>;
 };
@@ -195,6 +277,7 @@ const makeHarness = (
     },
   ) => Effect.Effect<void>,
   hooks?: {
+    readonly livenessRows?: ReadonlyArray<ProjectionThreadTurnLivenessRow>;
     readonly onReadTurnStateById?: (
       input: {
         readonly threadId: ThreadId;
@@ -214,6 +297,12 @@ const makeHarness = (
     );
     const pendingMessageIdsRef = yield* Ref.make(new Map<string, MessageId>());
     const turnIdsByMessageIdRef = yield* Ref.make(new Map<string, TurnId>());
+    const snapshotSequenceRef = yield* Ref.make(1);
+    const livenessRowsRef = yield* Ref.make(
+      new Map(
+        (hooks?.livenessRows ?? []).map((row) => [`${row.threadId}:${row.turnId}`, row] as const),
+      ),
+    );
     const eventPubSub = yield* PubSub.unbounded<OrchestrationEvent>();
     const dispatched: Array<OrchestrationCommand> = [];
 
@@ -303,12 +392,38 @@ const makeHarness = (
         }),
       );
 
+    const livenessRowById = ({ threadId, turnId }: { threadId: ThreadId; turnId: TurnId }) =>
+      Effect.gen(function* () {
+        const rows = yield* Ref.get(livenessRowsRef);
+        const explicit = rows.get(`${threadId}:${turnId}`);
+        if (explicit !== undefined) {
+          return Option.some(explicit);
+        }
+        const turnState = yield* readTurnStateByIdSnapshot({ threadId, turnId });
+        return Option.map(
+          turnState,
+          (turn): ProjectionThreadTurnLivenessRow => ({
+            threadId,
+            turnId: turn.turnId,
+            pendingMessageId: null,
+            state: turn.state,
+            requestedAt: turn.requestedAt,
+            startedAt: turn.startedAt,
+            completedAt: turn.completedAt,
+            lastProviderSignalAt: null,
+            lastObservableProgressAt: null,
+            lastSignalKind: null,
+          }),
+        );
+      });
+
     const projectionQuery = ProjectionSnapshotQuery.of({
       getCommandReadModel: () => Effect.die("unused"),
       getSnapshot: () => Effect.die("unused"),
       getShellSnapshot: () => Effect.die("unused"),
       getArchivedShellSnapshot: () => Effect.die("unused"),
-      getSnapshotSequence: () => Effect.die("unused"),
+      getSnapshotSequence: () =>
+        Ref.get(snapshotSequenceRef).pipe(Effect.map((snapshotSequence) => ({ snapshotSequence }))),
       getCounts: () => Effect.die("unused"),
       getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
       getProjectShellById: (projectId) =>
@@ -347,7 +462,7 @@ const makeHarness = (
       // nulled). Resolve from the stored thread's latestTurn when it matches, else from a
       // checkpoint for that turn id (checkpoints exist only for completed turns).
       getThreadTurnStateById: readTurnStateById,
-      getThreadTurnLivenessRowById: () => Effect.succeed(Option.none()),
+      getThreadTurnLivenessRowById: livenessRowById,
       getThreadTurnStateByPendingMessageId: ({ threadId, messageId }) =>
         Effect.gen(function* () {
           const turnIdsByMessageId = yield* Ref.get(turnIdsByMessageIdRef);
@@ -362,6 +477,8 @@ const makeHarness = (
 
     const layer = McpOrchestrationServiceLive.pipe(
       Layer.provideMerge(ThreadTurnStartBootstrapDispatcherLive),
+      Layer.provideMerge(ThreadTurnLivenessQueryLive),
+      Layer.provideMerge(ThreadTurnSignalTrackerLive),
       Layer.provideMerge(
         Layer.succeed(McpInvocationContext.McpInvocationContext, {
           environmentId: "environment-1" as never,
@@ -506,7 +623,17 @@ const makeHarness = (
       Layer.orDie,
     );
 
-    return { layer, setThread, emit, dispatched };
+    return {
+      layer,
+      setThread,
+      updateLivenessRow: (row) =>
+        Ref.update(livenessRowsRef, (rows) =>
+          new Map(rows).set(`${row.threadId}:${row.turnId}`, row),
+        ),
+      setSnapshotSequence: (sequence) => Ref.set(snapshotSequenceRef, sequence),
+      emit,
+      dispatched,
+    };
   });
 
 // --- wait_for_response: turn settles (completed) by the time the probe runs ---
@@ -1295,6 +1422,386 @@ it.live("respond_to_user_input rejects an unknown requestId before dispatch", ()
       }
       const responds = harness.dispatched.filter((c) => c.type === "thread.user-input.respond");
       expect(responds).toHaveLength(0);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.live("getThreadTurnStatus returns running liveness for an active turn", () =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make("turn-status");
+    const harness = yield* makeHarness([managedRunningThread("turn-status")], undefined, {
+      livenessRows: [
+        livenessRow({
+          turnId,
+          lastProviderSignalAt: freshIso(),
+          lastSignalKind: "reasoning",
+        }),
+      ],
+    });
+
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.getThreadTurnStatus({ threadId: TARGET, turnId });
+
+      expect(result.threadId).toBe(TARGET);
+      expect(typeof result.cursor).toBe("string");
+      expect(result.liveness).toMatchObject({
+        threadId: TARGET,
+        turnId,
+        state: "running",
+        stale: false,
+        safeToInterrupt: false,
+      });
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.live("waitForThreadUpdate returns progress for reasoning-only provider signal", () =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make("turn-reasoning");
+    const harness = yield* makeHarness([managedRunningThread("turn-reasoning")], undefined, {
+      livenessRows: [
+        livenessRow({
+          turnId,
+          lastProviderSignalAt: freshIso(),
+          lastSignalKind: "reasoning",
+        }),
+      ],
+    });
+
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const status = yield* service.getThreadTurnStatus({ threadId: TARGET, turnId });
+      const signaledAt = futureIso(1_000);
+      const waiter = yield* service
+        .waitForThreadUpdate({
+          threadId: TARGET,
+          turnId,
+          since: status.cursor,
+          timeoutMs: 1_000,
+          includeStatus: true,
+        })
+        .pipe(Effect.forkScoped);
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* harness.updateLivenessRow(
+        livenessRow({
+          turnId,
+          lastProviderSignalAt: signaledAt,
+          lastObservableProgressAt: signaledAt,
+          lastSignalKind: "reasoning",
+        }),
+      );
+      yield* harness.setSnapshotSequence(2);
+      yield* harness.emit(
+        providerSignalEvent({
+          threadId: TARGET,
+          turnId,
+          signaledAt,
+          sequence: 2,
+        }),
+      );
+
+      const result = yield* Fiber.join(waiter);
+      expect(result.reason).toBe("progress");
+      expect(result.turnId).toBe(turnId);
+      expect(result.liveness?.lastProviderSignalAt).toBe(signaledAt);
+      const encodedResult = yield* encodeUnknownJsonString(result);
+      expect(encodedResult).not.toContain("private reasoning");
+    }).pipe(Effect.scoped, Effect.provide(harness.layer));
+  }),
+);
+
+it.live("waitForThreadUpdate returns pending_request when approval opens", () =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make("turn-pending-request");
+    const harness = yield* makeHarness(
+      [
+        managedRunningThread("turn-pending-request", {
+          activities: [
+            {
+              id: "evt-approval-requested" as never,
+              tone: "approval",
+              kind: "approval.requested",
+              summary: "approval requested",
+              payload: { requestId: "approval-1", requestKind: "command", detail: "bun test" },
+              turnId,
+              createdAt: freshIso(),
+            },
+          ],
+        }),
+      ],
+      undefined,
+      {
+        livenessRows: [
+          livenessRow({
+            turnId,
+            lastProviderSignalAt: freshIso(),
+            lastSignalKind: "request",
+          }),
+        ],
+      },
+    );
+
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.waitForThreadUpdate({
+        threadId: TARGET,
+        turnId,
+        timeoutMs: 1_000,
+        includeStatus: true,
+      });
+
+      expect(result.reason).toBe("pending_request");
+      expect(result.liveness?.pendingRequests).toEqual([
+        {
+          kind: "approval",
+          requestId: "approval-1",
+          requestKind: "command",
+          detail: "bun test",
+        },
+      ]);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.live("waitForThreadUpdate returns timeout and dispatches no interrupts", () =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make("turn-timeout");
+    const harness = yield* makeHarness([managedRunningThread("turn-timeout")], undefined, {
+      livenessRows: [
+        livenessRow({
+          turnId,
+          lastProviderSignalAt: freshIso(),
+          lastSignalKind: "reasoning",
+        }),
+      ],
+    });
+
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const status = yield* service.getThreadTurnStatus({ threadId: TARGET, turnId });
+      const result = yield* service.waitForThreadUpdate({
+        threadId: TARGET,
+        turnId,
+        since: status.cursor,
+        timeoutMs: 20,
+      });
+
+      expect(result.reason).toBe("timeout");
+      expect(
+        harness.dispatched.filter((command) => command.type === "thread.turn.interrupt"),
+      ).toEqual([]);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.live("cancelStaleThreadTurn rejects a non-stale active turn", () =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make("turn-not-stale");
+    const harness = yield* makeHarness([managedRunningThread("turn-not-stale")], undefined, {
+      livenessRows: [
+        livenessRow({
+          turnId,
+          lastProviderSignalAt: freshIso(),
+          lastSignalKind: "reasoning",
+        }),
+      ],
+    });
+
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const status = yield* service.getThreadTurnStatus({ threadId: TARGET, turnId });
+      const exit = yield* Effect.exit(
+        service.cancelStaleThreadTurn({
+          threadId: TARGET,
+          turnId,
+          ifNoProgressSince: status.cursor,
+        }),
+      );
+
+      expectMcpErrorCode("cancelStaleThreadTurn", exit, "not_stale");
+      expect(harness.dispatched).toEqual([]);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.live("cancelStaleThreadTurn rejects when progress occurred after the cursor", () =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make("turn-progress-race");
+    const harness = yield* makeHarness([managedRunningThread("turn-progress-race")], undefined, {
+      livenessRows: [
+        livenessRow({
+          turnId,
+          requestedAt: STALE_SIGNAL_AT,
+          startedAt: STALE_SIGNAL_AT,
+          lastProviderSignalAt: STALE_SIGNAL_AT,
+          lastObservableProgressAt: STALE_SIGNAL_AT,
+          lastSignalKind: "reasoning",
+        }),
+      ],
+    });
+
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const status = yield* service.getThreadTurnStatus({ threadId: TARGET, turnId });
+      const progressedAt = freshIso();
+      yield* harness.updateLivenessRow(
+        livenessRow({
+          turnId,
+          lastProviderSignalAt: progressedAt,
+          lastObservableProgressAt: progressedAt,
+          lastSignalKind: "reasoning",
+        }),
+      );
+      yield* harness.setSnapshotSequence(2);
+      const exit = yield* Effect.exit(
+        service.cancelStaleThreadTurn({
+          threadId: TARGET,
+          turnId,
+          ifNoProgressSince: status.cursor,
+        }),
+      );
+
+      expectMcpErrorCode("cancelStaleThreadTurn", exit, "progress_observed");
+      expect(harness.dispatched).toEqual([]);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.live("cancelStaleThreadTurn interrupts the exact stale active turn", () =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make("turn-stale");
+    const harness = yield* makeHarness([managedRunningThread("turn-stale")], undefined, {
+      livenessRows: [
+        livenessRow({
+          turnId,
+          requestedAt: STALE_SIGNAL_AT,
+          startedAt: STALE_SIGNAL_AT,
+          lastProviderSignalAt: STALE_SIGNAL_AT,
+          lastObservableProgressAt: STALE_SIGNAL_AT,
+          lastSignalKind: "reasoning",
+        }),
+      ],
+    });
+
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const status = yield* service.getThreadTurnStatus({ threadId: TARGET, turnId });
+      const result = yield* service.cancelStaleThreadTurn({
+        threadId: TARGET,
+        turnId,
+        ifNoProgressSince: status.cursor,
+      });
+
+      expect(result).toMatchObject({
+        status: "interrupt_requested",
+        threadId: TARGET,
+        turnId,
+        sequence: 2,
+        forced: false,
+      });
+      expect(harness.dispatched.map((command) => command.type)).toEqual([
+        "thread.activity.append",
+        "thread.turn.interrupt",
+      ]);
+      expect(harness.dispatched[1]).toMatchObject({
+        type: "thread.turn.interrupt",
+        threadId: TARGET,
+        turnId,
+      });
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.live(
+  "cancelStaleThreadTurn cannot interrupt a newer turn after the requested turn completed",
+  () =>
+    Effect.gen(function* () {
+      const oldTurnId = TurnId.make("turn-old");
+      const harness = yield* makeHarness([managedRunningThread("turn-new")], undefined, {
+        livenessRows: [
+          livenessRow({
+            turnId: oldTurnId,
+            state: "completed",
+            requestedAt: STALE_SIGNAL_AT,
+            startedAt: STALE_SIGNAL_AT,
+            completedAt: "1970-01-01T00:00:01.000Z",
+            lastProviderSignalAt: STALE_SIGNAL_AT,
+            lastObservableProgressAt: STALE_SIGNAL_AT,
+            lastSignalKind: "lifecycle",
+          }),
+        ],
+      });
+
+      yield* Effect.gen(function* () {
+        const service = yield* McpOrchestrationService;
+        const status = yield* service.getThreadTurnStatus({ threadId: TARGET, turnId: oldTurnId });
+        const exit = yield* Effect.exit(
+          service.cancelStaleThreadTurn({
+            threadId: TARGET,
+            turnId: oldTurnId,
+            ifNoProgressSince: status.cursor,
+            force: true,
+          }),
+        );
+
+        expectMcpErrorCode("cancelStaleThreadTurn", exit, "turn_not_active");
+        expect(harness.dispatched).toEqual([]);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+it.live("cancelStaleThreadTurn force records an override activity and targets active turn", () =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make("turn-force");
+    const harness = yield* makeHarness([managedRunningThread("turn-force")], undefined, {
+      livenessRows: [
+        livenessRow({
+          turnId,
+          lastProviderSignalAt: freshIso(),
+          lastSignalKind: "reasoning",
+        }),
+      ],
+    });
+
+    yield* Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const status = yield* service.getThreadTurnStatus({ threadId: TARGET, turnId });
+      const result = yield* service.cancelStaleThreadTurn({
+        threadId: TARGET,
+        turnId,
+        ifNoProgressSince: status.cursor,
+        force: true,
+      });
+
+      expect(result).toMatchObject({
+        status: "interrupt_requested",
+        threadId: TARGET,
+        turnId,
+        sequence: 2,
+        forced: true,
+      });
+      expect(harness.dispatched[0]).toMatchObject({
+        type: "thread.activity.append",
+        activity: {
+          tone: "error",
+          kind: "thread.turn.stale-cancel.requested",
+          summary: "Forced stale turn cancellation requested",
+          turnId,
+          payload: {
+            turnId,
+            ifNoProgressSince: status.cursor,
+            forced: true,
+          },
+        },
+      });
+      expect(harness.dispatched[1]).toMatchObject({
+        type: "thread.turn.interrupt",
+        threadId: TARGET,
+        turnId,
+      });
     }).pipe(Effect.provide(harness.layer));
   }),
 );

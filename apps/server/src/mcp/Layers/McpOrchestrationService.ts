@@ -1,5 +1,6 @@
 import {
   CommandId,
+  EventId,
   MessageId,
   type ModelSelection,
   type OrchestrationCheckpointSummary,
@@ -72,6 +73,11 @@ import {
   derivePendingRequestsForTurn,
   derivePendingRequestsFromActivities,
 } from "../../orchestration/pendingRequests.ts";
+import { ThreadTurnLivenessQuery } from "../../orchestration/Services/ThreadTurnLivenessQuery.ts";
+import {
+  decodeThreadUpdateCursor,
+  type ThreadUpdateCursor,
+} from "../../orchestration/threadTurnLiveness.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -81,10 +87,13 @@ import {
   McpOrchestrationError,
   McpOrchestrationService,
   type AddProjectInput,
+  type CancelStaleThreadTurnInput,
   type GetThreadDiffInput,
   type GetThreadDiffResult,
   type ProjectActionSummary,
   type ThreadDiffFileSummary,
+  type ThreadTurnStatusInput,
+  type WaitForThreadUpdateInput,
 } from "../Services/McpOrchestrationService.ts";
 
 const MCP_STRUCTURED_RESPONSE_MAX_BYTES = 1_000_000;
@@ -120,6 +129,36 @@ const requireRead = Effect.fn("McpOrchestrationService.requireRead")(function* (
     ),
   );
 });
+
+const toLivenessMcpError = (error: { readonly code: string; readonly message: string }) =>
+  new McpOrchestrationError({
+    code: error.code,
+    message: error.message,
+  });
+
+const decodeRequiredThreadUpdateCursor = (
+  cursor: string,
+): Effect.Effect<ThreadUpdateCursor, McpOrchestrationError> => {
+  const decoded = decodeThreadUpdateCursor(cursor);
+  return decoded === null
+    ? Effect.fail(
+        new McpOrchestrationError({
+          code: "invalid_cursor",
+          message: "Invalid thread update cursor.",
+        }),
+      )
+    : Effect.succeed(decoded);
+};
+
+function threadUpdateCursorIsNewer(current: ThreadUpdateCursor, previous: ThreadUpdateCursor) {
+  if (current.sequence > previous.sequence) {
+    return true;
+  }
+  if (current.observedAt === null) {
+    return false;
+  }
+  return previous.observedAt === null || current.observedAt > previous.observedAt;
+}
 
 function parseHistoryCursor(
   cursor: string | undefined,
@@ -729,6 +768,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
     const providerService = yield* ProviderService;
     const serverSettings = yield* ServerSettingsService;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+    const threadTurnLivenessQuery = yield* ThreadTurnLivenessQuery;
     const checkpointDiffQuery = yield* CheckpointDiffQuery;
     const textGeneration = yield* TextGeneration;
     const fileSystem = yield* FileSystem.FileSystem;
@@ -3450,6 +3490,129 @@ export const McpOrchestrationServiceLive = Layer.effect(
             status: "updated" as const,
             threadId: input.threadId,
             sequence: lastSequence,
+          };
+        }),
+      getThreadTurnStatus: (input: ThreadTurnStatusInput) =>
+        Effect.gen(function* () {
+          yield* requireRead();
+          yield* requireThreadDetail(input.threadId);
+          const liveness = yield* threadTurnLivenessQuery
+            .getThreadTurnStatus({
+              threadId: input.threadId,
+              ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
+            })
+            .pipe(Effect.mapError(toLivenessMcpError));
+          const cursor = yield* threadTurnLivenessQuery
+            .getCurrentCursor({ observedAt: liveness.lastObservableProgressAt })
+            .pipe(Effect.mapError(toLivenessMcpError));
+          return {
+            threadId: input.threadId,
+            cursor,
+            liveness,
+          };
+        }),
+      waitForThreadUpdate: (input: WaitForThreadUpdateInput) =>
+        Effect.gen(function* () {
+          yield* requireRead();
+          yield* requireThreadDetail(input.threadId);
+          return yield* threadTurnLivenessQuery
+            .waitForThreadUpdate(input)
+            .pipe(Effect.mapError(toLivenessMcpError));
+        }),
+      cancelStaleThreadTurn: (input: CancelStaleThreadTurnInput) =>
+        Effect.gen(function* () {
+          yield* requireWrite();
+          const force = input.force === true;
+          const ifNoProgressSince = yield* decodeRequiredThreadUpdateCursor(
+            input.ifNoProgressSince,
+          );
+          const thread = yield* requireThreadDetail(input.threadId);
+          yield* requireThreadManageableByMcp(thread);
+
+          const liveness = yield* threadTurnLivenessQuery
+            .getThreadTurnStatus({ threadId: input.threadId, turnId: input.turnId })
+            .pipe(Effect.mapError(toLivenessMcpError));
+          const activeTurnId = thread.session?.activeTurnId ?? thread.latestTurn?.turnId ?? null;
+          if (
+            liveness.state !== "running" ||
+            activeTurnId === null ||
+            String(activeTurnId) !== String(input.turnId)
+          ) {
+            return yield* new McpOrchestrationError({
+              code: "turn_not_active",
+              message: `turn_not_active: Turn '${input.turnId}' is not the active running turn on thread '${input.threadId}'.`,
+            });
+          }
+
+          const currentCursorString = yield* threadTurnLivenessQuery
+            .getCurrentCursor({ observedAt: liveness.lastObservableProgressAt })
+            .pipe(Effect.mapError(toLivenessMcpError));
+          const currentCursor = yield* decodeRequiredThreadUpdateCursor(currentCursorString);
+          if (!force && threadUpdateCursorIsNewer(currentCursor, ifNoProgressSince)) {
+            return yield* new McpOrchestrationError({
+              code: "progress_observed",
+              message: `progress_observed: Thread '${input.threadId}' turn '${input.turnId}' has observable progress after ifNoProgressSince.`,
+            });
+          }
+
+          if (!force && !liveness.safeToInterrupt) {
+            return yield* new McpOrchestrationError({
+              code: "not_stale",
+              message: `not_stale: Thread '${input.threadId}' turn '${input.turnId}' is not currently safe to interrupt as stale.`,
+            });
+          }
+
+          const createdAt = yield* currentIsoTimestamp();
+          yield* orchestrationEngine
+            .dispatch({
+              type: "thread.activity.append",
+              commandId: makeCommandId("thread-turn-stale-cancel-activity"),
+              threadId: input.threadId,
+              activity: {
+                id: EventId.make(`stale-cancel:${randomHex(8)}`),
+                tone: force ? "error" : "info",
+                kind: "thread.turn.stale-cancel.requested",
+                summary: force
+                  ? "Forced stale turn cancellation requested"
+                  : "Stale turn cancellation requested",
+                payload: {
+                  turnId: input.turnId,
+                  ifNoProgressSince: input.ifNoProgressSince,
+                  forced: force,
+                  lastObservableProgressAt: liveness.lastObservableProgressAt,
+                  staleReason: liveness.staleReason,
+                },
+                turnId: input.turnId,
+                createdAt,
+              },
+              createdAt,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch stale cancellation activity.", error),
+              ),
+            );
+
+          const accepted = yield* orchestrationEngine
+            .dispatch({
+              type: "thread.turn.interrupt",
+              commandId: makeCommandId("thread-turn-stale-cancel-interrupt"),
+              threadId: input.threadId,
+              turnId: input.turnId,
+              createdAt: yield* currentIsoTimestamp(),
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                toInternalError("Failed to dispatch orchestration command.", error),
+              ),
+            );
+
+          return {
+            status: "interrupt_requested" as const,
+            threadId: input.threadId,
+            turnId: input.turnId,
+            sequence: accepted.sequence,
+            forced: force,
           };
         }),
       interruptThreadTurn: (rawInput) =>

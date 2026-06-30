@@ -13,6 +13,8 @@ import packageJson from "../../package.json" with { type: "json" };
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import { OrchestrationToolkitHandlersLive } from "./toolkits/orchestration/handlers.ts";
+import { OrchestrationToolkit } from "./toolkits/orchestration/tools.ts";
 import {
   PreviewSnapshotToolkitHandlersLive,
   PreviewStandardToolkitHandlersLive,
@@ -203,6 +205,10 @@ const PreviewSnapshotRegistrationLive = Layer.effectDiscard(registerPreviewSnaps
   Layer.provide(PreviewSnapshotToolkitHandlersLive),
 );
 
+const OrchestrationToolkitRegistrationLive = McpServer.toolkit(OrchestrationToolkit).pipe(
+  Layer.provide(OrchestrationToolkitHandlersLive),
+);
+
 export const PreviewToolkitRegistrationLive = Layer.mergeAll(
   PreviewStandardToolkitRegistrationLive,
   PreviewSnapshotRegistrationLive,
@@ -214,4 +220,7 @@ const McpTransportLive = McpServer.layerHttp({
   path: "/mcp",
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
-export const layer = PreviewToolkitRegistrationLive.pipe(Layer.provideMerge(McpTransportLive));
+export const layer = Layer.mergeAll(
+  PreviewToolkitRegistrationLive,
+  OrchestrationToolkitRegistrationLive,
+).pipe(Layer.provide(McpTransportLive));
