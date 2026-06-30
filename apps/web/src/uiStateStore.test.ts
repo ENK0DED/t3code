@@ -14,6 +14,7 @@ import {
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
   setThreadChangedFilesExpanded,
+  setThreadTreeExpanded,
   type UiState,
 } from "./uiStateStore";
 
@@ -23,6 +24,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     projectOrder: [],
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
+    expandedThreadTreeIdsByProject: {},
     defaultAdvertisedEndpointKey: null,
     ...overrides,
   };
@@ -131,6 +133,19 @@ describe("uiStateStore pure functions", () => {
     ).toEqual({});
   });
 
+  it("stores expanded sidebar thread tree rows by project", () => {
+    const expanded = setThreadTreeExpanded(makeUiState(), "project-a", "thread-parent", true);
+
+    expect(expanded.expandedThreadTreeIdsByProject).toEqual({
+      "project-a": ["thread-parent"],
+    });
+    expect(setThreadTreeExpanded(expanded, "project-a", "thread-parent", true)).toBe(expanded);
+
+    const collapsed = setThreadTreeExpanded(expanded, "project-a", "thread-parent", false);
+
+    expect(collapsed.expandedThreadTreeIdsByProject).toEqual({});
+  });
+
   it("stores the endpoint preference by stable key", () => {
     const next = setDefaultAdvertisedEndpointKey(makeUiState(), "desktop-core:lan:http");
 
@@ -177,6 +192,7 @@ describe("parsePersistedState", () => {
           "turn-1": false,
         },
       },
+      expandedThreadTreeIdsByProject: {},
     });
   });
 
