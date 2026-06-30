@@ -175,6 +175,7 @@ const projectionQueryMock = (input: {
           : Option.none(),
       ),
     getThreadTurnStateById: () => Effect.succeed(Option.none()),
+    getThreadTurnLivenessRowById: () => Effect.succeed(Option.none()),
     getThreadTurnStateByPendingMessageId: () => Effect.die("unused"),
     listProjectShells: () => Effect.succeed([] satisfies ReadonlyArray<OrchestrationProjectShell>),
     listThreadShellsByProject: () => Effect.succeed([]),

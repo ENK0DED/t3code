@@ -19,6 +19,7 @@ import type {
   OrchestrationThreadShell,
   ThreadCreatedVia,
   ProjectId,
+  ThreadTurnProviderSignalKind,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -56,6 +57,19 @@ export interface ProjectionFullThreadDiffContext {
   readonly worktreePath: string | null;
   readonly latestCheckpointTurnCount: number;
   readonly toCheckpointRef: CheckpointRef | null;
+}
+
+export interface ProjectionThreadTurnLivenessRow {
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId;
+  readonly pendingMessageId: MessageId | null;
+  readonly state: "running" | "interrupted" | "completed" | "error";
+  readonly requestedAt: string;
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
+  readonly lastProviderSignalAt: string | null;
+  readonly lastObservableProgressAt: string | null;
+  readonly lastSignalKind: ThreadTurnProviderSignalKind | null;
 }
 
 /**
@@ -210,6 +224,11 @@ export interface ProjectionSnapshotQueryShape {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
   }) => Effect.Effect<Option.Option<OrchestrationLatestTurn>, ProjectionRepositoryError>;
+
+  readonly getThreadTurnLivenessRowById: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+  }) => Effect.Effect<Option.Option<ProjectionThreadTurnLivenessRow>, ProjectionRepositoryError>;
 
   /**
    * Read the concrete turn row that was bound from a pending start carrying

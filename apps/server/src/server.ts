@@ -50,6 +50,7 @@ import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderComma
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import { ThreadTurnSignalTrackerLive } from "./orchestration/Layers/ThreadTurnSignalTracker.ts";
+import { ThreadTurnLivenessQueryLive } from "./orchestration/Layers/ThreadTurnLivenessQuery.ts";
 import { ThreadTurnStartBootstrapDispatcherLive } from "./orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
@@ -166,8 +167,12 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ThreadDeletionReactorLive),
   Layer.provideMerge(AgentAwarenessRelay.layer.pipe(Layer.provide(ServerSecretStore.layer))),
   Layer.provideMerge(RuntimeReceiptBusLive),
-  Layer.provide(ThreadTurnSignalTrackerLive),
 );
+
+const ReactorAndLivenessLayerLive = Layer.mergeAll(
+  ReactorLayerLive,
+  ThreadTurnLivenessQueryLive,
+).pipe(Layer.provideMerge(ThreadTurnSignalTrackerLive));
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
   Layer.provide(ProviderSessionRuntime.layer),
@@ -301,7 +306,7 @@ const ThreadTurnStartBootstrapDispatcherLayerLive = ThreadTurnStartBootstrapDisp
   Layer.provide(ThreadTurnStartBootstrapDispatcherDependenciesLive),
 );
 
-const RuntimeCoreDependenciesBaseLive = ReactorLayerLive.pipe(
+const RuntimeCoreDependenciesBaseLive = ReactorAndLivenessLayerLive.pipe(
   // Core Services
   Layer.provideMerge(CheckpointingLayerLive),
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),

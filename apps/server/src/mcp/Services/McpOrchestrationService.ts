@@ -14,6 +14,9 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as McpInvocationContext from "../McpInvocationContext.ts";
+import type { PendingTurnRequest as PendingRequest } from "../../orchestration/pendingRequests.ts";
+
+export type { PendingTurnRequest as PendingRequest } from "../../orchestration/pendingRequests.ts";
 
 export class McpOrchestrationError extends Schema.TaggedErrorClass<McpOrchestrationError>()(
   "McpOrchestrationError",
@@ -213,35 +216,6 @@ export interface ListThreadsResult {
     readonly hasActionableProposedPlan: boolean;
   }>;
 }
-
-/**
- * A currently-open request blocking a thread's turn, discoverable on
- * `get_thread_settings` so an orchestrator can answer it via the
- * `respond_to_approval` / `respond_to_user_input` tools using `requestId`.
- */
-export type PendingRequest =
-  | {
-      readonly kind: "approval";
-      readonly requestId: string;
-      readonly requestKind?: "command" | "file-read" | "file-change" | undefined;
-      readonly requestType?: string | undefined;
-      readonly detail?: string | undefined;
-    }
-  | {
-      readonly kind: "user-input";
-      readonly requestId: string;
-      readonly prompt?: string | undefined;
-      readonly fields: ReadonlyArray<{
-        readonly id: string;
-        readonly header?: string | undefined;
-        readonly question?: string | undefined;
-        readonly options?: ReadonlyArray<{
-          readonly label: string;
-          readonly description?: string | undefined;
-        }>;
-        readonly multiSelect?: boolean | undefined;
-      }>;
-    };
 
 export interface ThreadSettingsResult {
   readonly threadId: ThreadId;
