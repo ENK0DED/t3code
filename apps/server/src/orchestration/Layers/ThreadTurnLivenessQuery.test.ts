@@ -507,6 +507,33 @@ it.effect("waitForThreadUpdate returns timeout without dispatching interrupts", 
   }),
 );
 
+it.effect("waitForThreadUpdate returns stale after provider progress stops past threshold", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness({
+      rows: [livenessRow({ lastProviderSignalAt: isoAt(0, 1) })],
+    });
+
+    const result = yield* Effect.gen(function* () {
+      yield* TestClock.adjust(Duration.minutes(11));
+      const query = yield* ThreadTurnLivenessQuery;
+      const cursor = yield* query.getCurrentCursor();
+      return yield* query.waitForThreadUpdate({
+        threadId: THREAD,
+        turnId: TURN,
+        since: cursor,
+        timeoutMs: 1_000,
+        includeStatus: true,
+      });
+    }).pipe(Effect.provide(Layer.mergeAll(harness.layer, TestClock.layer())));
+
+    expect(result.reason).toBe("stale");
+    expect(result.turnId).toBe(TURN);
+    expect(result.liveness?.stale).toBe(true);
+    expect(result.liveness?.safeToInterrupt).toBe(true);
+    expect(harness.dispatched).toEqual([]);
+  }),
+);
+
 it.effect("scoped wait ignores updates for a newer or different turn", () =>
   Effect.gen(function* () {
     const harness = yield* makeHarness({
