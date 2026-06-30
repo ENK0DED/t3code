@@ -31,6 +31,7 @@ import {
   ProjectionSnapshotQuery,
   type ProjectionThreadCheckpointContext,
 } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadTurnLivenessQuery } from "../orchestration/Services/ThreadTurnLivenessQuery.ts";
 import { ThreadTurnStartBootstrapDispatcher } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import { ProjectionThreadMessageSearchRepository } from "../persistence/Services/ProjectionThreadMessageSearch.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
@@ -195,6 +196,12 @@ const providerRegistryMock = (providers: ReadonlyArray<ServerProvider>) =>
     streamChanges: Stream.empty,
   });
 
+const threadTurnLivenessQueryUnused = ThreadTurnLivenessQuery.of({
+  getThreadTurnStatus: () => Effect.die("unused"),
+  getCurrentCursor: () => Effect.die("unused"),
+  waitForThreadUpdate: () => Effect.die("unused"),
+});
+
 interface DiffStub {
   readonly turnDiff?: OrchestrationGetTurnDiffResult;
   readonly fullThreadDiff?: OrchestrationGetTurnDiffResult;
@@ -333,6 +340,7 @@ const makeHistoryHarnessLayer = (input?: {
         }),
       ),
     ),
+    Layer.provideMerge(Layer.succeed(ThreadTurnLivenessQuery, threadTurnLivenessQueryUnused)),
     Layer.provideMerge(
       Layer.succeed(
         ProjectionThreadMessageSearchRepository,

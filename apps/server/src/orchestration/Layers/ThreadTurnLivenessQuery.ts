@@ -11,7 +11,6 @@ import {
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -518,19 +517,19 @@ const make = Effect.gen(function* () {
         return yield* resultFor("stale", input);
       });
 
-      const eventFiber = yield* waitForEvent.pipe(Effect.forkChild);
-      const initial = yield* probe(null);
-      if (Option.isSome(initial)) {
-        yield* Fiber.interrupt(eventFiber);
-        return initial.value;
-      }
+      const initialProbe = Effect.yieldNow.pipe(
+        Effect.flatMap(() => probe(null)),
+        Effect.flatMap((result) =>
+          Option.isSome(result) ? Effect.succeed(result.value) : Effect.never,
+        ),
+      );
 
       return yield* Effect.raceFirst(
-        Effect.raceFirst(Fiber.join(eventFiber), staleDeadline),
+        Effect.raceFirst(Effect.raceFirst(waitForEvent, initialProbe), staleDeadline),
         Effect.sleep(Duration.millis(timeoutMs)).pipe(
           Effect.flatMap(() => resultFor("timeout", input)),
         ),
-      ).pipe(Effect.ensuring(Fiber.interrupt(eventFiber)));
+      );
     }).pipe(
       Effect.mapError(toQueryError(`Unable to wait for thread updates for ${input.threadId}.`)),
     );

@@ -28,7 +28,12 @@ import { HttpBody, HttpClient, HttpRouter } from "effect/unstable/http";
 import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { CheckpointDiffQuery } from "../checkpointing/CheckpointDiffQuery.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import {
+  ProjectionSnapshotQuery,
+  type ProjectionThreadTurnLivenessRow,
+} from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadTurnLivenessQueryLive } from "../orchestration/Layers/ThreadTurnLivenessQuery.ts";
+import { ThreadTurnSignalTrackerLive } from "../orchestration/Layers/ThreadTurnSignalTracker.ts";
 import { ThreadTurnStartBootstrapDispatcher } from "../orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import { ProjectionThreadMessageSearchRepository } from "../persistence/Services/ProjectionThreadMessageSearch.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
@@ -37,6 +42,7 @@ import { makeManualOnlyProviderMaintenanceCapabilities } from "../provider/provi
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TextGeneration } from "../textGeneration/TextGeneration.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import { OrchestrationToolkit } from "./toolkits/orchestration/tools.ts";
@@ -45,6 +51,7 @@ const environmentId = EnvironmentId.make("environment-mcp-test");
 const currentThreadId = ThreadId.make("thread-mcp-test");
 const currentProjectId = ProjectId.make("project-mcp-test");
 const providerInstanceId = ProviderInstanceId.make("codex");
+const freshSignalAt = "2999-01-01T00:00:00.000Z";
 
 const defaultModelSelection = (): ModelSelection => ({
   instanceId: providerInstanceId,
@@ -110,6 +117,54 @@ const currentThread: OrchestrationThread = {
   session: null,
 };
 
+const staleSignalAt = "1969-12-31T23:00:00.000Z";
+const freshIso = () => freshSignalAt;
+
+const runningThread = (turnId: TurnId): OrchestrationThread => {
+  const timestamp = freshIso();
+  return {
+    ...currentThread,
+    latestTurn: {
+      turnId,
+      state: "running",
+      requestedAt: timestamp,
+      startedAt: timestamp,
+      completedAt: null,
+      assistantMessageId: null,
+    },
+    session: {
+      threadId: currentThreadId,
+      status: "running",
+      providerName: "codex",
+      providerInstanceId,
+      runtimeMode: "full-access",
+      activeTurnId: turnId,
+      lastError: null,
+      updatedAt: timestamp,
+    },
+  };
+};
+
+const livenessRow = (
+  input: Partial<ProjectionThreadTurnLivenessRow> & Pick<ProjectionThreadTurnLivenessRow, "turnId">,
+): ProjectionThreadTurnLivenessRow => {
+  const requestedAt = input.requestedAt ?? freshIso();
+  const startedAt = input.startedAt ?? requestedAt;
+  const lastProviderSignalAt = input.lastProviderSignalAt ?? null;
+  return {
+    threadId: input.threadId ?? currentThreadId,
+    turnId: input.turnId,
+    pendingMessageId: input.pendingMessageId ?? null,
+    state: input.state ?? "running",
+    requestedAt,
+    startedAt,
+    completedAt: input.completedAt ?? null,
+    lastProviderSignalAt,
+    lastObservableProgressAt: input.lastObservableProgressAt ?? lastProviderSignalAt ?? startedAt,
+    lastSignalKind: input.lastSignalKind ?? null,
+  };
+};
+
 const fakeEnvironment = ServerEnvironment.of({
   getEnvironmentId: Effect.succeed(environmentId),
   getDescriptor: Effect.die("unused"),
@@ -130,6 +185,11 @@ type IntegrationLayerOptions = {
       readonly createdByThreadId: Exclude<OrchestrationThread["createdByThreadId"], undefined>;
     }>
   >;
+  readonly getSnapshotSequence?: () => Effect.Effect<{ readonly snapshotSequence: number }>;
+  readonly getThreadTurnLivenessRowById?: (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+  }) => Effect.Effect<Option.Option<ProjectionThreadTurnLivenessRow>>;
   readonly onDispatch?: (command: OrchestrationCommand) => Effect.Effect<void>;
   readonly onBootstrapDispatch?: (input: {
     readonly command: OrchestrationCommand;
@@ -144,6 +204,9 @@ const makeIntegrationLayer = (
   McpHttpServer.layer.pipe(
     Layer.provideMerge(McpSessionRegistry.layer),
     Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(McpOrchestrationServiceLive),
+    Layer.provideMerge(ThreadTurnLivenessQueryLive),
+    Layer.provideMerge(ThreadTurnSignalTrackerLive),
     Layer.provideMerge(
       Layer.succeed(
         PreviewAutomationBroker.PreviewAutomationBroker,
@@ -163,7 +226,8 @@ const makeIntegrationLayer = (
           getSnapshot: () => Effect.die("unused"),
           getShellSnapshot: () => Effect.die("unused"),
           getArchivedShellSnapshot: () => Effect.die("unused"),
-          getSnapshotSequence: () => Effect.die("unused"),
+          getSnapshotSequence: () =>
+            options?.getSnapshotSequence?.() ?? Effect.succeed({ snapshotSequence: 1 }),
           getCounts: () => Effect.die("unused"),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           listProjectShells: () => Effect.succeed([currentProject]),
@@ -184,7 +248,8 @@ const makeIntegrationLayer = (
               threadId === currentThreadId ? Option.some(currentThread) : Option.none(),
             ),
           getThreadTurnStateById: () => Effect.succeed(Option.none()),
-          getThreadTurnLivenessRowById: () => Effect.succeed(Option.none()),
+          getThreadTurnLivenessRowById: (input) =>
+            options?.getThreadTurnLivenessRowById?.(input) ?? Effect.succeed(Option.none()),
           getThreadTurnStateByPendingMessageId: () => Effect.die("unused"),
           searchThreadMessagesByProject: () => Effect.succeed([]),
         }),
@@ -425,7 +490,7 @@ function initializeMcpSession(issuedToken: string) {
   });
 }
 
-function callMcpTool(sessionId: string, issuedToken: string, name: string, args: unknown) {
+function callMcpToolResult(sessionId: string, issuedToken: string, name: string, args: unknown) {
   return Effect.gen(function* () {
     const httpClient = yield* HttpClient.HttpClient;
     const response = yield* httpClient.post("/mcp", {
@@ -454,9 +519,14 @@ function callMcpTool(sessionId: string, issuedToken: string, name: string, args:
       readonly error?: unknown;
     };
     expect(payload.error).toBeUndefined();
-    expect(payload.result?.isError).toBe(false);
     return payload.result!;
   });
+}
+
+function callMcpTool(sessionId: string, issuedToken: string, name: string, args: unknown) {
+  return callMcpToolResult(sessionId, issuedToken, name, args).pipe(
+    Effect.tap((result) => Effect.sync(() => expect(result.isError).toBe(false))),
+  );
 }
 
 function issueMcpToken() {
@@ -566,6 +636,128 @@ it.effect("serves the planned orchestration toolkit HTTP tool surface", () =>
             expectedToolNames.includes(name as (typeof expectedToolNames)[number]),
           ) ?? [];
       expect(orchestrationToolNames).toEqual(expectedToolNames);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("handles turn liveness status wait and stale cancel through the MCP transport", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      const turnId = TurnId.make("turn-mcp-liveness");
+      const rowRef = yield* Ref.make(
+        livenessRow({
+          turnId,
+          lastProviderSignalAt: freshIso(),
+          lastSignalKind: "reasoning",
+        }),
+      );
+      const sequenceRef = yield* Ref.make(1);
+      yield* HttpRouter.serve(
+        makeIntegrationLayer(dispatchedCommands, {
+          getThreadDetailById: (threadId) =>
+            Effect.succeed(
+              threadId === currentThreadId ? Option.some(runningThread(turnId)) : Option.none(),
+            ),
+          getThreadTurnLivenessRowById: ({ threadId, turnId: requestedTurnId }) =>
+            Ref.get(rowRef).pipe(
+              Effect.map((row) =>
+                row.threadId === threadId && row.turnId === requestedTurnId
+                  ? Option.some(row)
+                  : Option.none<ProjectionThreadTurnLivenessRow>(),
+              ),
+            ),
+          getSnapshotSequence: () =>
+            Ref.get(sequenceRef).pipe(Effect.map((snapshotSequence) => ({ snapshotSequence }))),
+        }),
+        {
+          disableListenLog: true,
+          disableLogger: true,
+        },
+      ).pipe(Layer.build);
+      const issuedToken = yield* issueMcpToken();
+      const initialize = yield* initializeMcpSession(issuedToken);
+
+      const status = yield* callMcpTool(
+        initialize.sessionId,
+        issuedToken,
+        "get_thread_turn_status",
+        { threadId: currentThreadId, turnId },
+      );
+      expect(status.structuredContent).toMatchObject({
+        threadId: currentThreadId,
+        liveness: {
+          turnId,
+          state: "running",
+        },
+      });
+
+      const invalidWait = yield* callMcpToolResult(
+        initialize.sessionId,
+        issuedToken,
+        "wait_for_thread_update",
+        {
+          threadId: currentThreadId,
+          turnId,
+          since: "not-a-cursor",
+          timeoutMs: 1_000,
+        },
+      );
+      expect(invalidWait.isError).toBe(true);
+      expect(yield* encodeUnknownJsonString(invalidWait)).toContain("Invalid thread update cursor");
+
+      yield* Ref.set(
+        rowRef,
+        livenessRow({
+          turnId,
+          requestedAt: staleSignalAt,
+          startedAt: staleSignalAt,
+          lastProviderSignalAt: staleSignalAt,
+          lastObservableProgressAt: staleSignalAt,
+          lastSignalKind: "reasoning",
+        }),
+      );
+      yield* Ref.set(sequenceRef, 2);
+      const staleStatus = yield* callMcpTool(
+        initialize.sessionId,
+        issuedToken,
+        "get_thread_turn_status",
+        { threadId: currentThreadId, turnId },
+      );
+      expect(staleStatus.structuredContent).toMatchObject({
+        threadId: currentThreadId,
+        liveness: {
+          stale: true,
+          safeToInterrupt: true,
+        },
+      });
+      const staleCursor = (staleStatus.structuredContent as { readonly cursor: string }).cursor;
+
+      const cancel = yield* callMcpTool(
+        initialize.sessionId,
+        issuedToken,
+        "cancel_stale_thread_turn",
+        {
+          threadId: currentThreadId,
+          turnId,
+          ifNoProgressSince: staleCursor,
+        },
+      );
+      expect(cancel.structuredContent).toMatchObject({
+        status: "interrupt_requested",
+        threadId: currentThreadId,
+        turnId,
+        forced: false,
+      });
+      expect(dispatchedCommands.map((command) => command.type)).toEqual([
+        "thread.activity.append",
+        "thread.turn.interrupt",
+      ]);
+      expect(dispatchedCommands[1]).toMatchObject({
+        type: "thread.turn.interrupt",
+        threadId: currentThreadId,
+        turnId,
+      });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

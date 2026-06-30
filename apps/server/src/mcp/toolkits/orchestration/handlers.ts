@@ -90,6 +90,14 @@ export const OrchestrationToolkitHandlersLive = OrchestrationToolkit.toLayer({
     invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.sendThreadMessage(input)))),
   update_thread_settings: (input) =>
     invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.updateThreadSettings(input)))),
+  get_thread_turn_status: (input) =>
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.getThreadTurnStatus(input)))),
+  wait_for_thread_update: (input) =>
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.waitForThreadUpdate(input)))),
+  cancel_stale_thread_turn: (input) =>
+    invokeWrite(
+      McpOrchestrationService.pipe(Effect.flatMap((s) => s.cancelStaleThreadTurn(input))),
+    ),
   interrupt_thread_turn: (input) =>
     invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.interruptThreadTurn(input)))),
   respond_to_approval: (input) =>

@@ -58,6 +58,6 @@ if (import.meta.main) {
   const main = Command.run(cli, { version: packageJson.version }).pipe(
     Effect.scoped,
     Effect.provide(CliRuntimeLayer),
-  ) as Effect.Effect<void, unknown, never>;
+  );
   NodeRuntime.runMain(main);
 }

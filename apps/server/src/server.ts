@@ -35,6 +35,7 @@ import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
+import { McpOrchestrationServiceLive } from "./mcp/Layers/McpOrchestrationService.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -504,6 +505,7 @@ export const makeServerLayer = Layer.unwrap(
     );
 
     return serverApplicationLayer.pipe(
+      Layer.provideMerge(McpOrchestrationServiceLive),
       Layer.provideMerge(RuntimeServicesLive),
       Layer.provideMerge(serverRelayBrokerTracingLayer),
       Layer.provideMerge(HttpServerLive),

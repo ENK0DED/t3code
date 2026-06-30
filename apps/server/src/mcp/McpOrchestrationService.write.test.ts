@@ -43,6 +43,7 @@ import { TextGeneration } from "../textGeneration/TextGeneration.ts";
 import { GitWorkflowService } from "../git/GitWorkflowService.ts";
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
 import { ProjectSetupScriptRunner } from "../project/ProjectSetupScriptRunner.ts";
+import { ThreadTurnLivenessQuery } from "../orchestration/Services/ThreadTurnLivenessQuery.ts";
 import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
 
 const defaultModelSelection = (overrides?: Partial<ModelSelection>): ModelSelection => ({
@@ -271,6 +272,12 @@ const providerRegistryMock = (providers: ReadonlyArray<ServerProvider>) =>
     streamChanges: Stream.empty,
   });
 
+const threadTurnLivenessQueryUnused = ThreadTurnLivenessQuery.of({
+  getThreadTurnStatus: () => Effect.die("unused"),
+  getCurrentCursor: () => Effect.die("unused"),
+  waitForThreadUpdate: () => Effect.die("unused"),
+});
+
 const makeWriteHarnessLayer = (input?: {
   readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
   readonly threads?: ReadonlyArray<OrchestrationThreadShell>;
@@ -416,6 +423,7 @@ const makeWriteHarnessLayer = (input?: {
         }),
       ),
     ),
+    Layer.provideMerge(Layer.succeed(ThreadTurnLivenessQuery, threadTurnLivenessQueryUnused)),
     Layer.provideMerge(
       Layer.succeed(
         ProjectionThreadMessageSearchRepository,

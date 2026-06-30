@@ -25,6 +25,9 @@ const expectedToolNames = [
   "create_thread",
   "send_thread_message",
   "update_thread_settings",
+  "get_thread_turn_status",
+  "wait_for_thread_update",
+  "cancel_stale_thread_turn",
   "interrupt_thread_turn",
   "respond_to_approval",
   "respond_to_user_input",
@@ -251,6 +254,46 @@ it("rejects zero-valued turn control timeouts at the tool boundary", () => {
   }
 });
 
+it("describes thread turn liveness wait tools without exposing cancellation semantics", () => {
+  const statusSchema = Tool.getJsonSchema(OrchestrationToolkit.tools.get_thread_turn_status) as {
+    readonly properties?: Readonly<Record<string, unknown>>;
+  };
+  const waitTool = OrchestrationToolkit.tools.wait_for_thread_update;
+  const waitSchema = Tool.getJsonSchema(waitTool) as {
+    readonly properties?: Readonly<Record<string, unknown>>;
+  };
+
+  expect(statusSchema.properties?.threadId).toBeDefined();
+  expect(statusSchema.properties?.turnId).toBeDefined();
+  expect(waitSchema.properties?.threadId).toBeDefined();
+  expect(waitSchema.properties?.turnId).toBeDefined();
+  expect(waitSchema.properties?.since).toBeDefined();
+  expect(waitSchema.properties?.timeoutMs).toBeDefined();
+  expect(waitSchema.properties?.includeStatus).toBeDefined();
+  expect(waitTool.description).toContain("never interrupts");
+  expect(waitTool.description).toContain("timeout");
+  expect(waitTool.description).toContain("waitForResponse.timeoutMs is not stale");
+  expect(waitTool.description).toContain("Claude");
+});
+
+it("exposes guarded stale cancellation inputs and directs stale cleanup away from manual interrupt", () => {
+  const cancelTool = OrchestrationToolkit.tools.cancel_stale_thread_turn;
+  const cancelSchema = Tool.getJsonSchema(cancelTool) as {
+    readonly properties?: Readonly<Record<string, unknown>>;
+  };
+  const interruptTool = OrchestrationToolkit.tools.interrupt_thread_turn;
+
+  expect(cancelSchema.properties?.threadId).toBeDefined();
+  expect(cancelSchema.properties?.turnId).toBeDefined();
+  expect(cancelSchema.properties?.ifNoProgressSince).toBeDefined();
+  expect(cancelSchema.properties?.force).toBeDefined();
+  expect(cancelTool.description).toContain("cancel_stale_thread_turn");
+  expect(cancelTool.description).toContain("ifNoProgressSince");
+  expect(interruptTool.description).toContain("manual stop");
+  expect(interruptTool.description).toContain("not a stale detector");
+  expect(interruptTool.description).toContain("cancel_stale_thread_turn");
+});
+
 it("requires instanceId in MCP model selections and omits null from non-null optionals", () => {
   const decodeSendThreadMessage = Schema.decodeUnknownSync(
     OrchestrationToolkit.tools.send_thread_message.parametersSchema,
@@ -294,6 +337,8 @@ it("annotates orchestration tools with MCP read/write/destructive hints", () => 
     "get_thread_messages",
     "list_project_actions",
     "get_thread_diff",
+    "get_thread_turn_status",
+    "wait_for_thread_update",
   ] as const;
   const writeTools = [
     "update_project_settings",
@@ -308,6 +353,7 @@ it("annotates orchestration tools with MCP read/write/destructive hints", () => 
   ] as const;
   const destructiveTools = [
     "delete_project_action",
+    "cancel_stale_thread_turn",
     "interrupt_thread_turn",
     "delete_thread",
     "archive_thread",
