@@ -36,13 +36,20 @@ const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
       Effect.succeed(
         workspaceRoot === project.workspaceRoot ? Option.some(project) : Option.none(),
       ),
+    listProjectShells: () => Effect.succeed([project]),
     getProjectShellById: (projectId) =>
       Effect.succeed(projectId === project.id ? Option.some(project) : Option.none()),
     getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
+    listThreadShellsByProject: () => Effect.die("unused"),
     getThreadCheckpointContext: () => Effect.die("unused"),
     getFullThreadDiffContext: () => Effect.die("unused"),
     getThreadShellById: () => Effect.die("unused"),
+    getThreadCreatorById: () => Effect.succeed(Option.none()),
     getThreadDetailById: () => Effect.die("unused"),
+    getThreadTurnStateById: () => Effect.die("unused"),
+    getThreadTurnLivenessRowById: () => Effect.die("unused"),
+    getThreadTurnStateByPendingMessageId: () => Effect.die("unused"),
+    searchThreadMessagesByProject: () => Effect.die("unused"),
   });
 
 const makeTerminalManagerLayer = (

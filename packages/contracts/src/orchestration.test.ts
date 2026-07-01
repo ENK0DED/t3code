@@ -8,6 +8,7 @@ import {
   ModelSelection,
   OrchestrationCommand,
   OrchestrationEvent,
+  ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
@@ -15,6 +16,8 @@ import {
   ProjectMetaUpdatedPayload,
   OrchestrationProposedPlan,
   OrchestrationSession,
+  OrchestrationThread,
+  OrchestrationThreadShell,
   ProjectCreateCommand,
   ThreadMetaUpdatedPayload,
   ThreadTurnStartCommand,
@@ -22,6 +25,7 @@ import {
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
 } from "./orchestration.ts";
+import { ProjectId, ThreadId } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
@@ -46,7 +50,10 @@ function getOptionValue(
   return options?.find((option) => option.id === id)?.value;
 }
 const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPayload);
+const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
+const decodeOrchestrationThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
+const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
 
@@ -290,6 +297,164 @@ it.effect("accepts bootstrap metadata in thread.turn.start", () =>
   }),
 );
 
+it.effect("decodes thread.turn.provider-signal commands", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.turn.provider-signal",
+      commandId: "cmd-provider-signal",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      signalKind: "reasoning",
+      signaledAt: "2026-06-29T00:00:05.000Z",
+      createdAt: "2026-06-29T00:00:05.000Z",
+    });
+
+    assert.strictEqual(parsed.type, "thread.turn.provider-signal");
+    if (parsed.type !== "thread.turn.provider-signal") {
+      throw new Error("expected thread.turn.provider-signal command");
+    }
+    assert.strictEqual(parsed.signalKind, "reasoning");
+    assert.strictEqual(parsed.signaledAt, "2026-06-29T00:00:05.000Z");
+  }),
+);
+
+it.effect("rejects thread.turn.provider-signal commands from the client union", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      decodeClientOrchestrationCommand({
+        type: "thread.turn.provider-signal",
+        commandId: "cmd-provider-signal",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        signalKind: "reasoning",
+        signaledAt: "2026-06-29T00:00:05.000Z",
+        createdAt: "2026-06-29T00:00:05.000Z",
+      }),
+    );
+
+    assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+it.effect("decodes thread.turn-provider-signaled events", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationEvent({
+      sequence: 1,
+      eventId: "evt-provider-signal",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      occurredAt: "2026-06-29T00:00:05.000Z",
+      commandId: "cmd-provider-signal",
+      causationEventId: null,
+      correlationId: "cmd-provider-signal",
+      metadata: {},
+      type: "thread.turn-provider-signaled",
+      payload: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        signalKind: "reasoning",
+        signaledAt: "2026-06-29T00:00:05.000Z",
+      },
+    });
+
+    assert.strictEqual(parsed.type, "thread.turn-provider-signaled");
+    if (parsed.type !== "thread.turn-provider-signaled") {
+      throw new Error("expected thread.turn-provider-signaled event");
+    }
+    assert.strictEqual(parsed.payload.threadId, "thread-1");
+    assert.strictEqual(parsed.payload.turnId, "turn-1");
+    assert.strictEqual(parsed.payload.signalKind, "reasoning");
+    assert.strictEqual(parsed.payload.signaledAt, "2026-06-29T00:00:05.000Z");
+  }),
+);
+
+it.effect("decodes bootstrap createThread parent relationships in thread.turn.start", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnStartCommand({
+      type: "thread.turn.start",
+      commandId: "cmd-turn-bootstrap-parent",
+      threadId: "thread-child",
+      message: {
+        messageId: "msg-bootstrap-parent",
+        role: "user",
+        text: "hello",
+        attachments: [],
+      },
+      bootstrap: {
+        createThread: {
+          projectId: "project-1",
+          parentThreadId: "thread-parent",
+          title: "Bootstrap thread",
+          modelSelection: {
+            provider: "codex",
+            model: "gpt-5.4",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.bootstrap?.createThread?.parentThreadId, "thread-parent");
+  }),
+);
+
+it.effect("decodes thread parent relationships on thread.create", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.create",
+      commandId: "cmd-parent-thread",
+      threadId: "thread-child",
+      projectId: "project-1",
+      parentThreadId: "thread-parent",
+      title: "Child",
+      modelSelection: {
+        instanceId: "codex",
+        model: "gpt-5.5",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.type, "thread.create");
+    if (parsed.type === "thread.create") {
+      assert.strictEqual(parsed.parentThreadId, "thread-parent");
+    }
+  }),
+);
+
+it.effect("defaults omitted thread parent relationships to null on thread.create", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.create",
+      commandId: "cmd-top-level-thread",
+      threadId: "thread-top",
+      projectId: "project-1",
+      title: "Top",
+      modelSelection: {
+        instanceId: "codex",
+        model: "gpt-5.5",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.type, "thread.create");
+    if (parsed.type === "thread.create") {
+      assert.strictEqual(parsed.parentThreadId, null);
+    }
+  }),
+);
+
 it.effect("decodes thread.created runtime mode for historical events", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadCreatedPayload({
@@ -309,6 +474,125 @@ it.effect("decodes thread.created runtime mode for historical events", () =>
 
     assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
     assert.strictEqual(parsed.modelSelection.instanceId, "codex");
+  }),
+);
+
+it.effect("decodes thread.created parent relationships", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadCreatedPayload({
+      threadId: "thread-1",
+      projectId: "project-1",
+      parentThreadId: "thread-parent",
+      title: "Thread title",
+      modelSelection: {
+        provider: "codex",
+        model: "gpt-5.4",
+      },
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.parentThreadId, "thread-parent");
+  }),
+);
+
+it.effect("defaults omitted thread.created parent relationships to null", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadCreatedPayload({
+      threadId: "thread-1",
+      projectId: "project-1",
+      title: "Thread title",
+      modelSelection: {
+        provider: "codex",
+        model: "gpt-5.4",
+      },
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.parentThreadId, null);
+  }),
+);
+
+it.effect("encodes thread.created with an explicit null parentThreadId", () =>
+  Effect.gen(function* () {
+    const encoded = yield* encodeThreadCreatedPayload({
+      threadId: ThreadId.make("thread-1"),
+      projectId: ProjectId.make("project-1"),
+      parentThreadId: null,
+      title: "Thread title",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdVia: "user",
+      createdByThreadId: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.ok(Object.hasOwn(encoded, "parentThreadId"));
+    assert.strictEqual(encoded.parentThreadId, null);
+  }),
+);
+
+it.effect("defaults omitted thread parent relationships on read-model thread and shell", () =>
+  Effect.gen(function* () {
+    const thread = yield* decodeOrchestrationThread({
+      id: "thread-1",
+      projectId: "project-1",
+      title: "Thread title",
+      modelSelection: {
+        provider: "codex",
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      latestTurn: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      deletedAt: null,
+      messages: [],
+      activities: [],
+      checkpoints: [],
+      session: null,
+    });
+    const shell = yield* decodeOrchestrationThreadShell({
+      id: "thread-1",
+      projectId: "project-1",
+      title: "Thread title",
+      modelSelection: {
+        provider: "codex",
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      latestTurn: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      session: null,
+      latestUserMessageAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+    });
+
+    assert.strictEqual(thread.parentThreadId, null);
+    assert.strictEqual(shell.parentThreadId, null);
   }),
 );
 

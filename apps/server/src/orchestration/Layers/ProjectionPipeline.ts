@@ -485,6 +485,92 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
 
+    const upsertMessageFtsByMessageId = (messageId: ProjectionThreadMessage["messageId"]) =>
+      sql`
+        INSERT INTO projection_thread_messages_fts (
+          rowid,
+          text
+        )
+        SELECT
+          rowid,
+          text
+        FROM projection_thread_messages
+        WHERE message_id = ${messageId}
+          AND is_streaming = 0
+      `.pipe(
+        Effect.asVoid,
+        Effect.mapError(toPersistenceSqlError("ProjectionPipeline.threadMessages.upsertFts:query")),
+      );
+
+    const deleteMessageFtsByMessageId = (messageId: ProjectionThreadMessage["messageId"]) =>
+      sql`
+        INSERT INTO projection_thread_messages_fts(
+          projection_thread_messages_fts,
+          rowid,
+          text
+        )
+        SELECT
+          'delete',
+          rowid,
+          text
+        FROM projection_thread_messages AS messages
+        WHERE message_id = ${messageId}
+          AND EXISTS (
+            SELECT 1
+            FROM projection_thread_messages_fts AS fts
+            WHERE fts.rowid = messages.rowid
+          )
+      `.pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionPipeline.threadMessages.deleteFtsByMessageId:query"),
+        ),
+      );
+
+    const deleteMessageFtsByThread = (threadId: ThreadId) =>
+      sql`
+        INSERT INTO projection_thread_messages_fts(
+          projection_thread_messages_fts,
+          rowid,
+          text
+        )
+        SELECT
+          'delete',
+          rowid,
+          text
+        FROM projection_thread_messages AS messages
+        WHERE thread_id = ${threadId}
+          AND EXISTS (
+            SELECT 1
+            FROM projection_thread_messages_fts AS fts
+            WHERE fts.rowid = messages.rowid
+          )
+      `.pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionPipeline.threadMessages.deleteFtsByThread:query"),
+        ),
+      );
+
+    const rebuildMessageFtsByThread = (threadId: ThreadId) =>
+      sql`
+        INSERT INTO projection_thread_messages_fts (
+          rowid,
+          text
+        )
+        SELECT
+          rowid,
+          text
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId}
+          AND is_streaming = 0
+      `.pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionPipeline.threadMessages.rebuildFtsByThread:query"),
+        ),
+      );
+
     const applyProjectsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyProjectsProjection",
     )(function* (event, _attachmentSideEffects) {
@@ -597,12 +683,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
+            parentThreadId: event.payload.parentThreadId,
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
+            createdVia: event.payload.createdVia ?? "user",
+            createdByThreadId: event.payload.createdByThreadId ?? null,
             latestTurnId: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -816,6 +905,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             messageId: event.payload.messageId,
           });
           const previousMessage = Option.getOrUndefined(existingMessage);
+          const shouldDeleteExistingFts =
+            Option.isSome(existingMessage) &&
+            (!event.payload.streaming || !existingMessage.value.isStreaming);
+          if (shouldDeleteExistingFts) {
+            yield* deleteMessageFtsByMessageId(event.payload.messageId);
+          }
           const nextText = Option.match(existingMessage, {
             onNone: () => event.payload.text,
             onSome: (message) => {
@@ -834,7 +929,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   attachments: event.payload.attachments,
                 })
               : previousMessage?.attachments;
-          yield* projectionThreadMessageRepository.upsert({
+          const nextMessage = {
             messageId: event.payload.messageId,
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
@@ -844,7 +939,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
-          });
+          } satisfies ProjectionThreadMessage;
+          yield* projectionThreadMessageRepository.upsert(nextMessage);
+          if (!event.payload.streaming) {
+            yield* upsertMessageFtsByMessageId(event.payload.messageId);
+          }
           return;
         }
 
@@ -868,12 +967,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             return;
           }
 
+          yield* deleteMessageFtsByThread(event.payload.threadId);
           yield* projectionThreadMessageRepository.deleteByThreadId({
             threadId: event.payload.threadId,
           });
           yield* Effect.forEach(keptRows, projectionThreadMessageRepository.upsert, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
+          yield* rebuildMessageFtsByThread(event.payload.threadId);
           attachmentSideEffects.prunedThreadRelativePaths.set(
             event.payload.threadId,
             collectThreadAttachmentRelativePaths(event.payload.threadId, keptRows),
@@ -1051,6 +1152,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                     }),
               { concurrency: 1 },
             );
+            yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
+              threadId: event.payload.threadId,
+            });
             return;
           }
 
@@ -1150,6 +1254,29 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.activity-appended": {
+          if (
+            event.payload.activity.kind !== "provider.turn.start.failed" ||
+            event.payload.activity.turnId !== null
+          ) {
+            return;
+          }
+          yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
+            threadId: event.payload.threadId,
+          });
+          return;
+        }
+
+        case "thread.turn-provider-signaled": {
+          yield* projectionTurnRepository.recordProviderSignal({
+            threadId: event.payload.threadId,
+            turnId: event.payload.turnId,
+            signalKind: event.payload.signalKind,
+            signaledAt: event.payload.signaledAt,
+          });
+          return;
+        }
+
         case "thread.message-sent": {
           if (event.payload.turnId === null || event.payload.role !== "assistant") {
             return;
@@ -1218,6 +1345,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             turnId: event.payload.turnId,
           });
           if (Option.isSome(existingTurn)) {
+            // A late interrupt (e.g. a timeout-driven interrupt event sequenced
+            // after the turn already settled) must not clobber an already-settled
+            // turn. Only a still-running turn transitions to "interrupted".
+            if (existingTurn.value.state !== "running") {
+              return;
+            }
             yield* projectionTurnRepository.upsertByTurnId({
               ...existingTurn.value,
               state: "interrupted",

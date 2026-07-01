@@ -286,6 +286,39 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
     ),
   );
 
+  it.effect("generates thread summaries through the Claude provider", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: {
+            summary: "Thread summary from Claude.",
+          },
+        }),
+        stdinMustContain: "Summarize this T3 Code thread for another coding agent.",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateThreadSummary({
+            threadTitle: "Reconnect investigation",
+            maxOutputCharacters: 1200,
+            messages: [
+              {
+                role: "user",
+                text: "Investigate reconnect failures",
+                createdAt: "2026-01-01T00:00:00.000Z",
+              },
+            ],
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: "claude-sonnet-4-6",
+            },
+          });
+
+          expect(generated).toBe("Thread summary from Claude.");
+        }),
+    ),
+  );
+
   it.effect("runs Claude text generation with the configured Claude HOME", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path;

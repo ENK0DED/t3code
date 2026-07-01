@@ -4,8 +4,11 @@ import { describe, expect, it } from "vite-plus/test";
 import { deriveProviderInstanceEntries } from "./providerInstances";
 import {
   getAppModelOptionsForInstance,
+  isModelEnabledForMcp,
+  removeModelFromMcpDisabled,
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
+  toggleModelMcpDisabled,
 } from "./modelSelection";
 
 function provider(input: {
@@ -267,6 +270,86 @@ describe("instance-scoped model selection", () => {
     expect(resolveAppModelSelectionState(settings, providers)).toEqual({
       instanceId: ProviderInstanceId.make("claude_openrouter"),
       model: "openai/gpt-5.5",
+    });
+  });
+});
+
+describe("MCP model enablement preferences", () => {
+  it("treats models as enabled unless explicitly disabled for the provider instance", () => {
+    expect(
+      isModelEnabledForMcp({
+        mcpDisabledModelsByProvider: {},
+        instanceId: "codex",
+        model: "gpt-5.5",
+      }),
+    ).toBe(true);
+
+    expect(
+      isModelEnabledForMcp({
+        mcpDisabledModelsByProvider: {
+          codex: ["gpt-5.5"],
+        },
+        instanceId: "codex",
+        model: "gpt-5.5",
+      }),
+    ).toBe(false);
+  });
+
+  it("toggles disabled model slugs without affecting other providers", () => {
+    expect(
+      toggleModelMcpDisabled({
+        mcpDisabledModelsByProvider: {
+          codex: ["gpt-5.5"],
+          claudeAgent: ["claude-opus-4-6"],
+        },
+        instanceId: "codex",
+        model: "gpt-5.5",
+      }),
+    ).toEqual({
+      claudeAgent: ["claude-opus-4-6"],
+    });
+  });
+
+  it("drops a removed model from its provider's disabled list and prunes empty keys", () => {
+    expect(
+      removeModelFromMcpDisabled({
+        mcpDisabledModelsByProvider: {
+          codex: ["gpt-5.5", "gpt-5.6"],
+          claudeAgent: ["claude-opus-4-6"],
+        },
+        instanceId: "codex",
+        model: "gpt-5.5",
+      }),
+    ).toEqual({
+      codex: ["gpt-5.6"],
+      claudeAgent: ["claude-opus-4-6"],
+    });
+
+    expect(
+      removeModelFromMcpDisabled({
+        mcpDisabledModelsByProvider: {
+          codex: ["gpt-5.5"],
+          claudeAgent: ["claude-opus-4-6"],
+        },
+        instanceId: "codex",
+        model: "gpt-5.5",
+      }),
+    ).toEqual({
+      claudeAgent: ["claude-opus-4-6"],
+    });
+  });
+
+  it("leaves the map unchanged when the removed model was not disabled", () => {
+    expect(
+      removeModelFromMcpDisabled({
+        mcpDisabledModelsByProvider: {
+          codex: ["gpt-5.5"],
+        },
+        instanceId: "codex",
+        model: "gpt-9.9",
+      }),
+    ).toEqual({
+      codex: ["gpt-5.5"],
     });
   });
 });

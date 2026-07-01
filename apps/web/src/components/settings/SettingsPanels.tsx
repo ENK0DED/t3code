@@ -1382,6 +1382,7 @@ export function ProviderSettingsPanel() {
               hiddenModels={modelPreferences.hiddenModels}
               favoriteModels={favoriteModels}
               modelOrder={modelPreferences.modelOrder}
+              mcpDisabledModelsByProvider={settings.mcpDisabledModelsByProvider}
               onHiddenModelsChange={(hiddenModels) =>
                 updateProviderModelPreferences(row.instanceId, {
                   ...modelPreferences,
@@ -1397,6 +1398,9 @@ export function ProviderSettingsPanel() {
                   modelOrder,
                 })
               }
+              onMcpDisabledModelsByProviderChange={(mcpDisabledModelsByProvider) => {
+                updateSettings({ mcpDisabledModelsByProvider });
+              }}
               onRunUpdate={
                 showInlineUpdateButton && updateCandidate
                   ? () => {

@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+  buildThreadTreeRows,
   createThreadJumpHintVisibilityController,
+  hasThreadDescendant,
+  resolveDescendantThreadStatus,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
   resolveAdjacentThreadId,
@@ -15,8 +18,10 @@ import {
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarStageBadgeLabel,
+  resolveSidebarThreadTreeDisplay,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
+  shouldShowMcpCreatedThreadIcon,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
@@ -792,6 +797,332 @@ describe("getVisibleThreadsForProject", () => {
   });
 });
 
+describe("buildThreadTreeRows", () => {
+  it("nests child threads under their parent and preserves top-level order", () => {
+    const rows = buildThreadTreeRows({
+      threads: [
+        sidebarThread({
+          id: "thread-parent",
+          parentThreadId: null,
+          updatedAt: "2026-01-02T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-other",
+          parentThreadId: null,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-child",
+          parentThreadId: "thread-parent",
+          updatedAt: "2026-01-03T00:00:00.000Z",
+        }),
+      ],
+      expandedThreadIds: new Set(["thread-parent"]),
+      activeThreadId: undefined,
+      sortOrder: "updated_at",
+    });
+
+    expect(rows.map((row) => [row.thread.id, row.depth])).toEqual([
+      ["thread-parent", 0],
+      ["thread-child", 1],
+      ["thread-other", 0],
+    ]);
+  });
+
+  it("rolls descendant status onto collapsed parent rows", () => {
+    const rows = buildThreadTreeRows({
+      threads: [
+        sidebarThread({ id: "thread-parent", parentThreadId: null }),
+        sidebarThread({
+          id: "thread-child",
+          parentThreadId: "thread-parent",
+          session: {
+            threadId: "thread-child" as never,
+            providerName: "codex",
+            status: "running",
+            runtimeMode: DEFAULT_RUNTIME_MODE,
+            activeTurnId: "turn-1" as never,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        }),
+      ],
+      expandedThreadIds: new Set(),
+      activeThreadId: undefined,
+      sortOrder: "updated_at",
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.descendantStatus?.label).toBe("Working");
+  });
+
+  it("uses scoped expansion ids when a thread key resolver is provided", () => {
+    const rows = buildThreadTreeRows({
+      threads: [
+        sidebarThread({
+          id: "thread-parent",
+          environmentId: "environment-a",
+          parentThreadId: null,
+          updatedAt: "2026-01-02T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-child",
+          environmentId: "environment-a",
+          parentThreadId: "thread-parent",
+          updatedAt: "2026-01-03T00:00:00.000Z",
+        }),
+      ],
+      expandedThreadIds: new Set(["environment-a:thread-parent"]),
+      activeThreadId: undefined,
+      sortOrder: "updated_at",
+      getThreadExpansionId: (thread: SidebarThreadTestSummary) =>
+        `${thread.environmentId}:${thread.id}`,
+    });
+
+    expect(rows.map((row) => [row.thread.id, row.depth])).toEqual([
+      ["thread-parent", 0],
+      ["thread-child", 1],
+    ]);
+  });
+
+  it("keeps duplicate thread ids in different environments under their scoped parent", () => {
+    const getThreadExpansionId = (thread: SidebarThreadTestSummary) =>
+      `${thread.environmentId}:${thread.id}`;
+    const rows = buildThreadTreeRows({
+      threads: [
+        sidebarThread({
+          id: "thread-parent",
+          environmentId: "environment-a",
+          parentThreadId: null,
+          updatedAt: "2026-01-04T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-parent",
+          environmentId: "environment-b",
+          parentThreadId: null,
+          updatedAt: "2026-01-03T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-child",
+          environmentId: "environment-a",
+          parentThreadId: "thread-parent",
+          updatedAt: "2026-01-02T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-child",
+          environmentId: "environment-b",
+          parentThreadId: "thread-parent",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        }),
+      ],
+      expandedThreadIds: new Set(["environment-a:thread-parent"]),
+      activeThreadId: undefined,
+      sortOrder: "updated_at",
+      getThreadExpansionId,
+    });
+
+    expect(rows.map((row) => [`${row.thread.environmentId}:${row.thread.id}`, row.depth])).toEqual([
+      ["environment-a:thread-parent", 0],
+      ["environment-a:thread-child", 1],
+      ["environment-b:thread-parent", 0],
+    ]);
+  });
+
+  it("auto-expands only the scoped parent of the active thread", () => {
+    const getThreadExpansionId = (thread: SidebarThreadTestSummary) =>
+      `${thread.environmentId}:${thread.id}`;
+    const rows = buildThreadTreeRows({
+      threads: [
+        sidebarThread({
+          id: "thread-parent",
+          environmentId: "environment-a",
+          parentThreadId: null,
+          updatedAt: "2026-01-04T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-parent",
+          environmentId: "environment-b",
+          parentThreadId: null,
+          updatedAt: "2026-01-03T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-active",
+          environmentId: "environment-a",
+          parentThreadId: "thread-parent",
+          updatedAt: "2026-01-02T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-active",
+          environmentId: "environment-b",
+          parentThreadId: "thread-parent",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        }),
+      ],
+      expandedThreadIds: new Set(),
+      activeThreadId: "environment-b:thread-active",
+      sortOrder: "updated_at",
+      getThreadExpansionId,
+    });
+
+    expect(
+      rows.map((row) => [`${row.thread.environmentId}:${row.thread.id}`, row.depth, row.expanded]),
+    ).toEqual([
+      ["environment-a:thread-parent", 0, false],
+      ["environment-b:thread-parent", 0, true],
+      ["environment-b:thread-active", 1, false],
+    ]);
+  });
+
+  it("recovers unvisited cyclic components as roots instead of hiding them", () => {
+    const rows = buildThreadTreeRows({
+      threads: [
+        sidebarThread({ id: "thread-a", parentThreadId: "thread-b" }),
+        sidebarThread({ id: "thread-b", parentThreadId: "thread-a" }),
+      ],
+      expandedThreadIds: new Set(),
+      activeThreadId: undefined,
+      sortOrder: "updated_at",
+    });
+
+    expect(rows.map((row) => [row.thread.id, row.depth])).toEqual([
+      ["thread-b", 0],
+      ["thread-a", 0],
+    ]);
+  });
+
+  it("terminates on a cyclic parentThreadId chain instead of recursing forever", () => {
+    // A malformed server payload where a→b→a form a cycle. The tree builder
+    // recovers unvisited cyclic components as roots and must still return
+    // rather than hang.
+    const rows = buildThreadTreeRows({
+      threads: [
+        sidebarThread({ id: "thread-root", parentThreadId: null }),
+        sidebarThread({ id: "thread-a", parentThreadId: "thread-b" }),
+        sidebarThread({ id: "thread-b", parentThreadId: "thread-a" }),
+      ],
+      expandedThreadIds: new Set(),
+      activeThreadId: "thread-a",
+      sortOrder: "updated_at",
+    });
+
+    expect(rows.map((row) => row.thread.id)).toEqual(["thread-root", "thread-b", "thread-a"]);
+  });
+});
+
+describe("resolveSidebarThreadTreeDisplay", () => {
+  it("returns rendered tree rows instead of flattening parent and child threads", () => {
+    const threadExpansionId = (thread: SidebarThreadTestSummary) =>
+      `${thread.environmentId}:${thread.id}`;
+    const result = resolveSidebarThreadTreeDisplay({
+      threads: [
+        sidebarThread({
+          id: "thread-parent",
+          environmentId: "environment-a",
+          parentThreadId: null,
+          updatedAt: "2026-01-03T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-child",
+          environmentId: "environment-a",
+          parentThreadId: "thread-parent",
+          updatedAt: "2026-01-04T00:00:00.000Z",
+        }),
+        sidebarThread({
+          id: "thread-other",
+          environmentId: "environment-a",
+          parentThreadId: null,
+          updatedAt: "2026-01-02T00:00:00.000Z",
+        }),
+      ],
+      expandedThreadIds: new Set(["environment-a:thread-parent"]),
+      activeThreadId: undefined,
+      projectExpanded: true,
+      isThreadListExpanded: true,
+      previewLimit: 6,
+      sortOrder: "updated_at",
+      getThreadExpansionId: threadExpansionId,
+      getThreadOutputId: threadExpansionId,
+    });
+
+    expect(result.renderedThreadRows.map((row) => [row.thread.id, row.depth])).toEqual([
+      ["thread-parent", 0],
+      ["thread-child", 1],
+      ["thread-other", 0],
+    ]);
+    expect(result.orderedThreadIds).toEqual([
+      "environment-a:thread-parent",
+      "environment-a:thread-child",
+      "environment-a:thread-other",
+    ]);
+  });
+
+  it("pins the active child thread when its project is collapsed", () => {
+    const threadExpansionId = (thread: SidebarThreadTestSummary) =>
+      `${thread.environmentId}:${thread.id}`;
+    const result = resolveSidebarThreadTreeDisplay({
+      threads: [
+        sidebarThread({
+          id: "thread-parent",
+          environmentId: "environment-a",
+          parentThreadId: null,
+        }),
+        sidebarThread({
+          id: "thread-child",
+          environmentId: "environment-a",
+          parentThreadId: "thread-parent",
+        }),
+      ],
+      expandedThreadIds: new Set(),
+      activeThreadId: "environment-a:thread-child",
+      projectExpanded: false,
+      isThreadListExpanded: false,
+      previewLimit: 6,
+      sortOrder: "updated_at",
+      getThreadExpansionId: threadExpansionId,
+      getThreadOutputId: threadExpansionId,
+    });
+
+    expect(result.shouldShowThreadPanel).toBe(true);
+    expect(result.renderedThreadRows.map((row) => [row.thread.id, row.depth])).toEqual([
+      ["thread-child", 0],
+    ]);
+  });
+});
+
+describe("shouldShowMcpCreatedThreadIcon", () => {
+  it("marks only MCP-created threads", () => {
+    expect(shouldShowMcpCreatedThreadIcon({ createdVia: "mcp" })).toBe(true);
+    expect(shouldShowMcpCreatedThreadIcon({ createdVia: "user" })).toBe(false);
+    expect(shouldShowMcpCreatedThreadIcon({})).toBe(false);
+  });
+});
+
+describe("descendant traversal cycle guards", () => {
+  it("hasThreadDescendant terminates when children form a cycle", () => {
+    const childrenByParentId = new Map<string, readonly { id: string }[]>([
+      ["a", [{ id: "b" }]],
+      ["b", [{ id: "a" }]],
+    ]);
+
+    // No "c" anywhere in the cycle, so the search exhausts the (looping)
+    // graph and returns false rather than spinning forever.
+    expect(hasThreadDescendant("a", "c", childrenByParentId)).toBe(false);
+    // A real descendant inside the cycle is still found.
+    expect(hasThreadDescendant("a", "b", childrenByParentId)).toBe(true);
+  });
+
+  it("resolveDescendantThreadStatus terminates when children form a cycle", () => {
+    const threadA = sidebarThread({ id: "a", parentThreadId: "b" });
+    const threadB = sidebarThread({ id: "b", parentThreadId: "a" });
+    const childrenByParentId = new Map<string, readonly SidebarThreadTestSummary[]>([
+      ["a", [threadB]],
+      ["b", [threadA]],
+    ]);
+
+    expect(resolveDescendantThreadStatus([threadA], childrenByParentId)).toBeNull();
+  });
+});
+
 function makeProject(overrides: Partial<Project> = {}): Project {
   const { defaultModelSelection, ...rest } = overrides;
   return {
@@ -812,7 +1143,43 @@ function makeProject(overrides: Partial<Project> = {}): Project {
   };
 }
 
+type SidebarThreadTestSummary = {
+  id: string;
+  environmentId: string;
+  parentThreadId: string | null;
+  session: Thread["session"];
+  interactionMode: Thread["interactionMode"];
+  latestTurn: Thread["latestTurn"];
+  createdAt: string;
+  updatedAt: string;
+  latestUserMessageAt: string | null;
+  hasPendingApprovals: boolean;
+  hasPendingUserInput: boolean;
+  hasActionableProposedPlan: boolean;
+};
+
+function sidebarThread(
+  overrides: Partial<SidebarThreadTestSummary> = {},
+): SidebarThreadTestSummary {
+  return {
+    id: "thread-1",
+    environmentId: localEnvironmentId,
+    parentThreadId: null,
+    interactionMode: DEFAULT_INTERACTION_MODE,
+    session: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    latestTurn: null,
+    latestUserMessageAt: null,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    hasActionableProposedPlan: false,
+    ...overrides,
+  };
+}
+
 function makeThread(overrides: Partial<Thread> = {}): Thread {
+  const { parentThreadId = null, ...restOverrides } = overrides;
   return {
     id: ThreadId.make("thread-1"),
     environmentId: localEnvironmentId,
@@ -837,7 +1204,8 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     worktreePath: null,
     checkpoints: [],
     activities: [],
-    ...overrides,
+    ...restOverrides,
+    parentThreadId,
   };
 }
 

@@ -9,6 +9,7 @@
 import * as Schema from "effect/Schema";
 import type { ChatAttachment } from "@t3tools/contracts";
 
+import type { ThreadSummaryGenerationInput } from "./TextGeneration.ts";
 import { limitSection } from "./TextGenerationUtils.ts";
 import type { TextGenerationPolicy } from "./TextGenerationPolicy.ts";
 
@@ -215,4 +216,28 @@ export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
   });
 
   return { prompt, outputSchema };
+}
+
+// ---------------------------------------------------------------------------
+// Thread summary
+// ---------------------------------------------------------------------------
+
+export const ThreadSummaryOutputSchema = Schema.Struct({
+  summary: Schema.String,
+});
+
+export function buildThreadSummaryPrompt(input: ThreadSummaryGenerationInput): string {
+  const transcript = input.messages
+    .map((message) => `[${message.createdAt}] ${message.role}: ${message.text}`)
+    .join("\n\n");
+
+  return [
+    "Summarize this T3 Code thread for another coding agent.",
+    "Focus on user goals, decisions, constraints, files touched or discussed, unresolved work, and current state.",
+    `Keep the summary under ${input.maxOutputCharacters} characters.`,
+    "",
+    `Thread title: ${input.threadTitle}`,
+    "",
+    transcript,
+  ].join("\n");
 }

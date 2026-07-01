@@ -393,6 +393,34 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
     ),
   );
 
+  it.effect("generates thread summaries through the Codex provider", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({
+          summary: "Thread summary from Codex.",
+        }),
+        stdinMustContain: "Summarize this T3 Code thread for another coding agent.",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateThreadSummary({
+            threadTitle: "Reconnect investigation",
+            maxOutputCharacters: 1200,
+            messages: [
+              {
+                role: "user",
+                text: "Investigate reconnect failures",
+                createdAt: "2026-01-01T00:00:00.000Z",
+              },
+            ],
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+          });
+
+          expect(generated).toBe("Thread summary from Codex.");
+        }),
+    ),
+  );
+
   it.effect("omits attachment metadata section when no attachments are provided", () =>
     withFakeCodexEnv(
       {

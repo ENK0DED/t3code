@@ -91,6 +91,7 @@ function makeReadModel(
     threads: threads.map((thread) => ({
       id: thread.id,
       projectId,
+      parentThreadId: null,
       title: `Thread ${thread.id}`,
       modelSelection: defaultModelSelection,
       interactionMode: "default" as const,
@@ -198,8 +199,10 @@ describe("ProviderSessionReaper", () => {
             Effect.succeed({ snapshotSequence: input.readModel.snapshotSequence }),
           getCounts: () => Effect.die("unused"),
           getActiveProjectByWorkspaceRoot: () => Effect.die("unused"),
+          listProjectShells: () => Effect.die("unused"),
           getProjectShellById: () => Effect.die("unused"),
           getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
+          listThreadShellsByProject: () => Effect.die("unused"),
           getThreadCheckpointContext: () => Effect.die("unused"),
           getFullThreadDiffContext: () => Effect.die("unused"),
           getThreadShellById: (threadId) =>
@@ -208,7 +211,12 @@ describe("ProviderSessionReaper", () => {
                 ? Option.some(input.readModel.threads.find((thread) => thread.id === threadId)!)
                 : Option.none(),
             ),
+          getThreadCreatorById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.die("unused"),
+          getThreadTurnStateById: () => Effect.die("unused"),
+          getThreadTurnLivenessRowById: () => Effect.die("unused"),
+          getThreadTurnStateByPendingMessageId: () => Effect.die("unused"),
+          searchThreadMessagesByProject: () => Effect.die("unused"),
         }),
       ),
       Layer.provideMerge(NodeServices.layer),

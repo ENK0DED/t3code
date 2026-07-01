@@ -35,6 +35,7 @@ export interface UiProjectState {
 export interface UiThreadState {
   threadLastVisitedAtById: Record<string, string>;
   threadChangedFilesExpandedById: Record<string, Record<string, boolean>>;
+  expandedThreadTreeIdsByProject: Record<string, string[]>;
 }
 
 export interface UiEndpointState {
@@ -48,6 +49,7 @@ const initialState: UiState = {
   projectOrder: [],
   threadLastVisitedAtById: {},
   threadChangedFilesExpandedById: {},
+  expandedThreadTreeIdsByProject: {},
   defaultAdvertisedEndpointKey: null,
 };
 
@@ -127,6 +129,7 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
     threadChangedFilesExpandedById: sanitizePersistedThreadChangedFilesExpanded(
       parsed.threadChangedFilesExpandedById,
     ),
+    expandedThreadTreeIdsByProject: {},
     defaultAdvertisedEndpointKey:
       typeof parsed.defaultAdvertisedEndpointKey === "string" &&
       parsed.defaultAdvertisedEndpointKey.length > 0
@@ -323,6 +326,34 @@ export function setThreadChangedFilesExpanded(
   };
 }
 
+export function setThreadTreeExpanded(
+  state: UiState,
+  projectKey: string,
+  threadId: string,
+  expanded: boolean,
+): UiState {
+  const currentThreadIds = state.expandedThreadTreeIdsByProject[projectKey] ?? [];
+  const currentlyExpanded = currentThreadIds.includes(threadId);
+  if (currentlyExpanded === expanded) {
+    return state;
+  }
+
+  const nextProjectThreadIds = expanded
+    ? [...currentThreadIds, threadId]
+    : currentThreadIds.filter((currentThreadId) => currentThreadId !== threadId);
+  const expandedThreadTreeIdsByProject = { ...state.expandedThreadTreeIdsByProject };
+  if (nextProjectThreadIds.length > 0) {
+    expandedThreadTreeIdsByProject[projectKey] = nextProjectThreadIds;
+  } else {
+    delete expandedThreadTreeIdsByProject[projectKey];
+  }
+
+  return {
+    ...state,
+    expandedThreadTreeIdsByProject,
+  };
+}
+
 export function setDefaultAdvertisedEndpointKey(state: UiState, key: string | null): UiState {
   const nextKey = key && key.length > 0 ? key : null;
   if (state.defaultAdvertisedEndpointKey === nextKey) {
@@ -415,6 +446,7 @@ interface UiStateStore extends UiState {
   markThreadVisited: (threadId: string, visitedAt: string) => void;
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
+  setThreadTreeExpanded: (projectKey: string, threadId: string, expanded: boolean) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
   reorderProjects: (
@@ -432,6 +464,8 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => markThreadUnread(state, threadId, latestTurnCompletedAt)),
   setThreadChangedFilesExpanded: (threadId, turnId, expanded) =>
     set((state) => setThreadChangedFilesExpanded(state, threadId, turnId, expanded)),
+  setThreadTreeExpanded: (projectKey, threadId, expanded) =>
+    set((state) => setThreadTreeExpanded(state, projectKey, threadId, expanded)),
   setDefaultAdvertisedEndpointKey: (key) =>
     set((state) => setDefaultAdvertisedEndpointKey(state, key)),
   setProjectExpanded: (projectIds, expanded) =>

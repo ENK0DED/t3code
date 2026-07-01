@@ -1,3 +1,4 @@
+/* oxlint-disable react/no-unstable-nested-components */
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import * as Option from "effect/Option";

@@ -4,6 +4,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
+import { canThreadCreateChild, MAX_THREAD_TREE_DEPTH } from "@t3tools/shared/threadTree";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -222,6 +223,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (command.parentThreadId !== null) {
+        const parentThread = readModel.threads.find(
+          (thread) => thread.id === command.parentThreadId,
+        );
+        if (!parentThread || parentThread.deletedAt !== null) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Parent thread '${command.parentThreadId}' does not exist.`,
+          });
+        }
+        if (parentThread.projectId !== command.projectId) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Parent thread '${command.parentThreadId}' belongs to a different project.`,
+          });
+        }
+        if (!canThreadCreateChild(parentThread)) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Parent thread '${command.parentThreadId}' is already at the maximum thread depth of ${MAX_THREAD_TREE_DEPTH}.`,
+          });
+        }
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -233,12 +257,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           projectId: command.projectId,
+          parentThreadId: command.parentThreadId,
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          createdVia: command.createdVia,
+          createdByThreadId: command.createdByThreadId,
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -392,6 +419,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const hasRunningTurn =
+        targetThread.session?.status === "running" ||
+        (targetThread.session?.activeTurnId ?? null) !== null ||
+        targetThread.latestTurn?.state === "running";
+      const hasPendingTurnStart = targetThread.pendingTurnStart != null;
+      if (hasRunningTurn || hasPendingTurnStart) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' already has an active or pending turn.`,
+        });
+      }
       const sourceProposedPlan = command.sourceProposedPlan;
       const sourceThread = sourceProposedPlan
         ? yield* requireThread({
@@ -574,6 +612,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.turn.provider-signal": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.signaledAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.turn-provider-signaled",
+        payload: {
+          threadId: command.threadId,
+          turnId: command.turnId,
+          signalKind: command.signalKind,
+          signaledAt: command.signaledAt,
         },
       };
     }

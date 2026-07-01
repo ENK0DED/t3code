@@ -41,6 +41,10 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import {
+  resolveCurrentSessionModelSelectionForCompatibility,
+  validateProviderSessionModelSelectionCompatibility,
+} from "../providerSessionCompatibility.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
@@ -317,38 +321,6 @@ const make = Effect.gen(function* () {
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
-  const rejectStartedThreadModelChangeIfRequired = Effect.fnUntraced(function* (input: {
-    readonly threadId: ThreadId;
-    readonly currentModelSelection: ModelSelection;
-    readonly requestedModelSelection: ModelSelection | undefined;
-  }) {
-    const requestedModelSelection = input.requestedModelSelection;
-    if (
-      requestedModelSelection === undefined ||
-      (input.currentModelSelection.instanceId === requestedModelSelection.instanceId &&
-        input.currentModelSelection.model === requestedModelSelection.model)
-    ) {
-      return;
-    }
-    const providers = yield* providerRegistry.getProviders;
-    const requiresNewThread =
-      providers.find((snapshot) => snapshot.instanceId === input.currentModelSelection.instanceId)
-        ?.requiresNewThreadForModelChange === true ||
-      providers.find((snapshot) => snapshot.instanceId === requestedModelSelection.instanceId)
-        ?.requiresNewThreadForModelChange === true;
-    if (!requiresNewThread) {
-      return;
-    }
-    return yield* new ProviderAdapterRequestError({
-      provider: providerErrorLabelFromInstanceHint({
-        instanceId: String(requestedModelSelection.instanceId),
-        modelSelectionInstanceId: String(input.currentModelSelection.instanceId),
-      }),
-      method: "thread.turn.start",
-      detail: `Thread '${input.threadId}' cannot switch models after the conversation has started. Start a new thread to use '${requestedModelSelection.model}'.`,
-    });
-  });
-
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
     threadId: ThreadId,
     createdAt: string,
@@ -429,39 +401,39 @@ const make = Effect.gen(function* () {
     }
     const preferredProvider: ProviderDriverKind = desiredDriverKind;
     if (thread.session !== null) {
-      yield* rejectStartedThreadModelChangeIfRequired({
-        threadId,
-        currentModelSelection:
-          activeSession?.model !== undefined
-            ? {
-                ...thread.modelSelection,
-                instanceId: currentInstanceId,
-                model: activeSession.model,
-              }
-            : thread.modelSelection,
-        requestedModelSelection,
+      const providers = yield* providerRegistry.getProviders;
+      const currentModelSelection = resolveCurrentSessionModelSelectionForCompatibility({
+        threadModelSelection: thread.modelSelection,
+        currentInstanceId,
+        activeSessionModel: activeSession?.model,
       });
-    }
-    if (
-      thread.session !== null &&
-      requestedModelSelection !== undefined &&
-      requestedModelSelection.instanceId !== currentInstanceId
-    ) {
-      if (currentInfo.driverKind !== desiredInfo.driverKind) {
+      const compatibilityDetail = validateProviderSessionModelSelectionCompatibility({
+        threadId,
+        hasStartedSession: true,
+        currentModelSelection,
+        requestedModelSelection,
+        currentIdentity: {
+          instanceId: currentInstanceId,
+          driverKind: currentInfo.driverKind,
+          continuationKey: currentInfo.continuationIdentity.continuationKey,
+          requiresNewThreadForModelChange: providers.find(
+            (snapshot) => snapshot.instanceId === currentInstanceId,
+          )?.requiresNewThreadForModelChange,
+        },
+        desiredIdentity: {
+          instanceId: desiredInstanceId,
+          driverKind: desiredInfo.driverKind,
+          continuationKey: desiredInfo.continuationIdentity.continuationKey,
+          requiresNewThreadForModelChange: providers.find(
+            (snapshot) => snapshot.instanceId === desiredInstanceId,
+          )?.requiresNewThreadForModelChange,
+        },
+      });
+      if (compatibilityDetail !== null) {
         return yield* new ProviderAdapterRequestError({
           provider: preferredProvider,
           method: "thread.turn.start",
-          detail: `Thread '${threadId}' is bound to driver '${currentInfo.driverKind}' and cannot switch to '${desiredInfo.driverKind}'.`,
-        });
-      }
-      if (
-        currentInfo.continuationIdentity.continuationKey !==
-        desiredInfo.continuationIdentity.continuationKey
-      ) {
-        return yield* new ProviderAdapterRequestError({
-          provider: preferredProvider,
-          method: "thread.turn.start",
-          detail: `Thread '${threadId}' cannot switch from instance '${currentInstanceId}' to '${desiredInstanceId}' because their provider resume state is incompatible.`,
+          detail: compatibilityDetail,
         });
       }
     }
@@ -879,8 +851,27 @@ const make = Effect.gen(function* () {
       });
     }
 
-    // Orchestration turn ids are not provider turn ids, so interrupt by session.
-    yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+    // Pass the exact orchestration-tracked turn id through to the provider runtime,
+    // which maps/uses it to interrupt that specific turn. When the turn id is absent
+    // (legacy or explicit-user interrupts), the runtime falls back to the active turn.
+    //
+    // Skip ONLY when a DIFFERENT turn is currently active — i.e. a late interrupt for a
+    // turn the session has already moved past. If the session reports no active turn yet
+    // (`activeTurnId == null`, e.g. the sub-second window after dispatch before the
+    // provider reports the started turn, or between turns), proceed: there is no newer
+    // turn to cancel by mistake, so an explicit interrupt should still take effect rather
+    // than be silently dropped.
+    if (
+      event.payload.turnId !== undefined &&
+      thread.session?.activeTurnId != null &&
+      thread.session.activeTurnId !== event.payload.turnId
+    ) {
+      return;
+    }
+    yield* providerService.interruptTurn({
+      threadId: event.payload.threadId,
+      ...(event.payload.turnId !== undefined ? { turnId: event.payload.turnId } : {}),
+    });
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (

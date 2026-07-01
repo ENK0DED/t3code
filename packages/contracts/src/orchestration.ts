@@ -124,8 +124,24 @@ export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
 export type ProviderInteractionMode = typeof ProviderInteractionMode.Type;
 export const DEFAULT_PROVIDER_INTERACTION_MODE: ProviderInteractionMode = "default";
+// How a thread was created. Drives MCP management authorization: `mcp` threads are
+// manageable by their creating orchestration subtree; `user` threads are never
+// MCP-manageable. Authoritative value is set server-side at the dispatch boundary.
+export const ThreadCreatedVia = Schema.Literals(["user", "mcp"]);
+export type ThreadCreatedVia = typeof ThreadCreatedVia.Type;
+export const DEFAULT_THREAD_CREATED_VIA: ThreadCreatedVia = "user";
 export const ProviderRequestKind = Schema.Literals(["command", "file-read", "file-change"]);
 export type ProviderRequestKind = typeof ProviderRequestKind.Type;
+export const ThreadTurnProviderSignalKind = Schema.Literals([
+  "assistant_text",
+  "reasoning",
+  "tool",
+  "task",
+  "token_usage",
+  "request",
+  "lifecycle",
+]);
+export type ThreadTurnProviderSignalKind = typeof ThreadTurnProviderSignalKind.Type;
 export const AssistantDeliveryMode = Schema.Literals(["buffered", "streaming"]);
 export type AssistantDeliveryMode = typeof AssistantDeliveryMode.Type;
 export const ProviderApprovalDecision = Schema.Literals([
@@ -341,9 +357,16 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+export const OrchestrationPendingTurnStart = Schema.Struct({
+  messageId: MessageId,
+  requestedAt: IsoDateTime,
+});
+export type OrchestrationPendingTurnStart = typeof OrchestrationPendingTurnStart.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  parentThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -353,9 +376,12 @@ export const OrchestrationThread = Schema.Struct({
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
+  pendingTurnStart: Schema.optional(Schema.NullOr(OrchestrationPendingTurnStart)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  createdVia: Schema.optional(ThreadCreatedVia),
+  createdByThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
@@ -390,6 +416,7 @@ export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  parentThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -404,6 +431,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
+  createdVia: Schema.optional(ThreadCreatedVia),
+  createdByThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
@@ -495,6 +524,7 @@ const ThreadCreateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   projectId: ProjectId,
+  parentThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -503,6 +533,8 @@ const ThreadCreateCommand = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  createdVia: Schema.optional(ThreadCreatedVia),
+  createdByThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   createdAt: IsoDateTime,
 });
 
@@ -552,12 +584,15 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 
 const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   projectId: ProjectId,
+  parentThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  createdVia: Schema.optional(ThreadCreatedVia),
+  createdByThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   createdAt: IsoDateTime,
 });
 
@@ -654,6 +689,16 @@ const ThreadSessionStopCommand = Schema.Struct({
   type: Schema.Literal("thread.session.stop"),
   commandId: CommandId,
   threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
+const ThreadTurnProviderSignalCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.provider-signal"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: TurnId,
+  signalKind: ThreadTurnProviderSignalKind,
+  signaledAt: IsoDateTime,
   createdAt: IsoDateTime,
 });
 
@@ -771,6 +816,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
+  ThreadTurnProviderSignalCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
 
@@ -803,6 +849,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
+  "thread.turn-provider-signaled",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -839,6 +886,7 @@ export const ProjectDeletedPayload = Schema.Struct({
 export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  parentThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
@@ -847,6 +895,8 @@ export const ThreadCreatedPayload = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  createdVia: Schema.optional(ThreadCreatedVia),
+  createdByThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -976,6 +1026,14 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
   threadId: ThreadId,
   activity: OrchestrationThreadActivity,
 });
+
+export const ThreadTurnProviderSignaledPayload = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  signalKind: ThreadTurnProviderSignalKind,
+  signaledAt: IsoDateTime,
+});
+export type ThreadTurnProviderSignaledPayload = typeof ThreadTurnProviderSignaledPayload.Type;
 
 export const OrchestrationEventMetadata = Schema.Struct({
   providerTurnId: Schema.optional(TrimmedNonEmptyString),
@@ -1108,6 +1166,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.turn-provider-signaled"),
+    payload: ThreadTurnProviderSignaledPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;

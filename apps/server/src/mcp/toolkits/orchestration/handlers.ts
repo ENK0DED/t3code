@@ -1,0 +1,113 @@
+import * as Effect from "effect/Effect";
+
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import {
+  McpOrchestrationError,
+  McpOrchestrationService,
+} from "../../Services/McpOrchestrationService.ts";
+import { OrchestrationToolkit } from "./tools.ts";
+
+const invokeRead = Effect.fn("OrchestrationToolkit.invokeRead")(function* <A>(
+  operation: Effect.Effect<
+    A,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext | McpOrchestrationService
+  >,
+): Effect.fn.Return<
+  A,
+  McpOrchestrationError,
+  McpInvocationContext.McpInvocationContext | McpOrchestrationService
+> {
+  yield* McpInvocationContext.requireMcpOrchestrationRead().pipe(
+    Effect.mapError(
+      (error) =>
+        new McpOrchestrationError({
+          code: "forbidden",
+          message: error.message,
+        }),
+    ),
+  );
+  return yield* operation;
+});
+
+const invokeWrite = Effect.fn("OrchestrationToolkit.invokeWrite")(function* <A>(
+  operation: Effect.Effect<
+    A,
+    McpOrchestrationError,
+    McpInvocationContext.McpInvocationContext | McpOrchestrationService
+  >,
+): Effect.fn.Return<
+  A,
+  McpOrchestrationError,
+  McpInvocationContext.McpInvocationContext | McpOrchestrationService
+> {
+  yield* McpInvocationContext.requireMcpOrchestrationWrite().pipe(
+    Effect.mapError(
+      (error) =>
+        new McpOrchestrationError({
+          code: "forbidden",
+          message: error.message,
+        }),
+    ),
+  );
+  return yield* operation;
+});
+
+export const OrchestrationToolkitHandlersLive = OrchestrationToolkit.toLayer({
+  list_mcp_models: () =>
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.listMcpModels()))),
+  list_projects: (input) =>
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.listProjects(input)))),
+  get_project_details: (input) =>
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.getProjectDetails(input)))),
+  get_project_settings: (input) =>
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.getProjectSettings(input)))),
+  update_project_settings: (input) =>
+    invokeWrite(
+      McpOrchestrationService.pipe(Effect.flatMap((s) => s.updateProjectSettings(input))),
+    ),
+  list_threads: (input) =>
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.listThreads(input)))),
+  get_thread_settings: (input) =>
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.getThreadSettings(input)))),
+  get_thread_messages: (input) =>
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.getThreadMessages(input)))),
+  get_thread_diff: (input) =>
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.getThreadDiff(input)))),
+  list_project_actions: (input) =>
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.listProjectActions(input)))),
+  create_project_action: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.createProjectAction(input)))),
+  update_project_action: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.updateProjectAction(input)))),
+  delete_project_action: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.deleteProjectAction(input)))),
+  add_project: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.addProject(input)))),
+  create_thread: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.createThread(input)))),
+  send_thread_message: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.sendThreadMessage(input)))),
+  update_thread_settings: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.updateThreadSettings(input)))),
+  get_thread_turn_status: (input) =>
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.getThreadTurnStatus(input)))),
+  wait_for_thread_update: (input) =>
+    invokeRead(McpOrchestrationService.pipe(Effect.flatMap((s) => s.waitForThreadUpdate(input)))),
+  cancel_stale_thread_turn: (input) =>
+    invokeWrite(
+      McpOrchestrationService.pipe(Effect.flatMap((s) => s.cancelStaleThreadTurn(input))),
+    ),
+  interrupt_thread_turn: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.interruptThreadTurn(input)))),
+  respond_to_approval: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.respondToApproval(input)))),
+  respond_to_user_input: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.respondToUserInput(input)))),
+  delete_thread: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.deleteThread(input)))),
+  archive_thread: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.archiveThread(input)))),
+  unarchive_thread: (input) =>
+    invokeWrite(McpOrchestrationService.pipe(Effect.flatMap((s) => s.unarchiveThread(input)))),
+});

@@ -11,6 +11,7 @@ const LOCAL_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 const PROJECT_ID = ProjectId.make("project-1");
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
+  const { parentThreadId = null, ...restOverrides } = overrides;
   return {
     id: ThreadId.make("thread-1"),
     environmentId: LOCAL_ENVIRONMENT_ID,
@@ -31,7 +32,8 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     worktreePath: null,
     checkpoints: [],
     activities: [],
-    ...overrides,
+    ...restOverrides,
+    parentThreadId,
   };
 }
 

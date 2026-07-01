@@ -133,6 +133,7 @@ describe("OrchestrationEngine", () => {
         {
           id: ThreadId.make("thread-bootstrap"),
           projectId: asProjectId("project-bootstrap"),
+          parentThreadId: null,
           title: "Bootstrap Thread",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -194,12 +195,19 @@ describe("OrchestrationEngine", () => {
             Effect.succeed({ snapshotSequence: projectionSnapshot.snapshotSequence }),
           getCounts: () => Effect.succeed({ projectCount: 1, threadCount: 1 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+          listProjectShells: () => Effect.succeed([]),
           getProjectShellById: () => Effect.succeed(Option.none()),
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+          listThreadShellsByProject: () => Effect.succeed([]),
           getThreadCheckpointContext: () => Effect.succeed(Option.none()),
           getFullThreadDiffContext: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
+          getThreadCreatorById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          getThreadTurnStateById: () => Effect.succeed(Option.none()),
+          getThreadTurnLivenessRowById: () => Effect.succeed(Option.none()),
+          getThreadTurnStateByPendingMessageId: () => Effect.die("unused"),
+          searchThreadMessagesByProject: () => Effect.succeed([]),
         }),
       ),
       Layer.provide(
@@ -257,6 +265,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-1-create"),
         threadId: ThreadId.make("thread-1"),
         projectId: asProjectId("project-1"),
+        parentThreadId: null,
         title: "Thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -292,6 +301,97 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
+  it("rejects a concurrent second turn start while the first is still pending", async () => {
+    const createdAt = now();
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-concurrent-create"),
+        projectId: asProjectId("project-concurrent"),
+        title: "Project Concurrent",
+        workspaceRoot: "/tmp/project-concurrent",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-concurrent-create"),
+        threadId: ThreadId.make("thread-concurrent"),
+        projectId: asProjectId("project-concurrent"),
+        parentThreadId: null,
+        title: "Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+
+    const [first, second] = await Promise.allSettled([
+      system.run(
+        engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-concurrent-a"),
+          threadId: ThreadId.make("thread-concurrent"),
+          message: {
+            messageId: asMessageId("msg-concurrent-a"),
+            role: "user",
+            text: "first",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      ),
+      system.run(
+        engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-concurrent-b"),
+          threadId: ThreadId.make("thread-concurrent"),
+          message: {
+            messageId: asMessageId("msg-concurrent-b"),
+            role: "user",
+            text: "second",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      ),
+    ]);
+
+    const accepted = [first, second].filter((result) => result.status === "fulfilled");
+    const rejected = [first, second].filter((result) => result.status === "rejected");
+    expect(accepted).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(String((rejected[0] as PromiseRejectedResult).reason)).toContain(
+      "already has an active or pending turn",
+    );
+
+    const readModel = await system.readModel();
+    const thread = readModel.threads.find(
+      (entry) => entry.id === ThreadId.make("thread-concurrent"),
+    );
+    expect(thread?.messages).toHaveLength(1);
+    expect(["first", "second"]).toContain(thread?.messages[0]?.text);
+    await system.dispose();
+  });
+
   it("archives and unarchives threads through orchestration commands", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;
@@ -317,6 +417,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-archive-create"),
         threadId: ThreadId.make("thread-archive"),
         projectId: asProjectId("project-archive"),
+        parentThreadId: null,
         title: "Archive me",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -382,6 +483,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-replay-create"),
         threadId: ThreadId.make("thread-replay"),
         projectId: asProjectId("project-replay"),
+        parentThreadId: null,
         title: "replay",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -450,6 +552,7 @@ describe("OrchestrationEngine", () => {
           commandId: CommandId.make("cmd-stream-thread-create"),
           threadId: ThreadId.make("thread-stream"),
           projectId: asProjectId("project-stream"),
+          parentThreadId: null,
           title: "domain-stream",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -502,6 +605,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-ack-create"),
         threadId: ThreadId.make("thread-ack"),
         projectId: asProjectId("project-ack"),
+        parentThreadId: null,
         title: "Ack Thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -539,6 +643,7 @@ describe("OrchestrationEngine", () => {
           commandId: CommandId.make("cmd-thread-missing-project"),
           threadId: ThreadId.make("thread-missing-project"),
           projectId: asProjectId("project-missing"),
+          parentThreadId: null,
           title: "Missing Project Thread",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -590,6 +695,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-turn-diff-create"),
         threadId: ThreadId.make("thread-turn-diff"),
         projectId: asProjectId("project-turn-diff"),
+        parentThreadId: null,
         title: "Turn diff thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -711,6 +817,7 @@ describe("OrchestrationEngine", () => {
           commandId: CommandId.make("cmd-flaky-1"),
           threadId: ThreadId.make("thread-flaky-fail"),
           projectId: asProjectId("project-flaky"),
+          parentThreadId: null,
           title: "flaky-fail",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
@@ -731,6 +838,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-flaky-2"),
         threadId: ThreadId.make("thread-flaky-ok"),
         projectId: asProjectId("project-flaky"),
+        parentThreadId: null,
         title: "flaky-ok",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -813,6 +921,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-atomic-create"),
         threadId: ThreadId.make("thread-atomic"),
         projectId: asProjectId("project-atomic"),
+        parentThreadId: null,
         title: "atomic",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -956,6 +1065,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-sync-create"),
         threadId: ThreadId.make("thread-sync"),
         projectId: asProjectId("project-sync"),
+        parentThreadId: null,
         title: "sync-before",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -1044,6 +1154,7 @@ describe("OrchestrationEngine", () => {
         commandId: CommandId.make("cmd-thread-duplicate-1"),
         threadId: ThreadId.make("thread-duplicate"),
         projectId: asProjectId("project-duplicate"),
+        parentThreadId: null,
         title: "duplicate",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -1064,6 +1175,7 @@ describe("OrchestrationEngine", () => {
           commandId: CommandId.make("cmd-thread-duplicate-2"),
           threadId: ThreadId.make("thread-duplicate"),
           projectId: asProjectId("project-duplicate"),
+          parentThreadId: null,
           title: "duplicate",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),

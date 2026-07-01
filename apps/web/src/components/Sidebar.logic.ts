@@ -39,6 +39,24 @@ export interface ThreadStatusPill {
   pulse: boolean;
 }
 
+export interface SidebarThreadTreeRow<TThread> {
+  readonly thread: TThread;
+  readonly depth: number;
+  readonly hasChildren: boolean;
+  readonly expanded: boolean;
+  readonly descendantStatus: ThreadStatusPill | null;
+}
+
+export interface SidebarThreadTreeDisplay<TThread> {
+  readonly visibleThreadRows: readonly SidebarThreadTreeRow<TThread>[];
+  readonly renderedThreadRows: readonly SidebarThreadTreeRow<TThread>[];
+  readonly hiddenThreadRows: readonly SidebarThreadTreeRow<TThread>[];
+  readonly orderedThreadIds: readonly string[];
+  readonly hasOverflowingThreads: boolean;
+  readonly showEmptyThreadState: boolean;
+  readonly shouldShowThreadPanel: boolean;
+}
+
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   "Pending Approval": 5,
   "Awaiting Input": 4,
@@ -440,6 +458,284 @@ export function resolveProjectStatusIndicator(
   }
 
   return highestPriorityStatus;
+}
+
+type ThreadTreeInput = ThreadStatusInput &
+  ThreadSortInput & {
+    id: string;
+    parentThreadId: string | null;
+  };
+
+// `visited` guards against cyclic `parentThreadId` chains. The client trusts
+// server event data and `store.ts` maps `parentThreadId` without validating
+// acyclicity, so a malformed chain must terminate here rather than freeze the
+// tab. Mirrors the `ancestors` guard in `buildThreadTreeRows`'s `visit`.
+export function hasThreadDescendant<TThread extends { id: string }>(
+  threadId: string,
+  targetThreadId: string | undefined,
+  childrenByParentId: ReadonlyMap<string, readonly TThread[]>,
+  visited: Set<string> = new Set(),
+  getThreadKey: (thread: TThread) => string = (thread) => thread.id,
+): boolean {
+  if (!targetThreadId) {
+    return false;
+  }
+  if (visited.has(threadId)) {
+    return false;
+  }
+  visited.add(threadId);
+  const children = childrenByParentId.get(threadId) ?? [];
+  for (const child of children) {
+    const childKey = getThreadKey(child);
+    if (childKey === targetThreadId) {
+      return true;
+    }
+    if (hasThreadDescendant(childKey, targetThreadId, childrenByParentId, visited, getThreadKey)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function resolveDescendantThreadStatus<TThread extends ThreadTreeInput>(
+  threads: readonly TThread[],
+  childrenByParentId: ReadonlyMap<string, readonly TThread[]>,
+  visited: Set<string> = new Set(),
+  getThreadKey: (thread: TThread) => string = (thread) => thread.id,
+): ThreadStatusPill | null {
+  return resolveProjectStatusIndicator(
+    threads.flatMap((thread) => {
+      const threadKey = getThreadKey(thread);
+      if (visited.has(threadKey)) {
+        return [];
+      }
+      visited.add(threadKey);
+      return [
+        resolveThreadStatusPill({ thread }),
+        resolveDescendantThreadStatus(
+          childrenByParentId.get(threadKey) ?? [],
+          childrenByParentId,
+          visited,
+          getThreadKey,
+        ),
+      ];
+    }),
+  );
+}
+
+export function resolveThreadAncestorIds<
+  TThread extends {
+    id: string;
+    parentThreadId: string | null;
+  },
+>(thread: TThread, threadById: ReadonlyMap<TThread["id"], TThread>): TThread["id"][] {
+  const ancestorIds: TThread["id"][] = [];
+  const visited = new Set<TThread["id"]>([thread.id]);
+  let currentParentId = thread.parentThreadId as TThread["id"] | null;
+
+  while (currentParentId !== null) {
+    if (visited.has(currentParentId)) {
+      break;
+    }
+    const parent = threadById.get(currentParentId);
+    if (!parent) {
+      break;
+    }
+    ancestorIds.push(parent.id);
+    visited.add(parent.id);
+    currentParentId = parent.parentThreadId as TThread["id"] | null;
+  }
+
+  return ancestorIds;
+}
+
+export function buildThreadTreeRows<TThread extends ThreadTreeInput>(input: {
+  readonly threads: readonly TThread[];
+  readonly expandedThreadIds: ReadonlySet<string>;
+  readonly activeThreadId: string | undefined;
+  readonly sortOrder: SidebarThreadSortOrder;
+  readonly getThreadExpansionId?: ((thread: TThread) => string) | undefined;
+}): SidebarThreadTreeRow<TThread>[] {
+  const getThreadKey = (thread: TThread) => input.getThreadExpansionId?.(thread) ?? thread.id;
+  const getParentKey = (thread: TThread) => {
+    if (thread.parentThreadId === null) {
+      return null;
+    }
+    if (!input.getThreadExpansionId) {
+      return thread.parentThreadId;
+    }
+    return input.getThreadExpansionId({
+      ...thread,
+      id: thread.parentThreadId,
+    });
+  };
+  const threadIds = new Set(input.threads.map(getThreadKey));
+  const sortedThreads = [...input.threads].toSorted((left, right) => {
+    const rightTimestamp = getThreadSortTimestamp(right, input.sortOrder);
+    const leftTimestamp = getThreadSortTimestamp(left, input.sortOrder);
+    const byTimestamp =
+      rightTimestamp === leftTimestamp ? 0 : rightTimestamp > leftTimestamp ? 1 : -1;
+    if (byTimestamp !== 0) return byTimestamp;
+    return right.id.localeCompare(left.id);
+  });
+  const rootThreads: TThread[] = [];
+  const byParent = new Map<string, TThread[]>();
+  for (const thread of sortedThreads) {
+    const parentKey = getParentKey(thread);
+    if (parentKey === null || !threadIds.has(parentKey)) {
+      rootThreads.push(thread);
+      continue;
+    }
+    const siblings = byParent.get(parentKey);
+    if (siblings) {
+      siblings.push(thread);
+    } else {
+      byParent.set(parentKey, [thread]);
+    }
+  }
+
+  const rows: SidebarThreadTreeRow<TThread>[] = [];
+  const visitedThreadKeys = new Set<string>();
+  const markDescendantsVisited = (threads: readonly TThread[], ancestors: ReadonlySet<string>) => {
+    for (const thread of threads) {
+      const threadKey = getThreadKey(thread);
+      if (visitedThreadKeys.has(threadKey) || ancestors.has(threadKey)) {
+        continue;
+      }
+      visitedThreadKeys.add(threadKey);
+      const nextAncestors = new Set(ancestors);
+      nextAncestors.add(threadKey);
+      markDescendantsVisited(byParent.get(threadKey) ?? [], nextAncestors);
+    }
+  };
+  const visit = (
+    thread: TThread,
+    depth: number,
+    ancestors: ReadonlySet<string>,
+    isRecoveredRoot = false,
+  ) => {
+    const threadKey = getThreadKey(thread);
+    if (visitedThreadKeys.has(threadKey) || ancestors.has(threadKey)) {
+      return;
+    }
+    visitedThreadKeys.add(threadKey);
+    const children = byParent.get(threadKey) ?? [];
+    const threadExpansionId = input.getThreadExpansionId?.(thread) ?? threadKey;
+    const expanded =
+      input.expandedThreadIds.has(threadExpansionId) ||
+      hasThreadDescendant(threadKey, input.activeThreadId, byParent, new Set(), getThreadKey);
+    rows.push({
+      thread,
+      depth,
+      hasChildren: children.length > 0,
+      expanded,
+      descendantStatus: expanded
+        ? null
+        : resolveDescendantThreadStatus(children, byParent, new Set(), getThreadKey),
+    });
+    if (!expanded) {
+      if (!isRecoveredRoot) {
+        markDescendantsVisited(children, new Set([threadKey]));
+      }
+      return;
+    }
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(threadKey);
+    for (const child of children) {
+      visit(child, depth + 1, nextAncestors);
+    }
+  };
+
+  for (const thread of rootThreads) {
+    visit(thread, 0, new Set());
+  }
+  for (const thread of sortedThreads) {
+    visit(thread, 0, new Set(), true);
+  }
+  return rows;
+}
+
+export function resolveSidebarThreadTreeDisplay<TThread extends ThreadTreeInput>(input: {
+  readonly threads: readonly TThread[];
+  readonly expandedThreadIds: ReadonlySet<string>;
+  readonly activeThreadId: string | undefined;
+  readonly projectExpanded: boolean;
+  readonly isThreadListExpanded: boolean;
+  readonly previewLimit: number;
+  readonly sortOrder: SidebarThreadSortOrder;
+  readonly getThreadExpansionId?: ((thread: TThread) => string) | undefined;
+  readonly getThreadOutputId?: ((thread: TThread) => string) | undefined;
+}): SidebarThreadTreeDisplay<TThread> {
+  const getThreadExpansionId = input.getThreadExpansionId ?? ((thread: TThread) => thread.id);
+  const getThreadOutputId = input.getThreadOutputId ?? getThreadExpansionId;
+  const visibleThreadRows = buildThreadTreeRows({
+    threads: input.threads,
+    expandedThreadIds: input.expandedThreadIds,
+    activeThreadId: input.activeThreadId,
+    sortOrder: input.sortOrder,
+    getThreadExpansionId,
+  });
+  const pinnedCollapsedThreadRow = (() => {
+    if (!input.activeThreadId || input.projectExpanded) {
+      return null;
+    }
+    const thread =
+      input.threads.find((candidate) => getThreadOutputId(candidate) === input.activeThreadId) ??
+      null;
+    if (!thread) {
+      return null;
+    }
+    const threadExpansionId = getThreadExpansionId(thread);
+    return {
+      thread,
+      depth: 0,
+      hasChildren: input.threads.some((candidate) => {
+        if (candidate.parentThreadId === null) {
+          return false;
+        }
+        const candidateParentId = getThreadExpansionId({
+          ...candidate,
+          id: candidate.parentThreadId,
+        });
+        return candidateParentId === threadExpansionId;
+      }),
+      expanded: false,
+      descendantStatus: null,
+    } satisfies SidebarThreadTreeRow<TThread>;
+  })();
+  const hasOverflowingThreads = visibleThreadRows.length > input.previewLimit;
+  const previewThreadRows =
+    input.isThreadListExpanded || !hasOverflowingThreads
+      ? visibleThreadRows
+      : visibleThreadRows.slice(0, input.previewLimit);
+  const visibleThreadIds = new Set(
+    [
+      ...previewThreadRows.map((row) => row.thread),
+      ...(pinnedCollapsedThreadRow ? [pinnedCollapsedThreadRow.thread] : []),
+    ].map(getThreadOutputId),
+  );
+  const renderedThreadRows = pinnedCollapsedThreadRow
+    ? [pinnedCollapsedThreadRow]
+    : visibleThreadRows.filter((row) => visibleThreadIds.has(getThreadOutputId(row.thread)));
+  const hiddenThreadRows = visibleThreadRows.filter(
+    (row) => !visibleThreadIds.has(getThreadOutputId(row.thread)),
+  );
+
+  return {
+    visibleThreadRows,
+    renderedThreadRows,
+    hiddenThreadRows,
+    orderedThreadIds: visibleThreadRows.map((row) => getThreadOutputId(row.thread)),
+    hasOverflowingThreads,
+    showEmptyThreadState: input.projectExpanded && input.threads.length === 0,
+    shouldShowThreadPanel: input.projectExpanded || pinnedCollapsedThreadRow !== null,
+  };
+}
+
+export function shouldShowMcpCreatedThreadIcon(input: {
+  readonly createdVia?: string | undefined;
+}): boolean {
+  return input.createdVia === "mcp";
 }
 
 export function getVisibleThreadsForProject<T extends Pick<Thread, "id">>(input: {

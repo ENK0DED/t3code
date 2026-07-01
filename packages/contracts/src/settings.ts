@@ -400,6 +400,10 @@ export const ServerSettings = Schema.Struct({
     grok: GrokSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  mcpDisabledModelsByProvider: Schema.Record(
+    ProviderInstanceId,
+    Schema.Array(TrimmedNonEmptyString),
+  ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
   // are `ProviderInstanceConfig` envelopes. The driver-specific config blob
   // is `Schema.Unknown` at this layer so envelopes with unknown drivers
@@ -515,6 +519,9 @@ export const ServerSettingsPatch = Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(TrimmedString),
       otlpMetricsUrl: Schema.optionalKey(TrimmedString),
     }),
+  ),
+  mcpDisabledModelsByProvider: Schema.optionalKey(
+    Schema.Record(ProviderInstanceId, Schema.Array(TrimmedNonEmptyString)),
   ),
   providers: Schema.optionalKey(
     Schema.Struct({

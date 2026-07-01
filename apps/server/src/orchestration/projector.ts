@@ -26,6 +26,7 @@ import {
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadTurnDiffCompletedPayload,
+  ThreadTurnStartRequestedPayload,
 } from "./Schemas.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
@@ -276,12 +277,15 @@ export function projectEvent(
           {
             id: payload.threadId,
             projectId: payload.projectId,
+            parentThreadId: payload.parentThreadId,
             title: payload.title,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
+            createdVia: payload.createdVia,
+            createdByThreadId: payload.createdByThreadId,
             latestTurn: null,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
@@ -441,6 +445,25 @@ export function projectEvent(
         };
       });
 
+    case "thread.turn-start-requested":
+      return decodeForEvent(
+        ThreadTurnStartRequestedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pendingTurnStart: {
+              messageId: payload.messageId,
+              requestedAt: payload.createdAt,
+            },
+            updatedAt: payload.createdAt,
+          }),
+        })),
+      );
+
     case "thread.session-set":
       return Effect.gen(function* () {
         const payload = yield* decodeForEvent(
@@ -464,10 +487,14 @@ export function projectEvent(
         // Leaving the "running" session status is the turn-end signal: settle
         // a still-running latest turn so its duration reflects the whole turn.
         const settledTurnState = settledTurnStateForSessionStatus(session.status);
+        const shouldClearPendingTurnStart =
+          (session.status === "running" && session.activeTurnId !== null) ||
+          settledTurnState !== null;
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             session,
+            pendingTurnStart: shouldClearPendingTurnStart ? null : thread.pendingTurnStart,
             latestTurn:
               session.status === "running" && session.activeTurnId !== null
                 ? {
@@ -681,16 +708,23 @@ export function projectEvent(
           ]
             .toSorted(compareThreadActivities)
             .slice(-500);
+          const shouldClearPendingTurnStart =
+            payload.activity.kind === "provider.turn.start.failed" &&
+            payload.activity.turnId === null;
 
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               activities,
+              pendingTurnStart: shouldClearPendingTurnStart ? null : thread.pendingTurnStart,
               updatedAt: event.occurredAt,
             }),
           };
         }),
       );
+
+    case "thread.turn-provider-signaled":
+      return Effect.succeed(nextBase);
 
     default:
       return Effect.succeed(nextBase);

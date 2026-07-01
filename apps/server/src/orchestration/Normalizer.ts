@@ -65,6 +65,16 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       } satisfies OrchestrationCommand;
     }
 
+    if (command.type === "thread.create") {
+      // Provenance is authoritative server-side: WS/UI-dispatched creations are
+      // always `user` and never owned by an MCP credential. Override any client value.
+      return {
+        ...command,
+        createdVia: "user",
+        createdByThreadId: null,
+      } satisfies OrchestrationCommand;
+    }
+
     if (command.type !== "thread.turn.start") {
       return command as OrchestrationCommand;
     }
@@ -136,6 +146,19 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
 
     return {
       ...command,
+      // A WS/UI bootstrap that creates a thread is `user`-owned, never MCP.
+      ...(command.bootstrap?.createThread
+        ? {
+            bootstrap: {
+              ...command.bootstrap,
+              createThread: {
+                ...command.bootstrap.createThread,
+                createdVia: "user" as const,
+                createdByThreadId: null,
+              },
+            },
+          }
+        : {}),
       message: {
         ...command.message,
         attachments: normalizedAttachments,

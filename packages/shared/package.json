@@ -7,6 +7,10 @@
       "types": "./src/model.ts",
       "import": "./src/model.ts"
     },
+    "./mcpModels": {
+      "types": "./src/mcpModels.ts",
+      "import": "./src/mcpModels.ts"
+    },
     "./advertisedEndpoint": {
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"
@@ -66,6 +70,10 @@
     "./toolActivity": {
       "types": "./src/toolActivity.ts",
       "import": "./src/toolActivity.ts"
+    },
+    "./threadTree": {
+      "types": "./src/threadTree.ts",
+      "import": "./src/threadTree.ts"
     },
     "./Struct": {
       "types": "./src/Struct.ts",
@@ -134,6 +142,14 @@
     "./path": {
       "types": "./src/path.ts",
       "import": "./src/path.ts"
+    },
+    "./projectPaths": {
+      "types": "./src/projectPaths.ts",
+      "import": "./src/projectPaths.ts"
+    },
+    "./addProject": {
+      "types": "./src/addProject.ts",
+      "import": "./src/addProject.ts"
     },
     "./keybindings": {
       "types": "./src/keybindings.ts",

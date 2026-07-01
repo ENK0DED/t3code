@@ -1,0 +1,343 @@
+import {
+  CommandId,
+  EventId,
+  OrchestrationDispatchCommandError,
+  type OrchestrationCommand,
+  type OrchestrationThreadShell,
+  type ThreadId,
+} from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import * as NodeCrypto from "node:crypto";
+
+import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { ProjectSetupScriptRunner } from "../../project/ProjectSetupScriptRunner.ts";
+import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
+import { OrchestrationEngineService } from "./OrchestrationEngine.ts";
+
+const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
+const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+type ThreadTurnStartCommand = Extract<OrchestrationCommand, { type: "thread.turn.start" }>;
+
+export interface ThreadTurnStartBootstrapDispatcherShape {
+  readonly dispatch: (command: ThreadTurnStartCommand) => Effect.Effect<
+    {
+      readonly sequence: number;
+      readonly createdThread?: OrchestrationThreadShell;
+    },
+    OrchestrationDispatchCommandError
+  >;
+}
+
+export class ThreadTurnStartBootstrapDispatcher extends Context.Service<
+  ThreadTurnStartBootstrapDispatcher,
+  ThreadTurnStartBootstrapDispatcherShape
+>()("t3/orchestration/Services/ThreadTurnStartBootstrapDispatcher") {}
+
+export const ThreadTurnStartBootstrapDispatcherLive = Layer.effect(
+  ThreadTurnStartBootstrapDispatcher,
+  Effect.gen(function* () {
+    const orchestrationEngine = yield* OrchestrationEngineService;
+    const gitWorkflow = yield* GitWorkflowService;
+    const projectSetupScriptRunner = yield* ProjectSetupScriptRunner;
+    const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
+
+    const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
+      isOrchestrationDispatchCommandError(cause)
+        ? cause
+        : new OrchestrationDispatchCommandError({
+            message: cause instanceof Error ? cause.message : fallbackMessage,
+            cause,
+          });
+    const toBootstrapDispatchCommandCauseError = (cause: Cause.Cause<unknown>) => {
+      const error = Cause.squash(cause);
+      return isOrchestrationDispatchCommandError(error)
+        ? error
+        : new OrchestrationDispatchCommandError({
+            message:
+              error instanceof Error ? error.message : "Failed to bootstrap thread turn start.",
+            cause,
+          });
+    };
+
+    const randomUuidEffect = Effect.sync(() => NodeCrypto.randomUUID()).pipe(
+      Effect.mapError((cause) =>
+        toDispatchCommandError(cause, "Failed to generate orchestration command identifier."),
+      ),
+    );
+    const serverCommandId = (tag: string) =>
+      randomUuidEffect.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
+    const serverEventId = randomUuidEffect.pipe(Effect.map(EventId.make));
+
+    const refreshGitStatus = (cwd: string) =>
+      vcsStatusBroadcaster
+        .refreshStatus(cwd)
+        .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
+
+    const appendSetupScriptActivity = (input: {
+      readonly threadId: ThreadId;
+      readonly kind: "setup-script.requested" | "setup-script.started" | "setup-script.failed";
+      readonly summary: string;
+      readonly createdAt: string;
+      readonly payload: Record<string, unknown>;
+      readonly tone: "info" | "error";
+    }) =>
+      Effect.all({
+        commandId: serverCommandId("setup-script-activity"),
+        activityId: serverEventId,
+      }).pipe(
+        Effect.flatMap(({ commandId, activityId }) =>
+          orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId,
+            threadId: input.threadId,
+            activity: {
+              id: activityId,
+              tone: input.tone,
+              kind: input.kind,
+              summary: input.summary,
+              payload: input.payload,
+              turnId: null,
+              createdAt: input.createdAt,
+            },
+            createdAt: input.createdAt,
+          }),
+        ),
+      );
+
+    const dispatch = Effect.fn("ThreadTurnStartBootstrapDispatcher.dispatch")(function* (
+      command: ThreadTurnStartCommand,
+    ) {
+      const bootstrap = command.bootstrap;
+      const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
+      let createdThread = false;
+      let createdThreadMetadata: OrchestrationThreadShell | undefined;
+      let targetProjectId = bootstrap?.createThread?.projectId;
+      let targetProjectCwd = bootstrap?.prepareWorktree?.projectCwd;
+      let targetWorktreePath = bootstrap?.createThread?.worktreePath ?? null;
+
+      const cleanupCreatedThread = () =>
+        createdThread
+          ? serverCommandId("bootstrap-thread-delete").pipe(
+              Effect.flatMap((commandId) =>
+                orchestrationEngine.dispatch({
+                  type: "thread.delete",
+                  commandId,
+                  threadId: command.threadId,
+                }),
+              ),
+              Effect.ignoreCause({ log: true }),
+            )
+          : Effect.void;
+
+      const recordSetupScriptLaunchFailure = (input: {
+        readonly error: unknown;
+        readonly requestedAt: string;
+        readonly worktreePath: string;
+      }) => {
+        const detail =
+          input.error instanceof Error ? input.error.message : "Unknown setup failure.";
+        return appendSetupScriptActivity({
+          threadId: command.threadId,
+          kind: "setup-script.failed",
+          summary: "Setup script failed to start",
+          createdAt: input.requestedAt,
+          payload: {
+            detail,
+            worktreePath: input.worktreePath,
+          },
+          tone: "error",
+        }).pipe(
+          Effect.ignoreCause({ log: false }),
+          Effect.flatMap(() =>
+            Effect.logWarning("bootstrap turn start failed to launch setup script", {
+              threadId: command.threadId,
+              worktreePath: input.worktreePath,
+              detail,
+            }),
+          ),
+        );
+      };
+
+      const recordSetupScriptStarted = (input: {
+        readonly requestedAt: string;
+        readonly worktreePath: string;
+        readonly scriptId: string;
+        readonly scriptName: string;
+        readonly terminalId: string;
+      }) =>
+        Effect.gen(function* () {
+          const startedAt = yield* nowIso;
+          const payload = {
+            scriptId: input.scriptId,
+            scriptName: input.scriptName,
+            terminalId: input.terminalId,
+            worktreePath: input.worktreePath,
+          };
+          yield* Effect.all([
+            appendSetupScriptActivity({
+              threadId: command.threadId,
+              kind: "setup-script.requested",
+              summary: "Starting setup script",
+              createdAt: input.requestedAt,
+              payload,
+              tone: "info",
+            }),
+            appendSetupScriptActivity({
+              threadId: command.threadId,
+              kind: "setup-script.started",
+              summary: "Setup script started",
+              createdAt: startedAt,
+              payload,
+              tone: "info",
+            }),
+          ]).pipe(
+            Effect.asVoid,
+            Effect.catch((error) =>
+              Effect.logWarning(
+                "bootstrap turn start launched setup script but failed to record setup activity",
+                {
+                  threadId: command.threadId,
+                  worktreePath: input.worktreePath,
+                  scriptId: input.scriptId,
+                  terminalId: input.terminalId,
+                  detail: error.message,
+                },
+              ),
+            ),
+          );
+        });
+
+      const runSetupProgram = () =>
+        Effect.gen(function* () {
+          if (!bootstrap?.runSetupScript || !targetWorktreePath) {
+            return;
+          }
+          const worktreePath = targetWorktreePath;
+          const requestedAt = yield* nowIso;
+          yield* projectSetupScriptRunner
+            .runForThread({
+              threadId: command.threadId,
+              ...(targetProjectId ? { projectId: targetProjectId } : {}),
+              ...(targetProjectCwd ? { projectCwd: targetProjectCwd } : {}),
+              worktreePath,
+            })
+            .pipe(
+              Effect.matchEffect({
+                onFailure: (error) =>
+                  recordSetupScriptLaunchFailure({
+                    error,
+                    requestedAt,
+                    worktreePath,
+                  }),
+                onSuccess: (setupResult) => {
+                  if (setupResult.status !== "started") {
+                    return Effect.void;
+                  }
+                  return recordSetupScriptStarted({
+                    requestedAt,
+                    worktreePath,
+                    scriptId: setupResult.scriptId,
+                    scriptName: setupResult.scriptName,
+                    terminalId: setupResult.terminalId,
+                  });
+                },
+              }),
+            );
+        });
+
+      const bootstrapProgram = Effect.gen(function* () {
+        if (bootstrap?.createThread) {
+          createdThreadMetadata = {
+            id: command.threadId,
+            projectId: bootstrap.createThread.projectId,
+            parentThreadId: bootstrap.createThread.parentThreadId,
+            title: bootstrap.createThread.title,
+            modelSelection: bootstrap.createThread.modelSelection,
+            runtimeMode: bootstrap.createThread.runtimeMode,
+            interactionMode: bootstrap.createThread.interactionMode,
+            branch: bootstrap.createThread.branch,
+            worktreePath: bootstrap.createThread.worktreePath,
+            createdVia: bootstrap.createThread.createdVia,
+            createdByThreadId: bootstrap.createThread.createdByThreadId,
+            createdAt: bootstrap.createThread.createdAt,
+            updatedAt: bootstrap.createThread.createdAt,
+            archivedAt: null,
+            latestTurn: null,
+            latestUserMessageAt: null,
+            session: null,
+            hasPendingApprovals: false,
+            hasPendingUserInput: false,
+            hasActionableProposedPlan: false,
+          };
+          yield* orchestrationEngine.dispatch({
+            type: "thread.create",
+            commandId: yield* serverCommandId("bootstrap-thread-create"),
+            threadId: command.threadId,
+            projectId: bootstrap.createThread.projectId,
+            parentThreadId: bootstrap.createThread.parentThreadId,
+            title: bootstrap.createThread.title,
+            modelSelection: bootstrap.createThread.modelSelection,
+            runtimeMode: bootstrap.createThread.runtimeMode,
+            interactionMode: bootstrap.createThread.interactionMode,
+            branch: bootstrap.createThread.branch,
+            worktreePath: bootstrap.createThread.worktreePath,
+            createdVia: bootstrap.createThread.createdVia,
+            createdByThreadId: bootstrap.createThread.createdByThreadId,
+            createdAt: bootstrap.createThread.createdAt,
+          });
+          createdThread = true;
+        }
+
+        if (bootstrap?.prepareWorktree) {
+          const worktree = yield* gitWorkflow.createWorktree({
+            cwd: bootstrap.prepareWorktree.projectCwd,
+            refName: bootstrap.prepareWorktree.baseBranch,
+            newRefName: bootstrap.prepareWorktree.branch,
+            path: null,
+          });
+          targetWorktreePath = worktree.worktree.path;
+          if (createdThreadMetadata) {
+            createdThreadMetadata = {
+              ...createdThreadMetadata,
+              branch: worktree.worktree.refName,
+              worktreePath: targetWorktreePath,
+            };
+          }
+          yield* orchestrationEngine.dispatch({
+            type: "thread.meta.update",
+            commandId: yield* serverCommandId("bootstrap-thread-meta-update"),
+            threadId: command.threadId,
+            branch: worktree.worktree.refName,
+            worktreePath: targetWorktreePath,
+          });
+          yield* refreshGitStatus(targetWorktreePath);
+        }
+
+        yield* runSetupProgram();
+
+        const accepted = yield* orchestrationEngine.dispatch(finalTurnStartCommand);
+        return createdThreadMetadata
+          ? { ...accepted, createdThread: createdThreadMetadata }
+          : accepted;
+      });
+
+      return yield* bootstrapProgram.pipe(
+        Effect.catchCause((cause) => {
+          const dispatchError = toBootstrapDispatchCommandCauseError(cause);
+          if (Cause.hasInterruptsOnly(cause)) {
+            return Effect.fail(dispatchError);
+          }
+          return cleanupCreatedThread().pipe(Effect.flatMap(() => Effect.fail(dispatchError)));
+        }),
+      );
+    });
+
+    return ThreadTurnStartBootstrapDispatcher.of({ dispatch });
+  }),
+);

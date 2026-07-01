@@ -4139,6 +4139,7 @@ function ChatViewContent(props: ChatViewProps) {
                 ? {
                     createThread: {
                       projectId: activeProject.id,
+                      parentThreadId: null,
                       title,
                       modelSelection: threadCreateModelSelection,
                       runtimeMode,
@@ -4635,6 +4636,7 @@ function ChatViewContent(props: ChatViewProps) {
       input: {
         threadId: nextThreadId,
         projectId: activeProject.id,
+        parentThreadId: null,
         title: nextThreadTitle,
         modelSelection: nextThreadModelSelection,
         runtimeMode,

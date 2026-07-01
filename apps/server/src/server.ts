@@ -35,6 +35,7 @@ import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
+import { McpOrchestrationServiceLive } from "./mcp/Layers/McpOrchestrationService.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -49,6 +50,9 @@ import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRun
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
+import { ThreadTurnSignalTrackerLive } from "./orchestration/Layers/ThreadTurnSignalTracker.ts";
+import { ThreadTurnLivenessQueryLive } from "./orchestration/Layers/ThreadTurnLivenessQuery.ts";
+import { ThreadTurnStartBootstrapDispatcherLive } from "./orchestration/Services/ThreadTurnStartBootstrapDispatcher.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
@@ -165,6 +169,11 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(AgentAwarenessRelay.layer.pipe(Layer.provide(ServerSecretStore.layer))),
   Layer.provideMerge(RuntimeReceiptBusLive),
 );
+
+const ReactorAndLivenessLayerLive = Layer.mergeAll(
+  ReactorLayerLive,
+  ThreadTurnLivenessQueryLive,
+).pipe(Layer.provideMerge(ThreadTurnSignalTrackerLive));
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
   Layer.provide(ProviderSessionRuntime.layer),
@@ -284,12 +293,27 @@ const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
   Layer.provideMerge(OrchestrationLayerLive),
 );
 
-const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
+const ProjectSetupScriptRunnerWithoutProjectionLayerLive = ProjectSetupScriptRunner.layer.pipe(
+  Layer.provide(TerminalLayerLive),
+);
+
+const ThreadTurnStartBootstrapDispatcherDependenciesLive = Layer.mergeAll(
+  GitWorkflowLayerLive,
+  ProjectSetupScriptRunnerWithoutProjectionLayerLive,
+  VcsStatusBroadcaster.layer.pipe(Layer.provide(GitWorkflowLayerLive)),
+).pipe(Layer.provide(OrchestrationLayerLive));
+
+const ThreadTurnStartBootstrapDispatcherLayerLive = ThreadTurnStartBootstrapDispatcherLive.pipe(
+  Layer.provide(ThreadTurnStartBootstrapDispatcherDependenciesLive),
+);
+
+const RuntimeCoreDependenciesBaseLive = ReactorAndLivenessLayerLive.pipe(
   // Core Services
   Layer.provideMerge(CheckpointingLayerLive),
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(VcsLayerLive),
+  Layer.provideMerge(ThreadTurnStartBootstrapDispatcherLayerLive),
   Layer.provideMerge(ProviderRuntimeLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive)),
   Layer.provideMerge(PersistenceLayerLive),
@@ -315,6 +339,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
   Layer.provideMerge(ServerSettings.layer.pipe(Layer.provide(ServerSecretStore.layer))),
   Layer.provideMerge(WorkspaceLayerLive),
+);
+
+const RuntimeCoreDependenciesLive = RuntimeCoreDependenciesBaseLive.pipe(
   Layer.provideMerge(ProjectFaviconResolverLayerLive),
   Layer.provideMerge(RepositoryIdentityResolver.layer),
   Layer.provideMerge(ServerEnvironment.layer),
@@ -478,6 +505,7 @@ export const makeServerLayer = Layer.unwrap(
     );
 
     return serverApplicationLayer.pipe(
+      Layer.provideMerge(McpOrchestrationServiceLive),
       Layer.provideMerge(RuntimeServicesLive),
       Layer.provideMerge(serverRelayBrokerTracingLayer),
       Layer.provideMerge(HttpServerLive),
