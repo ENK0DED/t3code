@@ -153,6 +153,23 @@ function eventCanRepresentProgress(event: OrchestrationEvent): boolean {
   }
 }
 
+function terminalRowIsMaskedByRunningSession(input: {
+  readonly thread: OrchestrationThread;
+  readonly row: ProjectionThreadTurnLivenessRow;
+}): boolean {
+  if (!terminalStates.has(input.row.state)) {
+    return false;
+  }
+  const session = input.thread.session;
+  if (session === null) {
+    return false;
+  }
+  if (session.status !== "starting" && session.status !== "running") {
+    return false;
+  }
+  return (session.activeTurnId ?? null) === null;
+}
+
 function makeUnknownThread(threadId: ThreadId): ThreadTurnLivenessQueryError {
   return new ThreadTurnLivenessQueryError({
     code: "unknown_thread",
@@ -283,17 +300,19 @@ const make = Effect.gen(function* () {
       liveProviderSignalAt !== null,
       input.row.lastProviderSignalAt !== null,
     );
+    const maskedByRunningSession = terminalRowIsMaskedByRunningSession(input);
+    const state = maskedByRunningSession ? "running" : input.row.state;
     const startedOrRequestedAt = input.row.startedAt ?? input.row.requestedAt;
     const startedOrRequestedAtMs = isoToMs(startedOrRequestedAt);
     const lastObservableProgressAtMs = isoToMs(lastObservableProgressAt);
     const lastProviderSignalAtMs = isoToMs(lastProviderSignalAt);
-    const terminal = terminalStates.has(input.row.state);
+    const terminal = terminalStates.has(state);
     const runningForMs =
-      input.row.state === "running" && startedOrRequestedAtMs !== null
+      state === "running" && startedOrRequestedAtMs !== null
         ? Math.max(0, nowMs - startedOrRequestedAtMs)
         : null;
     const staleDecision = (() => {
-      if (terminal || pendingRequests.length > 0 || input.row.state !== "running") {
+      if (terminal || pendingRequests.length > 0 || state !== "running") {
         return { stale: false, staleReason: "none" as const };
       }
       if (observableWithoutStart === null) {
@@ -329,9 +348,9 @@ const make = Effect.gen(function* () {
     return {
       threadId: input.row.threadId,
       turnId: input.row.turnId,
-      state: input.row.state,
+      state,
       startedAt: input.row.startedAt,
-      completedAt: input.row.completedAt,
+      completedAt: maskedByRunningSession ? null : input.row.completedAt,
       runningForMs,
       lastMessageAt,
       lastActivityAt,
@@ -344,7 +363,10 @@ const make = Effect.gen(function* () {
       staleReason: staleDecision.staleReason,
       staleAfterMs,
       safeToInterrupt:
-        input.row.state === "running" && staleDecision.stale && pendingRequests.length === 0,
+        state === "running" &&
+        staleDecision.stale &&
+        pendingRequests.length === 0 &&
+        !maskedByRunningSession,
     } satisfies ThreadTurnLiveness;
   });
 
