@@ -1816,6 +1816,75 @@ it.live("waitForThreadUpdate returns pending_request when approval opens", () =>
   }),
 );
 
+it.live(
+  "waitForThreadUpdate does not report terminal while the provider session is still running",
+  () =>
+    Effect.gen(function* () {
+      const turnId = TurnId.make("turn-provider-child-work");
+      const completedAt = "2026-01-01T00:00:01.000Z";
+      const harness = yield* makeHarness(
+        [
+          thread({
+            id: TARGET,
+            latestTurn: {
+              turnId,
+              state: "completed",
+              requestedAt: "2026-01-01T00:00:00.000Z",
+              startedAt: "2026-01-01T00:00:00.000Z",
+              completedAt,
+              assistantMessageId: null,
+            },
+            session: {
+              threadId: TARGET,
+              status: "running",
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              runtimeMode: "auto-accept-edits",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: freshIso(),
+            },
+          }),
+        ],
+        undefined,
+        {
+          livenessRows: [
+            livenessRow({
+              turnId,
+              state: "completed",
+              requestedAt: "2026-01-01T00:00:00.000Z",
+              startedAt: "2026-01-01T00:00:00.000Z",
+              completedAt,
+              lastProviderSignalAt: freshIso(),
+              lastObservableProgressAt: freshIso(),
+              lastSignalKind: "lifecycle",
+            }),
+          ],
+        },
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* McpOrchestrationService;
+        const status = yield* service.getThreadTurnStatus({ threadId: TARGET, turnId });
+        expect(status.liveness.state).toBe("running");
+
+        const result = yield* service.waitForThreadUpdate({
+          threadId: TARGET,
+          turnId,
+          timeoutMs: 20,
+          includeStatus: true,
+        });
+
+        expect(result.reason).toBe("timeout");
+        expect(result.liveness?.state).toBe("running");
+        expect(result.liveness?.safeToInterrupt).toBe(false);
+        expect(
+          harness.dispatched.filter((command) => command.type === "thread.turn.interrupt"),
+        ).toEqual([]);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
 it.live("waitForThreadUpdate returns timeout and dispatches no interrupts", () =>
   Effect.gen(function* () {
     const turnId = TurnId.make("turn-timeout");
