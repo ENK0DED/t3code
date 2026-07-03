@@ -1572,6 +1572,32 @@ export const McpOrchestrationServiceLive = Layer.effect(
       },
     );
 
+    const requireThreadForMessage = Effect.fn("McpOrchestrationService.requireThreadForMessage")(
+      function* (threadId: ThreadId) {
+        const thread = yield* requireThreadDetail(threadId);
+        const sessionStatus = thread.session?.status ?? "idle";
+        if (sessionStatus === "starting" || thread.pendingTurnStart != null) {
+          return yield* new McpOrchestrationError({
+            code: "non_idle_thread",
+            message: `non_idle_thread: Thread '${threadId}' is still starting or already has a pending turn start and cannot accept another MCP message yet.`,
+          });
+        }
+        yield* rejectArchivedThread(thread);
+        return thread;
+      },
+    );
+
+    const rejectMcpSupervisedRuntimeMode = (runtimeMode: RuntimeMode | undefined) =>
+      runtimeMode === "approval-required"
+        ? Effect.fail(
+            new McpOrchestrationError({
+              code: "invalid_input",
+              message:
+                "runtimeMode approval-required is not allowed for MCP thread create/update. Use auto-accept-edits or full-access.",
+            }),
+          )
+        : Effect.void;
+
     const requireCurrentThread = Effect.fn("McpOrchestrationService.requireCurrentThread")(
       function* () {
         const invocation = yield* McpInvocationContext.McpInvocationContext;
@@ -1881,10 +1907,12 @@ export const McpOrchestrationServiceLive = Layer.effect(
     const resolveParentThreadId = (input: {
       readonly placement?: "top_level" | "child_of_thread" | undefined;
       readonly explicitParentThreadId?: ThreadId | undefined;
+      readonly currentThread: Pick<OrchestrationThread, "id" | "parentThreadId" | "projectId">;
+      readonly targetProjectId: ProjectId;
     }): Effect.Effect<ThreadId | null, McpOrchestrationError> =>
       Effect.gen(function* () {
         const placement =
-          input.placement ?? (input.explicitParentThreadId ? "child_of_thread" : "top_level");
+          input.placement ?? (input.explicitParentThreadId ? "child_of_thread" : undefined);
         switch (placement) {
           case "top_level":
             if (input.explicitParentThreadId) {
@@ -1903,6 +1931,13 @@ export const McpOrchestrationServiceLive = Layer.effect(
               });
             }
             return input.explicitParentThreadId;
+          case undefined:
+            if (input.targetProjectId !== input.currentThread.projectId) {
+              return null;
+            }
+            return canThreadCreateChild(input.currentThread)
+              ? input.currentThread.id
+              : input.currentThread.parentThreadId;
         }
       });
 
@@ -2893,6 +2928,8 @@ export const McpOrchestrationServiceLive = Layer.effect(
           const parentThreadId = yield* resolveParentThreadId({
             placement: input.placement,
             explicitParentThreadId: input.parentThreadId,
+            currentThread,
+            targetProjectId,
           });
           if (parentThreadId === null && targetProjectId !== currentThread.projectId) {
             return yield* new McpOrchestrationError({
@@ -2930,6 +2967,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           // escalations gated) rather than inheriting the orchestrator's mode (which could be
           // `full-access` = no sandbox). An explicit runtimeMode is always respected. Scoped to
           // this MCP create path only; the global DEFAULT_RUNTIME_MODE / human UI is unchanged.
+          yield* rejectMcpSupervisedRuntimeMode(input.runtimeMode);
           const desiredRuntimeMode = input.runtimeMode ?? "auto-accept-edits";
           const desiredInteractionMode = input.interactionMode ?? currentThread.interactionMode;
           const checkoutInheritanceThread = parentThread ?? currentThread;
@@ -3165,7 +3203,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
             optional: false,
           }).pipe(Effect.map((value) => value!));
           const dispatched = yield* Effect.gen(function* () {
-            const thread = yield* requireWritableThread(input.threadId);
+            const thread = yield* requireThreadForMessage(input.threadId);
             yield* requireThreadManageableByMcp(thread);
             const desiredModelSelection = input.modelSelection ?? thread.modelSelection;
             yield* validateMcpModelSelection(desiredModelSelection);
@@ -3328,6 +3366,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
             readonly branch?: string | null;
             readonly worktreePath?: string | null;
           };
+          yield* rejectMcpSupervisedRuntimeMode(input.runtimeMode);
           const thread = yield* requireWritableThread(input.threadId);
           yield* requireThreadManageableByMcp(thread);
           const hasUpdate =

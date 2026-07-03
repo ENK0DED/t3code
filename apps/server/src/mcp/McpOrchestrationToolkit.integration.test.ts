@@ -953,7 +953,62 @@ it.effect("resolves an approval-required child deadlock through MCP tools", () =
     Effect.gen(function* () {
       const dispatchedCommands: Array<OrchestrationCommand> = [];
       const childTurnId = TurnId.make("turn-child-approval");
+      const childThreadId = ThreadId.make("thread-child-approval");
       const approvalRequestId = "approval-child-1";
+      const blockedChild: OrchestrationThread = {
+        id: childThreadId,
+        projectId: currentProjectId,
+        parentThreadId: currentThreadId,
+        title: "Approval deadlock child",
+        modelSelection: defaultModelSelection(),
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        latestTurn: {
+          turnId: childTurnId,
+          state: "running",
+          requestedAt: "2026-01-01T00:00:00.000Z",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          completedAt: null,
+          assistantMessageId: null,
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:01.000Z",
+        archivedAt: null,
+        createdVia: "mcp",
+        createdByThreadId: currentThreadId,
+        deletedAt: null,
+        messages: [],
+        proposedPlans: [],
+        activities: [
+          {
+            id: "evt-child-approval-requested" as never,
+            tone: "approval",
+            kind: "approval.requested",
+            summary: "Approval requested",
+            payload: {
+              requestId: approvalRequestId,
+              requestKind: "command",
+              requestType: "command_execution_approval",
+              detail: "bun test",
+            },
+            turnId: childTurnId,
+            createdAt: "2026-01-01T00:00:01.000Z",
+          },
+        ],
+        checkpoints: [],
+        session: {
+          threadId: childThreadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "approval-required",
+          activeTurnId: childTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      };
       const threadsRef = yield* Ref.make(
         new Map<string, OrchestrationThread>([
           [
@@ -964,6 +1019,7 @@ it.effect("resolves an approval-required child deadlock through MCP tools", () =
               createdByThreadId: null,
             },
           ],
+          [String(childThreadId), blockedChild],
         ]),
       );
       const integrationLayer = makeIntegrationLayer(dispatchedCommands, {
@@ -986,69 +1042,6 @@ it.effect("resolves an approval-required child deadlock through MCP tools", () =
                 : Option.none();
             }),
           ),
-        onBootstrapDispatch: ({ command, createdThread }) =>
-          Effect.gen(function* () {
-            if (command.type !== "thread.turn.start" || createdThread === undefined) {
-              return;
-            }
-            const blockedChild: OrchestrationThread = {
-              id: createdThread.id,
-              projectId: createdThread.projectId,
-              parentThreadId: createdThread.parentThreadId,
-              title: createdThread.title,
-              modelSelection: createdThread.modelSelection,
-              runtimeMode: createdThread.runtimeMode,
-              interactionMode: createdThread.interactionMode,
-              branch: createdThread.branch,
-              worktreePath: createdThread.worktreePath,
-              latestTurn: {
-                turnId: childTurnId,
-                state: "running",
-                requestedAt: createdThread.createdAt,
-                startedAt: createdThread.createdAt,
-                completedAt: null,
-                assistantMessageId: null,
-              },
-              createdAt: createdThread.createdAt,
-              updatedAt: createdThread.updatedAt,
-              archivedAt: null,
-              createdVia: "mcp",
-              createdByThreadId: currentThreadId,
-              deletedAt: null,
-              messages: [],
-              proposedPlans: [],
-              activities: [
-                {
-                  id: "evt-child-approval-requested" as never,
-                  tone: "approval",
-                  kind: "approval.requested",
-                  summary: "Approval requested",
-                  payload: {
-                    requestId: approvalRequestId,
-                    requestKind: "command",
-                    requestType: "command_execution_approval",
-                    detail: "bun test",
-                  },
-                  turnId: childTurnId,
-                  createdAt: "2026-01-01T00:00:01.000Z",
-                },
-              ],
-              checkpoints: [],
-              session: {
-                threadId: createdThread.id,
-                status: "running",
-                providerName: "codex",
-                providerInstanceId,
-                runtimeMode: createdThread.runtimeMode,
-                activeTurnId: childTurnId,
-                lastError: null,
-                updatedAt: "2026-01-01T00:00:01.000Z",
-              },
-            };
-            yield* Ref.update(threadsRef, (threads) =>
-              new Map(threads).set(String(blockedChild.id), blockedChild),
-            );
-          }),
         onDispatch: (command) =>
           Effect.gen(function* () {
             if (command.type !== "thread.approval.respond") {
@@ -1104,15 +1097,6 @@ it.effect("resolves an approval-required child deadlock through MCP tools", () =
       const issuedToken = yield* issueMcpToken();
       const initialize = yield* initializeMcpSession(issuedToken);
 
-      const create = yield* callMcpTool(initialize.sessionId, issuedToken, "create_thread", {
-        placement: "child_of_thread",
-        parentThreadId: currentThreadId,
-        title: "Approval deadlock child",
-        runtimeMode: "approval-required",
-        message: "Run the test suite",
-      });
-      const childThreadId = (create.structuredContent as { readonly threadId: ThreadId }).threadId;
-
       const settings = yield* callMcpTool(
         initialize.sessionId,
         issuedToken,
@@ -1161,8 +1145,6 @@ it.effect("resolves an approval-required child deadlock through MCP tools", () =
         },
       });
       expect(dispatchedCommands.map((command) => command.type)).toEqual([
-        "thread.create",
-        "thread.turn.start",
         "thread.approval.respond",
       ]);
     }),

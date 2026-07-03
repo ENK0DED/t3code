@@ -419,12 +419,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      const hasRunningTurn =
-        targetThread.session?.status === "running" ||
-        (targetThread.session?.activeTurnId ?? null) !== null ||
-        targetThread.latestTurn?.state === "running";
+      const hasStartingSession = targetThread.session?.status === "starting";
       const hasPendingTurnStart = targetThread.pendingTurnStart != null;
-      if (hasRunningTurn || hasPendingTurnStart) {
+      if (hasStartingSession || hasPendingTurnStart) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Thread '${command.threadId}' already has an active or pending turn.`,

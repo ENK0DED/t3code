@@ -203,7 +203,7 @@ it("exposes only top_level and child_of_thread create_thread placements", () => 
   expect(serialized).toContain("top_level");
 });
 
-it("guides agents to prefer child threads for related create_thread work", () => {
+it("guides agents to keep omitted create_thread placement in the invoking workstream", () => {
   const createTool = OrchestrationToolkit.tools.create_thread;
   const createSchema = Tool.getJsonSchema(createTool);
   const serialized = JSON.stringify({
@@ -211,8 +211,9 @@ it("guides agents to prefer child threads for related create_thread work", () =>
     schema: createSchema,
   });
 
-  expect(serialized).toContain("Prefer child_of_thread for related follow-up work");
-  expect(serialized).toContain("Reserve top_level for independent workstreams");
+  expect(serialized).toContain("Omitted placement follows the invoking workstream");
+  expect(serialized).toContain("Reserve explicit top_level for independent workstreams");
+  expect(serialized).toContain("MCP-created threads cannot use approval-required runtime mode");
 });
 
 it("trims and validates message inputs at the tool boundary", () => {

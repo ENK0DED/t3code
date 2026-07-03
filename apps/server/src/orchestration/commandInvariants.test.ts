@@ -8,6 +8,7 @@ import {
   EventId,
   ProjectId,
   ThreadId,
+  TurnId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -284,6 +285,93 @@ deciderLayer("commandInvariants decider checks", (it) => {
             message: {
               ...messageSendCommand.message,
               messageId: MessageId.make("msg-second"),
+            },
+          },
+        }),
+      );
+
+      effectExpect(error.message).toContain("already has an active or pending turn");
+    }),
+  );
+
+  it.effect("accepts starting a steering turn while the thread has a running turn", () =>
+    Effect.gen(function* () {
+      const activeTurnId = TurnId.make("turn-active");
+      const decided = yield* decideOrchestrationCommand({
+        readModel: {
+          ...readModel,
+          threads: readModel.threads.map((thread) =>
+            thread.id === ThreadId.make("thread-1")
+              ? {
+                  ...thread,
+                  latestTurn: {
+                    turnId: activeTurnId,
+                    state: "running" as const,
+                    requestedAt: now,
+                    startedAt: now,
+                    completedAt: null,
+                    assistantMessageId: null,
+                  },
+                  session: {
+                    threadId: thread.id,
+                    status: "running" as const,
+                    providerName: "codex",
+                    runtimeMode: "full-access" as const,
+                    activeTurnId,
+                    lastError: null,
+                    updatedAt: now,
+                  },
+                }
+              : thread,
+          ),
+        },
+        command: {
+          ...messageSendCommand,
+          commandId: CommandId.make("cmd-steer-running"),
+          message: {
+            ...messageSendCommand.message,
+            messageId: MessageId.make("msg-steer-running"),
+          },
+        },
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+
+      effectExpect(events.map((event) => event.type)).toEqual([
+        "thread.message-sent",
+        "thread.turn-start-requested",
+      ]);
+    }),
+  );
+
+  it.effect("rejects starting a steering turn while the thread session is still starting", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        decideOrchestrationCommand({
+          readModel: {
+            ...readModel,
+            threads: readModel.threads.map((thread) =>
+              thread.id === ThreadId.make("thread-1")
+                ? {
+                    ...thread,
+                    session: {
+                      threadId: thread.id,
+                      status: "starting" as const,
+                      providerName: "codex",
+                      runtimeMode: "full-access" as const,
+                      activeTurnId: null,
+                      lastError: null,
+                      updatedAt: now,
+                    },
+                  }
+                : thread,
+            ),
+          },
+          command: {
+            ...messageSendCommand,
+            commandId: CommandId.make("cmd-steer-starting"),
+            message: {
+              ...messageSendCommand.message,
+              messageId: MessageId.make("msg-steer-starting"),
             },
           },
         }),

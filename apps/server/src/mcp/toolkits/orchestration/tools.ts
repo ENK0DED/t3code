@@ -6,7 +6,6 @@ import {
   ProviderInstanceId,
   ProviderOptionSelections,
   ProviderInteractionMode,
-  RuntimeMode,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -156,19 +155,19 @@ const OptionalTitleInput = optionalInput(
 );
 
 const OptionalRuntimeModeInput = optionalInput(
-  RuntimeMode.annotate({
+  Schema.Literals(["auto-accept-edits", "full-access"]).annotate({
     description:
-      "Runtime permission mode for the thread: approval-required, auto-accept-edits, or full-access.",
+      "Runtime permission mode for the thread: auto-accept-edits or full-access. approval-required is not allowed for MCP thread updates.",
   }),
-  "Runtime permission mode for the thread: approval-required, auto-accept-edits, or full-access.",
+  "Runtime permission mode for the thread: auto-accept-edits or full-access. approval-required is not allowed for MCP thread updates.",
 );
 
 const CreateThreadRuntimeModeInput = optionalInput(
-  RuntimeMode.annotate({
+  Schema.Literals(["auto-accept-edits", "full-access"]).annotate({
     description:
-      "Runtime permission mode for the new thread: approval-required, auto-accept-edits, or full-access. Omitted default (this field only): auto-accept-edits (workspace-write sandbox — commands run sandboxed and escalations are gated). Pass an explicit value to override; full-access removes the sandbox.",
+      "Runtime permission mode for the new thread: auto-accept-edits or full-access. approval-required is not allowed for MCP-created threads. Omitted default (this field only): auto-accept-edits (workspace-write sandbox — commands run sandboxed and escalations are gated). Pass full-access only when the child needs no sandbox.",
   }),
-  "Runtime permission mode for the new thread: approval-required, auto-accept-edits, or full-access. Omitted default (this field only): auto-accept-edits (workspace-write sandbox — commands run sandboxed and escalations are gated). Pass an explicit value to override; full-access removes the sandbox.",
+  "Runtime permission mode for the new thread: auto-accept-edits or full-access. approval-required is not allowed for MCP-created threads. Omitted default (this field only): auto-accept-edits (workspace-write sandbox — commands run sandboxed and escalations are gated). Pass full-access only when the child needs no sandbox.",
 );
 
 const OptionalInteractionModeInput = optionalInput(
@@ -616,7 +615,7 @@ export const ThreadPlacement = Schema.Literals(["top_level", "child_of_thread"])
 export const CreateThreadTool = writeTool(
   Tool.make("create_thread", {
     description:
-      "Create a T3Code thread, optionally as a child thread and optionally with a first message. Prefer child_of_thread for related follow-up work so related agents stay grouped under the existing workstream. Reserve top_level for independent workstreams that should stand apart from the current thread. When a first message is provided you may also pass the per-turn control options (waitForResponse, turnTimeoutMs, responseTimeoutMs) that send_thread_message accepts; they default OFF and apply to that first turn.",
+      "Create a T3Code thread, optionally as a child thread and optionally with a first message. Omitted placement follows the invoking workstream: child of the invoking top-level thread, or sibling of the invoking child thread. Reserve explicit top_level for independent workstreams that should stand apart from the current thread. MCP-created threads cannot use approval-required runtime mode. When a first message is provided you may also pass the per-turn control options (waitForResponse, turnTimeoutMs, responseTimeoutMs) that send_thread_message accepts; they default OFF and apply to that first turn.",
     success: Schema.Unknown,
     failure: McpOrchestrationError,
     parameters: Schema.Struct({
@@ -624,9 +623,9 @@ export const CreateThreadTool = writeTool(
       placement: optionalInput(
         ThreadPlacement.annotate({
           description:
-            "Where to place the new thread. Prefer child_of_thread for related follow-up work and pass parentThreadId for the current or directly relevant top-level thread. Reserve top_level for independent workstreams. Defaults to top_level unless parentThreadId is supplied, in which case child_of_thread is inferred.",
+            "Where to place the new thread. Omit to stay in the invoking workstream: child of the invoking top-level thread, or sibling of the invoking child thread. Pass child_of_thread with parentThreadId for a specific parent. Reserve top_level for independent workstreams.",
         }),
-        "Where to place the new thread. Prefer child_of_thread for related follow-up work and pass parentThreadId for the current or directly relevant top-level thread. Reserve top_level for independent workstreams. Defaults to top_level unless parentThreadId is supplied, in which case child_of_thread is inferred.",
+        "Where to place the new thread. Omit to stay in the invoking workstream: child of the invoking top-level thread, or sibling of the invoking child thread. Pass child_of_thread with parentThreadId for a specific parent. Reserve top_level for independent workstreams.",
       ),
       parentThreadId: OptionalParentThreadIdInput,
       title: optionalInput(
@@ -659,13 +658,13 @@ export const CreateThreadTool = writeTool(
 export const SendThreadMessageTool = writeTool(
   Tool.make("send_thread_message", {
     description:
-      "Send a user message to an existing idle thread, starting a turn. By default returns immediately after the turn is accepted (fire-and-forget). Optionally set waitForResponse to block for the turn's final answer, and/or turnTimeoutMs / responseTimeoutMs to auto-CANCEL a runaway or blocked turn. These options compose and all default OFF; note waitForResponse's timeout only stops waiting while turnTimeoutMs/responseTimeoutMs cancel.",
+      "Send a user message to an existing thread, starting a turn or steering the currently running turn when the provider supports mid-turn input. A thread with an unaccepted pending turn-start is rejected until that start is observed or fails. By default returns immediately after the message is accepted (fire-and-forget). Optionally set waitForResponse to block for the turn's final answer, and/or turnTimeoutMs / responseTimeoutMs to auto-CANCEL a runaway or blocked turn. These options compose and all default OFF; note waitForResponse's timeout only stops waiting while turnTimeoutMs/responseTimeoutMs cancel.",
     success: Schema.Unknown,
     failure: McpOrchestrationError,
     parameters: Schema.Struct({
       threadId: ThreadIdInput,
       message: ThreadMessageInput.annotate({
-        description: "User message to send to the idle thread.",
+        description: "User message to send to the target thread.",
       }),
       modelSelection: OptionalModelSelectionInput,
       checkoutMode: OptionalCheckoutModeInput,
