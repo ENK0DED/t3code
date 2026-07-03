@@ -75,11 +75,12 @@ const makeMcpAuthMiddleware = McpSessionRegistry.McpSessionRegistry.pipe(
           authorization?.startsWith("Bearer ") === true
             ? authorization.slice("Bearer ".length).trim()
             : "";
-        const invocation = yield* registry.resolve(token);
+        const invocation = yield* registry.beginRequest(token);
         if (!invocation) return unauthorized;
         return yield* httpEffect.pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.map(normalizeMcpHttpResponse),
+          Effect.ensuring(registry.finishRequest(token)),
         );
       }),
   ),

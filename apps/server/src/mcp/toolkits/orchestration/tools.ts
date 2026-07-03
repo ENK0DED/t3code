@@ -658,7 +658,7 @@ export const CreateThreadTool = writeTool(
 export const SendThreadMessageTool = writeTool(
   Tool.make("send_thread_message", {
     description:
-      "Send a user message to an existing thread, starting a turn or steering the currently running turn when the provider supports mid-turn input. A thread with an unaccepted pending turn-start is rejected until that start is observed or fails. By default returns immediately after the message is accepted (fire-and-forget). Optionally set waitForResponse to block for the turn's final answer, and/or turnTimeoutMs / responseTimeoutMs to auto-CANCEL a runaway or blocked turn. These options compose and all default OFF; note waitForResponse's timeout only stops waiting while turnTimeoutMs/responseTimeoutMs cancel.",
+      "Send a user message to an existing thread, starting a turn or steering the currently running turn when the provider supports mid-turn input. MCP sub-threads may use this to report back to their direct parent/creator thread; other settings and cleanup permissions stay scoped to owned descendants. A thread with an unaccepted pending turn-start is rejected until that start is observed or fails. By default returns immediately after the message is accepted (fire-and-forget). Optionally set waitForResponse to block for the turn's final answer, and/or turnTimeoutMs / responseTimeoutMs to auto-CANCEL a runaway or blocked turn. These options compose and all default OFF; note waitForResponse's timeout only stops waiting while turnTimeoutMs/responseTimeoutMs cancel.",
     success: Schema.Unknown,
     failure: McpOrchestrationError,
     parameters: Schema.Struct({

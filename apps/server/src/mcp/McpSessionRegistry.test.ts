@@ -88,3 +88,29 @@ it.effect("expires credentials after inactivity", () =>
     expect(yield* registry.resolve(token)).toBeUndefined();
   }),
 );
+
+it.effect("keeps credentials alive while an MCP request is in flight", () =>
+  Effect.gen(function* () {
+    let timestamp = 1_000;
+    const registry = yield* makeRegistry(() => timestamp);
+    const threadId = ThreadId.make("thread-long-wait");
+    const issued = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+    });
+    const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+
+    const invocation = yield* registry.beginRequest(token);
+    expect(invocation?.threadId).toBe(threadId);
+
+    timestamp += 101;
+    expect(yield* registry.hasActiveThreadRequest(threadId)).toBe(true);
+
+    yield* registry.finishRequest(token);
+    expect(yield* registry.hasActiveThreadRequest(threadId)).toBe(false);
+    expect((yield* registry.resolve(token))?.threadId).toBe(threadId);
+
+    timestamp += 101;
+    expect(yield* registry.resolve(token)).toBeUndefined();
+  }),
+);

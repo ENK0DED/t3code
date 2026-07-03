@@ -26,6 +26,11 @@ export interface McpSessionRegistryShape {
   readonly resolve: (
     rawToken: string,
   ) => Effect.Effect<McpInvocationContext.McpInvocationScope | undefined>;
+  readonly beginRequest: (
+    rawToken: string,
+  ) => Effect.Effect<McpInvocationContext.McpInvocationScope | undefined>;
+  readonly finishRequest: (rawToken: string) => Effect.Effect<void>;
+  readonly hasActiveThreadRequest: (threadId: ThreadId) => Effect.Effect<boolean>;
   readonly revokeProviderSession: (providerSessionId: string) => Effect.Effect<void>;
   readonly revokeThread: (threadId: ThreadId) => Effect.Effect<void>;
   readonly revokeAll: Effect.Effect<void>;
@@ -40,6 +45,7 @@ interface CredentialRecord {
   readonly tokenHash: string;
   readonly scope: McpInvocationContext.McpInvocationScope;
   readonly lastUsedAt: number;
+  readonly activeRequests: number;
 }
 
 interface RegistryState {
@@ -102,7 +108,8 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     const next = new Map(
       Array.from(records).filter(
         ([, record]) =>
-          timestamp <= record.scope.expiresAt && timestamp - record.lastUsedAt <= idleTimeoutMs,
+          timestamp <= record.scope.expiresAt &&
+          (record.activeRequests > 0 || timestamp - record.lastUsedAt <= idleTimeoutMs),
       ),
     );
     return next.size === records.size ? records : next;
@@ -126,7 +133,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       };
       yield* SynchronizedRef.update(state, ({ records }) => {
         const next = new Map(pruneExpired(records, issuedAt));
-        next.set(tokenHash, { tokenHash, scope, lastUsedAt: issuedAt });
+        next.set(tokenHash, { tokenHash, scope, lastUsedAt: issuedAt, activeRequests: 0 });
         return { records: next };
       });
       return {
@@ -159,6 +166,60 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     },
   );
 
+  const beginRequest: McpSessionRegistryShape["beginRequest"] = Effect.fn(
+    "McpSessionRegistry.beginRequest",
+  )(function* (rawToken) {
+    if (rawToken.length === 0) return undefined;
+    const tokenHash = yield* hashToken(rawToken);
+    const timestamp = yield* currentTimeMillis;
+    return yield* SynchronizedRef.modify(state, ({ records }) => {
+      const current = pruneExpired(records, timestamp);
+      const record = current.get(tokenHash);
+      if (!record) return [undefined, { records: current }] as const;
+      const next = new Map(current);
+      next.set(tokenHash, {
+        ...record,
+        lastUsedAt: timestamp,
+        activeRequests: record.activeRequests + 1,
+      });
+      return [record.scope, { records: next }] as const;
+    });
+  });
+
+  const finishRequest: McpSessionRegistryShape["finishRequest"] = Effect.fn(
+    "McpSessionRegistry.finishRequest",
+  )(function* (rawToken) {
+    if (rawToken.length === 0) return;
+    const tokenHash = yield* hashToken(rawToken);
+    const timestamp = yield* currentTimeMillis;
+    yield* SynchronizedRef.update(state, ({ records }) => {
+      const record = records.get(tokenHash);
+      if (!record) {
+        return { records };
+      }
+      const next = new Map(records);
+      next.set(tokenHash, {
+        ...record,
+        lastUsedAt: timestamp,
+        activeRequests: Math.max(0, record.activeRequests - 1),
+      });
+      return { records: pruneExpired(next, timestamp) };
+    });
+  });
+
+  const hasActiveThreadRequest: McpSessionRegistryShape["hasActiveThreadRequest"] = Effect.fn(
+    "McpSessionRegistry.hasActiveThreadRequest",
+  )(function* (threadId) {
+    const timestamp = yield* currentTimeMillis;
+    return yield* SynchronizedRef.modify(state, ({ records }) => {
+      const current = pruneExpired(records, timestamp);
+      const hasActive = Array.from(current.values()).some(
+        (record) => record.scope.threadId === threadId && record.activeRequests > 0,
+      );
+      return [hasActive, { records: current }] as const;
+    });
+  });
+
   const revokeWhere = (predicate: (record: CredentialRecord) => boolean) =>
     SynchronizedRef.update(state, ({ records }) => ({
       records: new Map(Array.from(records).filter(([, record]) => !predicate(record))),
@@ -167,6 +228,9 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   return McpSessionRegistry.of({
     issue,
     resolve,
+    beginRequest,
+    finishRequest,
+    hasActiveThreadRequest,
     revokeProviderSession: Effect.fn("McpSessionRegistry.revokeProviderSession")(
       function* (providerSessionId) {
         yield* revokeWhere((record) => record.scope.providerSessionId === providerSessionId);
@@ -213,6 +277,11 @@ export const revokeActiveMcpThread = (threadId: ThreadId): Effect.Effect<void> =
 
 export const revokeAllActiveMcpCredentials = (): Effect.Effect<void> =>
   activeMcpSessionRegistry ? activeMcpSessionRegistry.revokeAll : Effect.void;
+
+export const hasActiveMcpThreadRequest = (threadId: ThreadId): Effect.Effect<boolean> =>
+  activeMcpSessionRegistry
+    ? activeMcpSessionRegistry.hasActiveThreadRequest(threadId)
+    : Effect.succeed(false);
 
 /** Exposed for tests. */
 export const __testing = {

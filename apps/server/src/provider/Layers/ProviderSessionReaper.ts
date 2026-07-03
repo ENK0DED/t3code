@@ -1,3 +1,4 @@
+import type { ThreadId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -6,6 +7,7 @@ import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
   ProviderSessionReaper,
@@ -19,6 +21,7 @@ const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 export interface ProviderSessionReaperLiveOptions {
   readonly inactivityThresholdMs?: number;
   readonly sweepIntervalMs?: number;
+  readonly hasActiveMcpThreadRequest?: (threadId: ThreadId) => Effect.Effect<boolean>;
 }
 
 const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =>
@@ -32,6 +35,8 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       options?.inactivityThresholdMs ?? DEFAULT_INACTIVITY_THRESHOLD_MS,
     );
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
+    const hasActiveMcpThreadRequest =
+      options?.hasActiveMcpThreadRequest ?? McpSessionRegistry.hasActiveMcpThreadRequest;
 
     const sweep = Effect.gen(function* () {
       const bindings = yield* directory.listBindings();
@@ -65,6 +70,14 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
             threadId: binding.threadId,
             activeTurnId: thread.session.activeTurnId,
+            idleDurationMs,
+          });
+          continue;
+        }
+
+        if (yield* hasActiveMcpThreadRequest(binding.threadId)) {
+          yield* Effect.logDebug("provider.session.reaper.skipped-active-mcp-request", {
+            threadId: binding.threadId,
             idleDurationMs,
           });
           continue;

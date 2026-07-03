@@ -3836,6 +3836,94 @@ it.effect("send and update reject MCP-created threads outside the invocation own
   })(),
 );
 
+it.effect("sendThreadMessage allows an MCP sub-thread to message its parent thread", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      const result = yield* service.sendThreadMessage({
+        threadId: ThreadId.make("thread-parent"),
+        message: "Child result is ready",
+      });
+
+      expect(result).toMatchObject({
+        status: "accepted",
+        threadId: "thread-parent",
+        messageId: expect.any(String),
+      });
+      expect(dispatchedCommands).toContainEqual(
+        expect.objectContaining({
+          type: "thread.turn.start",
+          threadId: "thread-parent",
+          message: expect.objectContaining({
+            text: "Child result is ready",
+          }),
+        }),
+      );
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-parent"),
+              createdVia: "user",
+              createdByThreadId: null,
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              parentThreadId: ThreadId.make("thread-parent"),
+              createdVia: "mcp",
+              createdByThreadId: ThreadId.make("thread-parent"),
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
+);
+
+it.effect("sendThreadMessage rejects unrelated user-created targets from MCP sub-threads", () =>
+  (() => {
+    const dispatchedCommands: Array<OrchestrationCommand> = [];
+    return Effect.gen(function* () {
+      const service = yield* McpOrchestrationService;
+      yield* expectForbidden(
+        "sendThreadMessage unrelated user target",
+        service.sendThreadMessage({
+          threadId: ThreadId.make("thread-unrelated-user"),
+          message: "This should not cross ownership boundaries",
+        }),
+      );
+      expect(dispatchedCommands).toEqual([]);
+    }).pipe(
+      Effect.provide(
+        makeWriteHarnessLayer({
+          dispatchedCommands,
+          threadDetails: [
+            threadDetail({
+              id: ThreadId.make("thread-parent"),
+              createdVia: "user",
+              createdByThreadId: null,
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-current"),
+              parentThreadId: ThreadId.make("thread-parent"),
+              createdVia: "mcp",
+              createdByThreadId: ThreadId.make("thread-parent"),
+            }),
+            threadDetail({
+              id: ThreadId.make("thread-unrelated-user"),
+              createdVia: "user",
+              createdByThreadId: null,
+            }),
+          ],
+        }),
+      ),
+    );
+  })(),
+);
+
 it.effect("cleanup methods dispatch for owned active and archived targets", () =>
   (() => {
     const dispatchedCommands: Array<OrchestrationCommand> = [];

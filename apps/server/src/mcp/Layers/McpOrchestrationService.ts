@@ -1613,6 +1613,33 @@ export const McpOrchestrationServiceLive = Layer.effect(
       },
     );
 
+    const requireMcpMessageTarget = Effect.fn("McpOrchestrationService.requireMcpMessageTarget")(
+      function* (
+        thread: Pick<OrchestrationThread, "id" | "projectId" | "createdVia" | "createdByThreadId">,
+      ) {
+        const invocation = yield* McpInvocationContext.McpInvocationContext;
+        if (thread.id === invocation.threadId) {
+          return thread;
+        }
+
+        const ownershipExit = yield* Effect.exit(requireThreadManageableByMcp(thread));
+        if (Exit.isSuccess(ownershipExit)) {
+          return ownershipExit.value;
+        }
+
+        const currentThread = yield* requireCurrentThread();
+        const isCurrentMcpSubThread = currentThread.createdVia === "mcp";
+        const isSameProject = currentThread.projectId === thread.projectId;
+        const isDirectTreeParent = currentThread.parentThreadId === thread.id;
+        const isDirectCreator = currentThread.createdByThreadId === thread.id;
+        if (isCurrentMcpSubThread && isSameProject && (isDirectTreeParent || isDirectCreator)) {
+          return thread;
+        }
+
+        return yield* Effect.failCause(ownershipExit.cause);
+      },
+    );
+
     const requireProjectForInput = Effect.fn("McpOrchestrationService.requireProjectForInput")(
       function* (input: { readonly projectId?: ProjectId | undefined }) {
         if (input.projectId !== undefined) {
@@ -3204,7 +3231,7 @@ export const McpOrchestrationServiceLive = Layer.effect(
           }).pipe(Effect.map((value) => value!));
           const dispatched = yield* Effect.gen(function* () {
             const thread = yield* requireThreadForMessage(input.threadId);
-            yield* requireThreadManageableByMcp(thread);
+            yield* requireMcpMessageTarget(thread);
             const desiredModelSelection = input.modelSelection ?? thread.modelSelection;
             yield* validateMcpModelSelection(desiredModelSelection);
             yield* validateSessionCompatibility({
