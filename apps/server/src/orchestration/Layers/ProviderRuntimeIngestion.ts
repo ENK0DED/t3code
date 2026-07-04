@@ -40,6 +40,8 @@ import {
 import { ThreadTurnSignalTracker } from "../Services/ThreadTurnSignalTracker.ts";
 import { runtimeEventSignalKind } from "../threadTurnLiveness.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 
@@ -1626,6 +1628,8 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "session.exited") {
+        yield* McpSessionRegistry.revokeActiveMcpThread(thread.id).pipe(Effect.ignore);
+        yield* Effect.sync(() => McpProviderSession.clearMcpProviderSession(thread.id));
         yield* clearTurnStateForSession(thread.id);
       }
 

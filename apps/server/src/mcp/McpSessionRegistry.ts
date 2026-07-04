@@ -53,13 +53,10 @@ interface RegistryState {
 }
 
 export interface McpSessionRegistryOptions {
-  readonly idleTimeoutMs?: number;
-  readonly maximumLifetimeMs?: number;
   readonly now?: () => number;
 }
 
-const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1_000;
-const DEFAULT_MAXIMUM_LIFETIME_MS = 8 * 60 * 60 * 1_000;
+const MCP_PROVIDER_CREDENTIAL_EXPIRES_AT = Number.MAX_SAFE_INTEGER;
 
 // Provider-spawned MCP credentials intentionally receive every capability today:
 // agents use one credential for preview automation plus read/write orchestration.
@@ -92,8 +89,6 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const httpServer = yield* HttpServer.HttpServer;
   const state = yield* SynchronizedRef.make<RegistryState>({ records: new Map() });
   const currentTimeMillis = options.now ? Effect.sync(options.now) : Clock.currentTimeMillis;
-  const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
-  const maximumLifetimeMs = options.maximumLifetimeMs ?? DEFAULT_MAXIMUM_LIFETIME_MS;
   const endpoint =
     httpServer.address._tag === "TcpAddress"
       ? `http://${getHttpMcpEndpointHost(httpServer.address.hostname)}:${httpServer.address.port}/mcp`
@@ -104,12 +99,10 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       .digest("SHA-256", new TextEncoder().encode(token))
       .pipe(Effect.map(bytesToHex), Effect.orDie);
 
-  const pruneExpired = (records: ReadonlyMap<string, CredentialRecord>, timestamp: number) => {
+  const pruneInactive = (records: ReadonlyMap<string, CredentialRecord>) => {
     const next = new Map(
-      Array.from(records).filter(
-        ([, record]) =>
-          timestamp <= record.scope.expiresAt &&
-          (record.activeRequests > 0 || timestamp - record.lastUsedAt <= idleTimeoutMs),
+      Array.from(records).filter(([, record]) =>
+        McpProviderSession.isMcpProviderSessionLive(record.scope),
       ),
     );
     return next.size === records.size ? records : next;
@@ -121,7 +114,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       const providerSessionId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
       const rawToken = yield* crypto.randomBytes(32).pipe(Effect.map(tokenFromBytes), Effect.orDie);
       const tokenHash = yield* hashToken(rawToken);
-      const expiresAt = issuedAt + maximumLifetimeMs;
+      const expiresAt = MCP_PROVIDER_CREDENTIAL_EXPIRES_AT;
       const scope: McpInvocationContext.McpInvocationScope = {
         environmentId,
         threadId: ThreadId.make(request.threadId),
@@ -132,7 +125,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         expiresAt,
       };
       yield* SynchronizedRef.update(state, ({ records }) => {
-        const next = new Map(pruneExpired(records, issuedAt));
+        const next = new Map(pruneInactive(records));
         next.set(tokenHash, { tokenHash, scope, lastUsedAt: issuedAt, activeRequests: 0 });
         return { records: next };
       });
@@ -156,7 +149,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       const tokenHash = yield* hashToken(rawToken);
       const timestamp = yield* currentTimeMillis;
       return yield* SynchronizedRef.modify(state, ({ records }) => {
-        const current = pruneExpired(records, timestamp);
+        const current = pruneInactive(records);
         const record = current.get(tokenHash);
         if (!record) return [undefined, { records: current }] as const;
         const next = new Map(current);
@@ -173,7 +166,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     const tokenHash = yield* hashToken(rawToken);
     const timestamp = yield* currentTimeMillis;
     return yield* SynchronizedRef.modify(state, ({ records }) => {
-      const current = pruneExpired(records, timestamp);
+      const current = pruneInactive(records);
       const record = current.get(tokenHash);
       if (!record) return [undefined, { records: current }] as const;
       const next = new Map(current);
@@ -203,16 +196,15 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         lastUsedAt: timestamp,
         activeRequests: Math.max(0, record.activeRequests - 1),
       });
-      return { records: pruneExpired(next, timestamp) };
+      return { records: pruneInactive(next) };
     });
   });
 
   const hasActiveThreadRequest: McpSessionRegistryShape["hasActiveThreadRequest"] = Effect.fn(
     "McpSessionRegistry.hasActiveThreadRequest",
   )(function* (threadId) {
-    const timestamp = yield* currentTimeMillis;
     return yield* SynchronizedRef.modify(state, ({ records }) => {
-      const current = pruneExpired(records, timestamp);
+      const current = pruneInactive(records);
       const hasActive = Array.from(current.values()).some(
         (record) => record.scope.threadId === threadId && record.activeRequests > 0,
       );

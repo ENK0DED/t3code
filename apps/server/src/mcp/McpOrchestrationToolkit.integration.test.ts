@@ -44,6 +44,7 @@ import { TextGeneration } from "../textGeneration/TextGeneration.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import { McpOrchestrationServiceLive } from "./Layers/McpOrchestrationService.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import * as McpProviderSession from "./McpProviderSession.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import { OrchestrationToolkit } from "./toolkits/orchestration/tools.ts";
 
@@ -538,6 +539,7 @@ function issueMcpToken() {
     if (!issued) {
       return yield* Effect.die("MCP session registry was not active");
     }
+    yield* Effect.sync(() => McpProviderSession.setMcpProviderSession(issued.config));
     return issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
   });
 }

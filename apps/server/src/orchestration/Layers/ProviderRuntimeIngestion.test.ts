@@ -4,6 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import {
+  EnvironmentId,
   OrchestrationReadModel,
   ProviderDriverKind,
   ProviderRuntimeEvent,
@@ -57,6 +58,7 @@ import {
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Option from "effect/Option";
 import type * as EffectType from "effect/Effect";
@@ -509,6 +511,47 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("ready");
     expect(thread.session?.lastError).toBeNull();
+  });
+
+  it("clears MCP provider-session liveness when a provider session exits", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const environmentId = EnvironmentId.make("environment-provider-runtime-ingestion");
+    const providerSessionId = "provider-session-runtime-exit";
+    const scope = {
+      environmentId,
+      threadId,
+      providerSessionId,
+      providerInstanceId,
+    };
+    McpProviderSession.setMcpProviderSession({
+      ...scope,
+      endpoint: "http://127.0.0.1:43123/mcp",
+      authorizationHeader: "Bearer mcp-token",
+    });
+    expect(McpProviderSession.isMcpProviderSessionLive(scope)).toBe(true);
+
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-session-exited-clears-mcp"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId,
+      threadId,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: {
+        reason: "Provider exited.",
+        exitKind: "graceful",
+      },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.status === "stopped",
+      2000,
+      threadId,
+    );
+    expect(McpProviderSession.isMcpProviderSessionLive(scope)).toBe(false);
   });
 
   it("does not clear active turn when session/thread started arrives mid-turn", async () => {

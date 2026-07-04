@@ -19,6 +19,21 @@ export function readMcpProviderSession(threadId: ThreadId): McpProviderSessionCo
   return sessionsByThread.get(threadId);
 }
 
+export function isMcpProviderSessionLive(
+  scope: Pick<
+    McpProviderSessionConfig,
+    "environmentId" | "threadId" | "providerSessionId" | "providerInstanceId"
+  >,
+): boolean {
+  const session = sessionsByThread.get(scope.threadId);
+  return (
+    session !== undefined &&
+    session.environmentId === scope.environmentId &&
+    session.providerSessionId === scope.providerSessionId &&
+    session.providerInstanceId === scope.providerInstanceId
+  );
+}
+
 export function clearMcpProviderSession(threadId: ThreadId): void {
   sessionsByThread.delete(threadId);
 }
