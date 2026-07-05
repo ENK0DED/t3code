@@ -27,6 +27,7 @@ import {
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -212,6 +213,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+  const fileSystem = yield* FileSystem.FileSystem;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
@@ -296,6 +298,29 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }).pipe(Effect.andThen(publishRuntimeEvent(canonicalEvent))),
       ),
     );
+
+  const readExistingPersistedCwd = Effect.fn("readExistingPersistedCwd")(function* (input: {
+    readonly operation: string;
+    readonly threadId: ThreadId;
+    readonly runtimePayload: ProviderSessionDirectory.ProviderRuntimeBinding["runtimePayload"];
+  }) {
+    const persistedCwd = readPersistedCwd(input.runtimePayload);
+    if (!persistedCwd) {
+      return undefined;
+    }
+
+    const stat = yield* fileSystem.stat(persistedCwd).pipe(Effect.orElseSucceed(() => null));
+    if (stat?.type === "Directory") {
+      return persistedCwd;
+    }
+
+    return yield* toValidationError(
+      input.operation,
+      stat === null
+        ? `Cannot recover thread '${input.threadId}' because its persisted working directory no longer exists: ${persistedCwd}. Restore the directory or start the thread with a valid checkout.`
+        : `Cannot recover thread '${input.threadId}' because its persisted working directory is not a directory: ${persistedCwd}. Start the thread with a valid checkout.`,
+    );
+  });
 
   // `subscribedAdapters` is our source-of-truth for "which instance adapters
   // are currently wired into the runtime event bus". It both tracks the set
@@ -394,7 +419,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         );
       }
 
-      const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
+      const persistedCwd = yield* readExistingPersistedCwd({
+        operation: input.operation,
+        threadId: input.binding.threadId,
+        runtimePayload: input.binding.runtimePayload,
+      });
       const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
 
       yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
@@ -568,7 +597,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         const effectiveCwd =
           input.cwd ??
           (persistedBinding?.providerInstanceId === resolvedInstanceId
-            ? readPersistedCwd(persistedBinding.runtimePayload)
+            ? yield* readExistingPersistedCwd({
+                operation: "ProviderService.startSession",
+                threadId,
+                runtimePayload: persistedBinding.runtimePayload,
+              })
             : undefined);
         yield* Effect.annotateCurrentSpan({
           "provider.kind": resolvedProvider,

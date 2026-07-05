@@ -33,6 +33,7 @@ import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as Cause from "effect/Cause";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
@@ -299,6 +300,7 @@ function makeProviderServiceLayer() {
             ProviderEventLoggers.NoOpProviderEventLoggers,
           ),
         ),
+        Layer.provideMerge(NodeServices.layer),
       ),
       directoryLayer,
 
@@ -350,6 +352,7 @@ it.effect("ProviderServiceLive catches stopAll failures during shutdown", () =>
             ProviderEventLoggers.NoOpProviderEventLoggers,
           ),
         ),
+        Layer.provideMerge(NodeServices.layer),
       ),
       directoryLayer,
       runtimeRepositoryLayer,
@@ -717,6 +720,8 @@ it.effect(
       const tempDir = NodeFS.mkdtempSync(
         NodePath.join(NodeOS.tmpdir(), "t3-provider-service-restart-"),
       );
+      const persistedCwd = NodePath.join(tempDir, "project");
+      NodeFS.mkdirSync(persistedCwd, { recursive: true });
       const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
       const persistenceLayer = makeSqlitePersistenceLive(dbPath);
       const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
@@ -758,7 +763,7 @@ it.effect(
         const session = yield* provider.startSession(threadId, {
           provider: ProviderDriverKind.make("codex"),
           providerInstanceId: codexInstanceId,
-          cwd: "/tmp/project",
+          cwd: persistedCwd,
           runtimeMode: "full-access",
           threadId,
         });
@@ -827,7 +832,7 @@ it.effect(
           threadId?: string;
         };
         assert.equal(startPayload.provider, "codex");
-        assert.equal(startPayload.cwd, "/tmp/project");
+        assert.equal(startPayload.cwd, persistedCwd);
         assert.deepEqual(startPayload.resumeCursor, updatedResumeCursor);
         assert.equal(startPayload.threadId, startedSession.threadId);
       }
@@ -844,12 +849,16 @@ routing.layer("ProviderServiceLive routing", (it) => {
   it.effect("routes provider operations and rollback conversation", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-routing-ops");
+      const persistedCwd = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-provider-routing-cwd-"),
+      );
 
-      const session = yield* provider.startSession(asThreadId("thread-1"), {
+      const session = yield* provider.startSession(threadId, {
         provider: ProviderDriverKind.make("codex"),
         providerInstanceId: codexInstanceId,
-        threadId: asThreadId("thread-1"),
-        cwd: "/tmp/project",
+        threadId,
+        cwd: persistedCwd,
         runtimeMode: "full-access",
       });
       assert.equal(session.provider, "codex");
@@ -919,23 +928,28 @@ routing.layer("ProviderServiceLive routing", (it) => {
           threadId?: string;
         };
         assert.equal(startPayload.provider, "codex");
-        assert.equal(startPayload.cwd, "/tmp/project");
+        assert.equal(startPayload.cwd, persistedCwd);
         assert.deepEqual(startPayload.resumeCursor, session.resumeCursor);
         assert.equal(startPayload.threadId, session.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      NodeFS.rmSync(persistedCwd, { recursive: true, force: true });
     }),
   );
 
   it.effect("recovers stale persisted sessions for rollback by resuming thread identity", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-rollback-recovery");
+      const persistedCwd = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-provider-rollback-cwd-"),
+      );
 
-      const initial = yield* provider.startSession(asThreadId("thread-1"), {
+      const initial = yield* provider.startSession(threadId, {
         provider: ProviderDriverKind.make("codex"),
         providerInstanceId: codexInstanceId,
-        threadId: asThreadId("thread-1"),
-        cwd: "/tmp/project",
+        threadId,
+        cwd: persistedCwd,
         runtimeMode: "full-access",
       });
       yield* routing.codex.stopSession(initial.threadId);
@@ -958,13 +972,14 @@ routing.layer("ProviderServiceLive routing", (it) => {
           threadId?: string;
         };
         assert.equal(startPayload.provider, "codex");
-        assert.equal(startPayload.cwd, "/tmp/project");
+        assert.equal(startPayload.cwd, persistedCwd);
         assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
         assert.equal(startPayload.threadId, initial.threadId);
       }
       assert.equal(routing.codex.rollbackThread.mock.calls.length, 1);
       const rollbackCall = routing.codex.rollbackThread.mock.calls[0];
       assert.equal(rollbackCall?.[1], 1);
+      NodeFS.rmSync(persistedCwd, { recursive: true, force: true });
     }),
   );
 
@@ -972,12 +987,15 @@ routing.layer("ProviderServiceLive routing", (it) => {
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
       const runtimeRepository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      const persistedCwd = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-provider-reap-cwd-"),
+      );
 
       const initial = yield* provider.startSession(asThreadId("thread-reap-preserve"), {
         provider: ProviderDriverKind.make("codex"),
         providerInstanceId: codexInstanceId,
         threadId: asThreadId("thread-reap-preserve"),
-        cwd: "/tmp/project-reap-preserve",
+        cwd: persistedCwd,
         runtimeMode: "full-access",
       });
 
@@ -1012,11 +1030,12 @@ routing.layer("ProviderServiceLive routing", (it) => {
           threadId?: string;
         };
         assert.equal(startPayload.provider, "codex");
-        assert.equal(startPayload.cwd, "/tmp/project-reap-preserve");
+        assert.equal(startPayload.cwd, persistedCwd);
         assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
         assert.equal(startPayload.threadId, initial.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      NodeFS.rmSync(persistedCwd, { recursive: true, force: true });
     }),
   );
 
@@ -1122,12 +1141,16 @@ routing.layer("ProviderServiceLive routing", (it) => {
   it.effect("recovers stale sessions for sendTurn using persisted cwd", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
+      const persistedCwd = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-provider-send-turn-cwd-"),
+      );
+      const threadId = asThreadId("thread-send-turn-cwd-recovery");
 
-      const initial = yield* provider.startSession(asThreadId("thread-1"), {
+      const initial = yield* provider.startSession(threadId, {
         provider: ProviderDriverKind.make("codex"),
         providerInstanceId: codexInstanceId,
-        threadId: asThreadId("thread-1"),
-        cwd: "/tmp/project-send-turn",
+        threadId,
+        cwd: persistedCwd,
         runtimeMode: "full-access",
       });
 
@@ -1152,23 +1175,66 @@ routing.layer("ProviderServiceLive routing", (it) => {
           threadId?: string;
         };
         assert.equal(startPayload.provider, "codex");
-        assert.equal(startPayload.cwd, "/tmp/project-send-turn");
+        assert.equal(startPayload.cwd, persistedCwd);
         assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
         assert.equal(startPayload.threadId, initial.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      NodeFS.rmSync(persistedCwd, { recursive: true, force: true });
+    }),
+  );
+
+  it.effect("does not reuse a deleted persisted cwd when recovering sendTurn", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const staleCwd = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-stale-cwd-"));
+      const threadId = asThreadId("thread-stale-cwd-send-turn");
+
+      const initial = yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: staleCwd,
+        runtimeMode: "full-access",
+      });
+
+      NodeFS.rmSync(staleCwd, { recursive: true, force: true });
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+
+      const exit = yield* Effect.exit(
+        provider.sendTurn({
+          threadId: initial.threadId,
+          input: "resume",
+          attachments: [],
+        }),
+      );
+
+      assert.equal(Exit.isFailure(exit), true);
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause);
+        assert.instanceOf(error, ProviderValidationError);
+        assert.include(error.message, staleCwd);
+        assert.include(error.message, "no longer exists");
+      }
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
     }),
   );
 
   it.effect("recovers stale claudeAgent sessions for sendTurn using persisted cwd", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
+      const persistedCwd = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-provider-claude-send-turn-cwd-"),
+      );
 
       const initial = yield* provider.startSession(asThreadId("thread-claude-send-turn"), {
         provider: ProviderDriverKind.make("claudeAgent"),
         providerInstanceId: claudeAgentInstanceId,
         threadId: asThreadId("thread-claude-send-turn"),
-        cwd: "/tmp/project-claude-send-turn",
+        cwd: persistedCwd,
         modelSelection: createModelSelection(
           ProviderInstanceId.make("claudeAgent"),
           "claude-opus-4-6",
@@ -1199,7 +1265,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
           threadId?: string;
         };
         assert.equal(startPayload.provider, "claudeAgent");
-        assert.equal(startPayload.cwd, "/tmp/project-claude-send-turn");
+        assert.equal(startPayload.cwd, persistedCwd);
         assert.deepEqual(
           startPayload.modelSelection,
           createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-4-6", [
@@ -1210,6 +1276,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, initial.threadId);
       }
       assert.equal(routing.claude.sendTurn.mock.calls.length, 1);
+      NodeFS.rmSync(persistedCwd, { recursive: true, force: true });
     }),
   );
 
@@ -1394,6 +1461,8 @@ routing.layer("ProviderServiceLive routing", (it) => {
         const tempDir = NodeFS.mkdtempSync(
           NodePath.join(NodeOS.tmpdir(), "t3-provider-service-cwd-"),
         );
+        const persistedCwd = NodePath.join(tempDir, "project-claude-cwd");
+        NodeFS.mkdirSync(persistedCwd, { recursive: true });
         const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
         const persistenceLayer = makeSqlitePersistenceLive(dbPath);
         const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
@@ -1428,7 +1497,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
             provider: ProviderDriverKind.make("claudeAgent"),
             providerInstanceId: claudeAgentInstanceId,
             threadId: asThreadId("thread-claude-cwd"),
-            cwd: "/tmp/project-claude-cwd",
+            cwd: persistedCwd,
             runtimeMode: "full-access",
           });
         }).pipe(Effect.provide(firstProviderLayer));
@@ -1478,7 +1547,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
             threadId?: string;
           };
           assert.equal(startPayload.provider, "claudeAgent");
-          assert.equal(startPayload.cwd, "/tmp/project-claude-cwd");
+          assert.equal(startPayload.cwd, persistedCwd);
           assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
           assert.equal(startPayload.threadId, initial.threadId);
         }

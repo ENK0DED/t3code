@@ -19,6 +19,7 @@ import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -196,6 +197,7 @@ const make = Effect.gen(function* () {
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const fileSystem = yield* FileSystem.FileSystem;
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
   const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
@@ -349,6 +351,65 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const resolveAvailableThreadWorkspaceCwd = Effect.fnUntraced(function* (input: {
+    readonly thread: {
+      readonly id: ThreadId;
+      readonly projectId: ProjectId;
+      readonly worktreePath: string | null;
+      readonly modelSelection: ModelSelection;
+      readonly session: OrchestrationSession | null;
+    };
+    readonly projects: ReadonlyArray<{
+      readonly id: ProjectId;
+      readonly workspaceRoot: string;
+    }>;
+  }) {
+    const fallbackCwd = resolveThreadWorkspaceCwd({
+      thread: {
+        projectId: input.thread.projectId,
+        worktreePath: null,
+      },
+      projects: input.projects,
+    });
+
+    if (!input.thread.worktreePath) {
+      return fallbackCwd;
+    }
+
+    const stat = yield* fileSystem
+      .stat(input.thread.worktreePath)
+      .pipe(Effect.orElseSucceed(() => null));
+    if (stat?.type === "Directory") {
+      return input.thread.worktreePath;
+    }
+
+    if (!fallbackCwd) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabelFromInstanceHint({
+          modelSelectionInstanceId: String(input.thread.modelSelection.instanceId),
+          sessionProvider: input.thread.session?.providerName ?? undefined,
+        }),
+        method: "thread.turn.start",
+        detail: `Thread '${input.thread.id}' worktree path is unavailable and the project checkout could not be resolved: ${input.thread.worktreePath}.`,
+      });
+    }
+
+    yield* Effect.logWarning("provider command reactor falling back from stale worktree path", {
+      threadId: input.thread.id,
+      worktreePath: input.thread.worktreePath,
+      fallbackCwd,
+      reason: stat === null ? "missing" : `not-${stat.type}`,
+    });
+    yield* orchestrationEngine.dispatch({
+      type: "thread.meta.update",
+      commandId: yield* serverCommandId("stale-worktree-fallback"),
+      threadId: input.thread.id,
+      branch: null,
+      worktreePath: null,
+    });
+    return fallbackCwd;
+  });
+
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
     threadId: ThreadId,
     createdAt: string,
@@ -466,7 +527,7 @@ const make = Effect.gen(function* () {
       }
     }
     const project = yield* resolveProject(thread.projectId);
-    const effectiveCwd = resolveThreadWorkspaceCwd({
+    const effectiveCwd = yield* resolveAvailableThreadWorkspaceCwd({
       thread,
       projects: project ? [project] : [],
     });
@@ -775,10 +836,12 @@ const make = Effect.gen(function* () {
     if (isFirstUserMessageTurn) {
       const project = yield* resolveProject(thread.projectId);
       const generationCwd =
-        resolveThreadWorkspaceCwd({
+        (yield* resolveAvailableThreadWorkspaceCwd({
           thread,
           projects: project ? [project] : [],
-        }) ?? process.cwd();
+        })) ?? process.cwd();
+      const generationWorktreePath =
+        thread.worktreePath && generationCwd === thread.worktreePath ? thread.worktreePath : null;
       const generationInput = {
         messageText: message.text,
         ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
@@ -787,8 +850,8 @@ const make = Effect.gen(function* () {
 
       yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
         threadId: event.payload.threadId,
-        branch: thread.branch,
-        worktreePath: thread.worktreePath,
+        branch: generationWorktreePath ? thread.branch : null,
+        worktreePath: generationWorktreePath,
         ...generationInput,
       }).pipe(Effect.forkScoped);
 
