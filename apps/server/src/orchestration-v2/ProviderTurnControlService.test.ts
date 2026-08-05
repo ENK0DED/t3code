@@ -220,6 +220,7 @@ it.effect(
           getThreadSnapshot: () => Effect.die("unused getThreadSnapshot"),
           listThreadIdsWithUnsettledRuntimeState: () =>
             Effect.die("unused listThreadIdsWithUnsettledRuntimeState"),
+          listActiveShellThreadIds: () => Effect.die("unused listActiveShellThreadIds"),
           listSubagentResultTransferSourceThreadIds: () =>
             Effect.die("unused listSubagentResultTransferSourceThreadIds"),
         }),

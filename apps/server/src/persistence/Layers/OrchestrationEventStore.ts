@@ -492,11 +492,26 @@ const makeEventStore = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("OrchestrationEventStore.latestAgentSequence:query")),
     );
 
+  // The single-query OR across aggregate kinds plans as a MULTI-INDEX OR that
+  // materializes every matching rowid before taking the MAX — 20 s cold /
+  // ~2.4 s warm on the live 8 GB store, inside every shell-snapshot load
+  // transaction (same planner-trap family as readApplicationRows above).
+  // Split into one pinned reverse seek per kind, each of which SQLite serves
+  // as an index MAX lookup (~2 ms cold).
   const latestApplicationSequence = sql<{ readonly sequence: number | null }>`
-    SELECT MAX(sequence) AS sequence
-    FROM orchestration_events
-    WHERE aggregate_kind = 'project'
-      OR (application_event_version = 2 AND aggregate_kind = 'thread')
+    SELECT MAX(
+      COALESCE((
+        SELECT MAX(sequence)
+        FROM orchestration_events INDEXED BY idx_orch_events_stream_sequence
+        WHERE aggregate_kind = 'project'
+      ), 0),
+      COALESCE((
+        SELECT MAX(sequence)
+        FROM orchestration_events INDEXED BY idx_orchestration_events_application_sequence
+        WHERE application_event_version = 2
+          AND aggregate_kind = 'thread'
+      ), 0)
+    ) AS sequence
   `.pipe(
     Effect.map((rows) => rows[0]?.sequence ?? 0),
     Effect.mapError(

@@ -159,6 +159,17 @@ export interface ProjectionStoreV2Shape {
     ProjectionStoreV2Error
   >;
   /**
+   * Thread ids whose shell status is currently active (latest run in a
+   * nonterminal state) — the exact set the periodic shell-liveness sweep
+   * needs. The sweep previously materialized the full shell snapshot (every
+   * thread row, decoded, plus two whole-table aggregate queries) every 30 s
+   * per shell subscription just to filter down to these few threads.
+   */
+  readonly listActiveShellThreadIds: () => Effect.Effect<
+    ReadonlyArray<ThreadId>,
+    ProjectionStoreV2Error
+  >;
+  /**
    * Source thread ids of every recorded `subagent_result` context transfer.
    * Startup's terminal-subagent recovery uses this to skip children whose
    * result was already delivered without loading a full projection per child
@@ -2310,6 +2321,32 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           ),
         );
 
+    // Keep the status list in step with `shellStatusFromStoredRunStatus` and
+    // `UNSETTLED_RUN_STATUSES`: shell status IS the latest run's status, so
+    // "active shell" means exactly "latest run nonterminal".
+    const listActiveShellThreadIds: ProjectionStoreV2Shape["listActiveShellThreadIds"] = () =>
+      sql<{ readonly thread_id: ThreadId }>`
+        SELECT t.thread_id
+        FROM orchestration_v2_projection_threads t
+        WHERE t.deleted_at IS NULL
+          AND (
+            SELECT r.status
+            FROM orchestration_v2_projection_runs r
+            WHERE r.thread_id = t.thread_id
+            ORDER BY r.ordinal DESC, r.run_id DESC
+            LIMIT 1
+          ) IN ${sql.in(UNSETTLED_RUN_STATUSES)}
+      `.pipe(
+        Effect.map((rows) => rows.map(({ thread_id }) => thread_id)),
+        Effect.mapError(
+          (cause) =>
+            new ProjectionStoreQueryError({
+              operation: "listActiveShellThreadIds",
+              cause,
+            }),
+        ),
+      );
+
     const listSubagentResultTransferSourceThreadIds: ProjectionStoreV2Shape["listSubagentResultTransferSourceThreadIds"] =
       () =>
         sql<{ readonly source_thread_id: ThreadId }>`
@@ -2800,6 +2837,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getThreadProjection,
       getThreadSnapshot,
       listThreadIdsWithUnsettledRuntimeState,
+      listActiveShellThreadIds,
       listSubagentResultTransferSourceThreadIds,
     } satisfies ProjectionStoreV2Shape;
   }),
@@ -2862,6 +2900,18 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             }
           }
           return unsettled;
+        }),
+      listActiveShellThreadIds: () =>
+        Effect.gen(function* () {
+          const existing = (yield* Ref.get(replayState)).projections;
+          const active: Array<ThreadId> = [];
+          for (const threadId of existing.keys()) {
+            const shell = yield* service.getThreadShell(threadId);
+            if (shell !== null && unsettledRunStatuses.has(shell.status)) {
+              active.push(threadId);
+            }
+          }
+          return active;
         }),
       listSubagentResultTransferSourceThreadIds: () =>
         Effect.gen(function* () {
