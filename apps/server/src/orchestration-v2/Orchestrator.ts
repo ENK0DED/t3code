@@ -7012,9 +7012,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   );
   yield* projectionStore.getShellSnapshot().pipe(
     Effect.flatMap((shell) =>
-      Effect.forEach(
-        [...shell.threads, ...shell.archivedThreads].filter(
+      Effect.gen(function* () {
+        // Skip children whose subagent_result transfer is already recorded:
+        // finalizeAppOwnedSubagent loads full parent+child projections, and
+        // re-walking every terminal fleet child in history just to conclude
+        // "already delivered" cost ~90 s of every boot on the live store
+        // (wayfinder ticket 10 post-mortem 6, 2026-08-04). The transfer table
+        // is the same source of truth finalize itself consults.
+        const delivered = new Set(
+          yield* projectionStore.listSubagentResultTransferSourceThreadIds(),
+        );
+        return [...shell.threads, ...shell.archivedThreads].filter(
           (thread) =>
+            !delivered.has(thread.id) &&
             thread.lineage.relationshipToParent === "subagent" &&
             thread.lineage.parentThreadId !== null &&
             thread.forkedFrom?.type === "node" &&
@@ -7023,7 +7033,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               thread.status === "failed" ||
               thread.status === "cancelled" ||
               thread.status === "rolled_back"),
-        ),
+        );
+      }),
+    ),
+    Effect.flatMap((candidates) =>
+      Effect.forEach(
+        candidates,
         (thread) =>
           threadDispatch
             .withLock(thread.lineage.parentThreadId!, finalizeAppOwnedSubagent(thread.id))

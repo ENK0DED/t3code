@@ -91,13 +91,50 @@ export class ProjectionStoreReadError extends Schema.TaggedErrorClass<Projection
   }
 }
 
+export class ProjectionStoreQueryError extends Schema.TaggedErrorClass<ProjectionStoreQueryError>()(
+  "ProjectionStoreQueryError",
+  {
+    operation: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Failed to query orchestration projections (${this.operation}).`;
+  }
+}
+
 export const ProjectionStoreV2Error = Schema.Union([
   ProjectionStoreSetupError,
   ProjectionStoreApplyEventError,
   ProjectionStoreThreadNotFoundError,
   ProjectionStoreReadError,
+  ProjectionStoreQueryError,
 ]);
 export type ProjectionStoreV2Error = typeof ProjectionStoreV2Error.Type;
+
+// Mirrors `nonterminalRuns` in ProviderRuntimeRecoveryService: any run in one of
+// these states may still hold provider work that a restart stranded.
+const UNSETTLED_RUN_STATUSES = ["queued", "preparing", "starting", "running", "waiting"] as const;
+
+const unsettledRunStatuses: ReadonlySet<string> = new Set(UNSETTLED_RUN_STATUSES);
+
+/**
+ * In-memory twin of the `listThreadIdsWithUnsettledRuntimeState` SQL query, for
+ * callers that already hold a decoded projection. Keep the two in step:
+ * reconciliation skips any thread both agree is settled.
+ */
+export function projectionHasUnsettledRuntimeState(
+  projection: OrchestrationV2ThreadProjection,
+): boolean {
+  return (
+    projection.runs.some((run) => unsettledRunStatuses.has(run.status)) ||
+    projection.runtimeRequests.some((request) => request.status === "pending") ||
+    projection.providerThreads.some((thread) => thread.status === "active") ||
+    projection.providerSessions.some(
+      (session) => session.status !== "stopped" && session.status !== "error",
+    )
+  );
+}
 
 export interface ProjectionStoreV2Shape {
   readonly apply: (
@@ -110,6 +147,28 @@ export interface ProjectionStoreV2Shape {
   readonly getThreadShell: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationV2ThreadShell | null, ProjectionStoreV2Error>;
+  /**
+   * Threads carrying runtime state that a process restart could have stranded:
+   * a nonterminal run, a pending runtime request, an active provider thread, or
+   * a provider session that is neither stopped nor errored. Startup
+   * reconciliation uses this to avoid loading a full projection per thread when
+   * almost all of them are long settled.
+   */
+  readonly listThreadIdsWithUnsettledRuntimeState: () => Effect.Effect<
+    ReadonlyArray<ThreadId>,
+    ProjectionStoreV2Error
+  >;
+  /**
+   * Source thread ids of every recorded `subagent_result` context transfer.
+   * Startup's terminal-subagent recovery uses this to skip children whose
+   * result was already delivered without loading a full projection per child
+   * — on a store with a thousand historical fleet children that projection
+   * walk cost ~90 s of every boot (wayfinder ticket 10 post-mortem 6).
+   */
+  readonly listSubagentResultTransferSourceThreadIds: () => Effect.Effect<
+    ReadonlyArray<ThreadId>,
+    ProjectionStoreV2Error
+  >;
   readonly getThreadProjection: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationV2ThreadProjection, ProjectionStoreV2Error>;
@@ -2223,6 +2282,51 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           ),
         );
 
+    const listThreadIdsWithUnsettledRuntimeState: ProjectionStoreV2Shape["listThreadIdsWithUnsettledRuntimeState"] =
+      () =>
+        sql<{ readonly thread_id: ThreadId }>`
+          SELECT DISTINCT thread_id FROM (
+            SELECT thread_id FROM orchestration_v2_projection_runs
+              WHERE status IN ${sql.in(UNSETTLED_RUN_STATUSES)}
+            UNION ALL
+            SELECT thread_id FROM orchestration_v2_projection_runtime_requests
+              WHERE status = 'pending'
+            UNION ALL
+            SELECT thread_id FROM orchestration_v2_projection_provider_threads
+              WHERE status = 'active'
+            UNION ALL
+            SELECT thread_id FROM orchestration_v2_projection_provider_sessions
+              WHERE status NOT IN ('stopped', 'error')
+          )
+          WHERE thread_id IS NOT NULL
+        `.pipe(
+          Effect.map((rows) => rows.map(({ thread_id }) => thread_id)),
+          Effect.mapError(
+            (cause) =>
+              new ProjectionStoreQueryError({
+                operation: "listThreadIdsWithUnsettledRuntimeState",
+                cause,
+              }),
+          ),
+        );
+
+    const listSubagentResultTransferSourceThreadIds: ProjectionStoreV2Shape["listSubagentResultTransferSourceThreadIds"] =
+      () =>
+        sql<{ readonly source_thread_id: ThreadId }>`
+          SELECT DISTINCT source_thread_id
+          FROM orchestration_v2_projection_context_transfers
+          WHERE type = 'subagent_result'
+        `.pipe(
+          Effect.map((rows) => rows.map(({ source_thread_id }) => source_thread_id)),
+          Effect.mapError(
+            (cause) =>
+              new ProjectionStoreQueryError({
+                operation: "listSubagentResultTransferSourceThreadIds",
+                cause,
+              }),
+          ),
+        );
+
     const selectShellThreadRows = (threadId?: ThreadId) =>
       sql<ShellThreadRow>`
             SELECT
@@ -2695,6 +2799,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getThreadShell,
       getThreadProjection,
       getThreadSnapshot,
+      listThreadIdsWithUnsettledRuntimeState,
+      listSubagentResultTransferSourceThreadIds,
     } satisfies ProjectionStoreV2Shape;
   }),
 );
@@ -2744,6 +2850,31 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             threads: visible.filter((thread) => thread.archivedAt === null),
             archivedThreads: visible.filter((thread) => thread.archivedAt !== null),
           };
+        }),
+      listThreadIdsWithUnsettledRuntimeState: () =>
+        Effect.gen(function* () {
+          const existing = (yield* Ref.get(replayState)).projections;
+          const unsettled: Array<ThreadId> = [];
+          for (const threadId of existing.keys()) {
+            const projection = yield* service.getThreadProjection(threadId);
+            if (projectionHasUnsettledRuntimeState(projection)) {
+              unsettled.push(threadId);
+            }
+          }
+          return unsettled;
+        }),
+      listSubagentResultTransferSourceThreadIds: () =>
+        Effect.gen(function* () {
+          const existing = (yield* Ref.get(replayState)).projections;
+          const sources = new Set<ThreadId>();
+          for (const projection of existing.values()) {
+            for (const transfer of projection.contextTransfers) {
+              if (transfer.type === "subagent_result") {
+                sources.add(transfer.sourceThreadId);
+              }
+            }
+          }
+          return [...sources];
         }),
       getThreadShell: (threadId) =>
         Effect.gen(function* () {

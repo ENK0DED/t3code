@@ -218,6 +218,10 @@ it.effect(
           getThreadShell: () => Effect.die("unused getThreadShell"),
           getThreadProjection: () => Ref.get(projection),
           getThreadSnapshot: () => Effect.die("unused getThreadSnapshot"),
+          listThreadIdsWithUnsettledRuntimeState: () =>
+            Effect.die("unused listThreadIdsWithUnsettledRuntimeState"),
+          listSubagentResultTransferSourceThreadIds: () =>
+            Effect.die("unused listSubagentResultTransferSourceThreadIds"),
         }),
       );
       const sessionManagerLayer = Layer.succeed(
