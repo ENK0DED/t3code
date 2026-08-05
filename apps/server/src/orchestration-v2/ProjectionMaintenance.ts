@@ -110,8 +110,34 @@ export const layer: Layer.Layer<
       const expectedSet = new Set(expectedIds);
       const missingThreadIds = expectedIds.filter((threadId) => !actualSet.has(threadId));
       const unexpectedThreadIds = actualIds.filter((threadId) => !expectedSet.has(threadId));
+      // The readability sweep decodes each candidate thread's FULL projection
+      // (every node, message and turn item) on the main thread — a schema-
+      // drift canary. Decoding all ~2k threads (mostly the archived tail)
+      // cost 78 s of the 86 s startup on the live store (wayfinder ticket 10
+      // post-mortem 6, 2026-08-04), so the sweep is bounded to the threads a
+      // boot actually serves first: every non-archived thread plus the 100
+      // most recently updated. Archived threads were readable when archived
+      // and are re-verified implicitly on first access; the exhaustive sweep
+      // remains available behind T3_FULL_PROJECTION_VERIFY=1 for upgrade
+      // rehearsals and the maintenance effort.
+      const decodeCandidateRows =
+        process.env["T3_FULL_PROJECTION_VERIFY"] === "1"
+          ? projectionRows
+          : yield* sql<{ readonly thread_id: string }>`
+              SELECT thread_id FROM orchestration_v2_projection_threads
+              WHERE archived_at IS NULL
+              UNION
+              SELECT thread_id FROM (
+                SELECT thread_id FROM orchestration_v2_projection_threads
+                ORDER BY updated_at DESC
+                LIMIT 100
+              )
+            `;
+      const decodeCandidateIds = decodeCandidateRows
+        .map((row) => ThreadId.make(row.thread_id))
+        .filter((threadId) => actualSet.has(threadId));
       const unreadableThreadIds = (yield* Effect.forEach(
-        actualIds,
+        decodeCandidateIds,
         (threadId) =>
           projectionStore.getThreadProjection(threadId).pipe(
             Effect.as<ThreadId | null>(null),
