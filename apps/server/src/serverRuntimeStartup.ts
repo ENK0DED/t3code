@@ -533,26 +533,41 @@ export const make = (options?: StartupOptions) =>
       // Off the startup path: the first run after an upgrade deletes the whole
       // superseded-event and legacy-v1 backlog (potentially millions of rows,
       // paced in small batches), and nothing at boot depends on it.
-      yield* projectionMaintenance.compactEventStore.pipe(
-        Effect.tap((summary) =>
-          summary.deletedEventCount === 0 && summary.deletedReceiptCount === 0
-            ? Effect.void
-            : Effect.logInfo("Compacted orchestration event store", summary),
-        ),
-        Effect.tap((summary) =>
-          // Freed pages are reused, so the file stops growing regardless; only
-          // an offline VACUUM shrinks it, which is not safe to run on the
-          // synchronous sqlite connection while serving.
-          summary.reclaimableBytes >= 512 * 1024 * 1024
-            ? Effect.logInfo(
-                "state.sqlite has substantial reclaimable free space; an offline VACUUM would shrink the file",
-                { reclaimableBytes: summary.reclaimableBytes },
-              )
-            : Effect.void,
-        ),
-        Effect.catch((cause) => Effect.logWarning("Unable to compact the event store", { cause })),
-        forkParked,
-      );
+      // OPT-IN (carried from the retired fork, wayfinder 2026-08-04 ticket 10
+      // post-mortem): on a multi-GB store the candidate SELECTs (GROUP BY over
+      // json_extract of every event payload) run for 25+ minutes on the
+      // synchronous sqlite connection, starving the request path even when
+      // forked. Compaction only runs when T3_RUN_EVENT_COMPACTION=1 is set, so
+      // an unadorned restart is always safe; run the backlog compaction
+      // deliberately (off-hours boot with the flag set).
+      yield* (
+        process.env["T3_RUN_EVENT_COMPACTION"] !== "1"
+          ? Effect.logInfo(
+              "Event-store compaction is opt-in on this overlay; set T3_RUN_EVENT_COMPACTION=1 to run it this boot",
+            )
+          : projectionMaintenance.compactEventStore.pipe(
+              Effect.tap((summary) =>
+                summary.deletedEventCount === 0 && summary.deletedReceiptCount === 0
+                  ? Effect.void
+                  : Effect.logInfo("Compacted orchestration event store", summary),
+              ),
+              Effect.tap((summary) =>
+                // Freed pages are reused, so the file stops growing regardless; only
+                // an offline VACUUM shrinks it, which is not safe to run on the
+                // synchronous sqlite connection while serving.
+                summary.reclaimableBytes >= 512 * 1024 * 1024
+                  ? Effect.logInfo(
+                      "state.sqlite has substantial reclaimable free space; an offline VACUUM would shrink the file",
+                      { reclaimableBytes: summary.reclaimableBytes },
+                    )
+                  : Effect.void,
+              ),
+              Effect.catch((cause) =>
+                Effect.logWarning("Unable to compact the event store", { cause }),
+              ),
+              Effect.asVoid,
+            )
+      ).pipe(forkParked);
 
       yield* forkParked(
         Effect.gen(function* () {
