@@ -2467,7 +2467,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ) AS has_actionable_proposed_plan,
               (
                 SELECT COUNT(*)
-                FROM orchestration_v2_projection_turn_items i
+                -- INDEXED BY is load-bearing: without it the planner serves the
+                -- "run_id IS NULL" term from the run_id index, which enumerates
+                -- EVERY runless item in the store for EVERY outer thread row
+                -- (~4.5 minutes per shell snapshot on a 273k-item store, and a
+                -- fresh ANALYZE does not correct it). The thread index makes it
+                -- a per-thread range scan.
+                FROM orchestration_v2_projection_turn_items i INDEXED BY orchestration_v2_projection_turn_items_thread_ordinal_idx
                 LEFT JOIN orchestration_v2_projection_runs r
                   ON r.run_id = i.run_id
                 WHERE i.thread_id = t.thread_id
@@ -2475,7 +2481,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ) AS item_count,
               (
                 SELECT COUNT(*)
-                FROM orchestration_v2_projection_turn_items i
+                -- Same load-bearing INDEXED BY as item_count above.
+                FROM orchestration_v2_projection_turn_items i INDEXED BY orchestration_v2_projection_turn_items_thread_ordinal_idx
                 WHERE i.thread_id = t.thread_id
                   AND i.run_id IS NULL
               ) AS runless_item_count
