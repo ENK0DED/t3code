@@ -476,11 +476,46 @@ export const make = Effect.gen(function* () {
             (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
           ),
         );
+      // Loading a full projection for every thread just to discover that almost
+      // all of them are long settled dominates startup once a workspace has a
+      // few thousand threads. Two indexed queries name the only threads
+      // `reconcileProjection` could act on: those with stranded runtime state,
+      // and those still holding an unsettled process-bound effect (the branch
+      // that retires effects even when no events are emitted).
+      const [unsettledRuntimeThreadIds, unsettledEffectThreadIds] = yield* Effect.all([
+        projections
+          .listThreadIdsWithUnsettledRuntimeState()
+          .pipe(
+            Effect.mapError(
+              (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
+            ),
+          ),
+        outbox
+          .listThreadIdsWithUnsettledEffects(EffectOutbox.PROCESS_BOUND_EFFECT_TYPES)
+          .pipe(
+            Effect.mapError(
+              (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
+            ),
+          ),
+      ]);
+      const candidateThreadIds = new Set([
+        ...unsettledRuntimeThreadIds,
+        ...unsettledEffectThreadIds,
+      ]);
+
       let terminalizedRuns = 0;
       let stoppedSessions = 0;
       let closedRequests = 0;
       let retiredEffects = 0;
-      for (const thread of [...shell.threads, ...shell.archivedThreads]) {
+      const reconcileCandidates = [...shell.threads, ...shell.archivedThreads].filter((thread) =>
+        candidateThreadIds.has(thread.id),
+      );
+      yield* Effect.logDebug("V2 runtime reconciliation scope", {
+        trigger,
+        knownThreads: shell.threads.length + shell.archivedThreads.length,
+        reconciledThreads: reconcileCandidates.length,
+      });
+      for (const thread of reconcileCandidates) {
         const projection = yield* projections.getThreadProjection(thread.id).pipe(
           Effect.mapError(
             (cause) =>
