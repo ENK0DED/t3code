@@ -183,6 +183,14 @@ export interface EffectOutboxV2Shape {
     readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
     readonly reason: string;
   }) => Effect.Effect<ReadonlyArray<string>, EffectOutboxError>;
+  /**
+   * Threads holding an effect that `cancelUnsettled` would act on. Lets startup
+   * reconciliation skip threads with nothing to retire instead of probing each
+   * one individually.
+   */
+  readonly listThreadIdsWithUnsettledEffects: (
+    effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, EffectOutboxError>;
   readonly signalCancellations: (effectIds: ReadonlyArray<string>) => Effect.Effect<void>;
   readonly awaitCancellation: (effectId: string) => Effect.Effect<void>;
   readonly clearCancellation: (effectId: string) => Effect.Effect<void>;
@@ -410,6 +418,20 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             (cause) => new EffectOutboxError({ operation: "cancel-unsettled", cause }),
           ),
         ),
+      listThreadIdsWithUnsettledEffects: (effectTypes) =>
+        effectTypes.length === 0
+          ? Effect.succeed([])
+          : sql<{ readonly thread_id: ThreadId }>`
+              SELECT DISTINCT thread_id
+              FROM orchestration_v2_effect_outbox
+              WHERE status IN ('pending', 'running')
+                AND effect_type IN ${sql.in(effectTypes)}
+            `.pipe(
+              Effect.map((rows) => rows.map(({ thread_id }) => thread_id)),
+              Effect.mapError(
+                (cause) => new EffectOutboxError({ operation: "list-unsettled-threads", cause }),
+              ),
+            ),
       signalCancellations: (effectIds) =>
         Effect.gen(function* () {
           yield* Effect.forEach(
