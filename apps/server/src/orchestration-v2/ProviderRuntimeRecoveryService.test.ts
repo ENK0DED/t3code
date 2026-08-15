@@ -32,6 +32,7 @@ it.effect("drains durable effects before reporting recovery complete", () =>
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            listThreadIdsWithUnsettledRuntimeState: () => Effect.succeed([]),
             getShellSnapshot: () =>
               Effect.succeed({
                 schemaVersion: 2,
@@ -48,6 +49,7 @@ it.effect("drains durable effects before reporting recovery complete", () =>
             ),
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listThreadIdsWithUnsettledEffects: () => Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -97,6 +99,7 @@ it.effect("expires orphaned runtime requests before command readiness", () => {
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          listThreadIdsWithUnsettledRuntimeState: () => Effect.succeed([threadId]),
           getShellSnapshot: () =>
             Effect.succeed({
               schemaVersion: 2,
@@ -110,6 +113,7 @@ it.effect("expires orphaned runtime requests before command readiness", () => {
         IdAllocator.layer,
         Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: Effect.succeed(false) }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listThreadIdsWithUnsettledEffects: () => Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
@@ -151,6 +155,7 @@ it.effect("uses the same reconciliation path to cancel runtime requests during s
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          listThreadIdsWithUnsettledRuntimeState: () => Effect.succeed([threadId]),
           getShellSnapshot: () =>
             Effect.succeed({
               schemaVersion: 2,
@@ -169,6 +174,7 @@ it.effect("uses the same reconciliation path to cancel runtime requests during s
         IdAllocator.layer,
         Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: Effect.succeed(false) }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listThreadIdsWithUnsettledEffects: () => Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
@@ -237,6 +243,7 @@ it.effect(
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            listThreadIdsWithUnsettledRuntimeState: () => Effect.succeed([threadId]),
             getShellSnapshot: () =>
               Effect.succeed({
                 schemaVersion: 2,
@@ -258,6 +265,7 @@ it.effect(
           IdAllocator.layer,
           Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: Effect.succeed(false) }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listThreadIdsWithUnsettledEffects: () => Effect.succeed([]),
             listByCommandId: () =>
               Effect.succeed([
                 {
@@ -329,6 +337,7 @@ it.effect("cancels a stale waiting run when no checkpoint capture can finish it"
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          listThreadIdsWithUnsettledRuntimeState: () => Effect.succeed([threadId]),
           getShellSnapshot: () =>
             Effect.succeed({
               schemaVersion: 2,
@@ -347,6 +356,7 @@ it.effect("cancels a stale waiting run when no checkpoint capture can finish it"
         IdAllocator.layer,
         Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: Effect.succeed(false) }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listThreadIdsWithUnsettledEffects: () => Effect.succeed([]),
           listByCommandId: () => Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
@@ -407,6 +417,7 @@ it.effect("cancels accepted queued work instead of replaying it after restart", 
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          listThreadIdsWithUnsettledRuntimeState: () => Effect.succeed([threadId]),
           getShellSnapshot: () =>
             Effect.succeed({
               schemaVersion: 2,
@@ -425,6 +436,7 @@ it.effect("cancels accepted queued work instead of replaying it after restart", 
         IdAllocator.layer,
         Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: Effect.succeed(false) }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listThreadIdsWithUnsettledEffects: () => Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
@@ -522,6 +534,7 @@ it.effect(
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            listThreadIdsWithUnsettledRuntimeState: () => Effect.succeed([threadId]),
             getShellSnapshot: () =>
               Effect.succeed({
                 schemaVersion: 2,
@@ -540,6 +553,7 @@ it.effect(
           IdAllocator.layer,
           Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: Effect.succeed(false) }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listThreadIdsWithUnsettledEffects: () => Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -710,6 +724,7 @@ it.effect(
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            listThreadIdsWithUnsettledRuntimeState: () => Effect.succeed([threadId]),
             getShellSnapshot: () =>
               Effect.succeed({
                 schemaVersion: 2,
@@ -728,6 +743,7 @@ it.effect(
           IdAllocator.layer,
           Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: Effect.succeed(false) }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listThreadIdsWithUnsettledEffects: () => Effect.succeed([]),
             listByCommandId: () => Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
@@ -875,6 +891,7 @@ it.effect(
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            listThreadIdsWithUnsettledRuntimeState: () => Effect.succeed([threadId]),
             getShellSnapshot: () =>
               Effect.succeed({
                 schemaVersion: 2,
@@ -893,6 +910,7 @@ it.effect(
           IdAllocator.layer,
           Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: Effect.succeed(false) }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listThreadIdsWithUnsettledEffects: () => Effect.succeed([]),
             listByCommandId: () => Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),

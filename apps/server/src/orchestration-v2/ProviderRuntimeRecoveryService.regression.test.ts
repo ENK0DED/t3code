@@ -49,6 +49,7 @@ it("uses the thread provider for stale background work without provider threads"
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          listThreadIdsWithUnsettledRuntimeState: () => Effect.succeed([threadId]),
           getShellSnapshot: () =>
             Effect.succeed({
               schemaVersion: 2,
@@ -67,6 +68,7 @@ it("uses the thread provider for stale background work without provider threads"
         IdAllocator.layer,
         Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: Effect.succeed(false) }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listThreadIdsWithUnsettledEffects: () => Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
