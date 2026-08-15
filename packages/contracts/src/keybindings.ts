@@ -55,6 +55,7 @@ export const BUILT_IN_KEYBINDING_COMMANDS = [
   "terminal.new",
   "terminal.close",
   "rightPanel.toggle",
+  "rightPanel.toggleMaximized",
   "threadPanel.toggle",
   "diff.toggle",
   "preview.toggle",
