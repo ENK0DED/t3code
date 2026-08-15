@@ -106,7 +106,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --chat-content-max-width: 46rem;
   --thread-details-panel-width: 19.5rem;
   --thread-details-panel-inset: 0px;
-}
 
   @variant dark {
     --app-scrollbar-thumb: rgb(255 255 255 / 8%);
